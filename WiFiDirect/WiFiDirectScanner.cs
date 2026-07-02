@@ -11,7 +11,6 @@ namespace direct_module.WiFiDirect
 
         public event Action<string>? LogReceived;
         public event Action<PeerInfo>? PeerFound;
-
         public void Start()
         {
             if (_watcher != null)
@@ -36,6 +35,22 @@ namespace direct_module.WiFiDirect
             _watcher.Start();
 
             LogReceived?.Invoke($"Watcher Status after Start: {_watcher.Status}");
+        }
+
+        public void Stop()
+        {
+            if (_watcher == null)
+            {
+                LogReceived?.Invoke("探索は開始されていません");
+                return;
+            }
+
+            if (_watcher.Status == DeviceWatcherStatus.Started ||
+                _watcher.Status == DeviceWatcherStatus.EnumerationCompleted)
+            {
+                _watcher.Stop();
+                LogReceived?.Invoke("探索停止");
+            }
         }
 
         private void OnDeviceAdded(DeviceWatcher sender, DeviceInformation device)
