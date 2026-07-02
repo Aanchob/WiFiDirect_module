@@ -64,6 +64,12 @@ namespace direct_module.WiFiDirect
 
         private void OnDeviceAdded(DeviceWatcher sender, DeviceInformation device)
         {
+            LogReceived?.Invoke("---- Wi-Fi Direct Candidate ----");
+            LogReceived?.Invoke($"Name: {device.Name}");
+            LogReceived?.Invoke($"Id: {device.Id}");
+            LogReceived?.Invoke($"Kind: {device.Kind}");
+            LogReceived?.Invoke($"IsEnabled: {device.IsEnabled}");
+
             PeerInfo peer = new PeerInfo
             {
                 DisplayName = string.IsNullOrWhiteSpace(device.Name)
@@ -76,9 +82,6 @@ namespace direct_module.WiFiDirect
                 ShortSessionId = "",
                 IsConnected = false
             };
-
-            LogReceived?.Invoke($"発見: {peer.DisplayName}");
-            LogReceived?.Invoke($"Wi-Fi Direct DeviceId: {peer.DeviceId}");
 
             PeerFound?.Invoke(peer);
         }
