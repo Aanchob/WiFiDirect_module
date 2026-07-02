@@ -119,7 +119,7 @@ namespace direct_module
             await _manager.ConnectAsync(peer);
         }
 
-        private void OnPeerFound(PeerInfo peer)
+        private async void OnPeerFound(PeerInfo peer)
         {
             DispatcherQueue.TryEnqueue(() =>
             {
@@ -127,6 +127,13 @@ namespace direct_module
 
                 AddLog($"Peer追加: {peer.DisplayText}");
             });
+
+            if (peer.DiscoveredByBle)
+            {
+                AddLog("BLEで相手を発見したため、Wi-Fi Direct探索を開始します");
+
+                await _manager.StartScanAsync();
+            }
         }
 
         private void OnLogReceived(string message)

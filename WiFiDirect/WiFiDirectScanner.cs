@@ -30,7 +30,11 @@ namespace direct_module.WiFiDirect
 
             LogReceived?.Invoke($"探索開始: {scanSeconds}秒間スキャンします");
 
+            LogReceived?.Invoke($"Watcher Status before Start: {_watcher.Status}");
+
             _watcher.Start();
+
+            LogReceived?.Invoke($"Watcher Status after Start: {_watcher.Status}");
 
             await Task.Delay(scanSeconds * 1000);
 
@@ -69,6 +73,7 @@ namespace direct_module.WiFiDirect
             };
 
             LogReceived?.Invoke($"発見: {peer.DisplayName}");
+            LogReceived?.Invoke($"Wi-Fi Direct DeviceId: {peer.DeviceId}");
 
             PeerFound?.Invoke(peer);
         }
