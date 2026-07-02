@@ -1,7 +1,4 @@
 ﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
 using System.Threading.Tasks;
 using direct_module.WiFiDirect.Models;
 
@@ -11,20 +8,26 @@ namespace direct_module.WiFiDirect
     {
         private readonly WiFiDirectListener _listener;
         private readonly WiFiDirectConnector _connector;
+        private readonly WiFiDirectScanner _scanner;
 
         public event Action<string>? LogReceived;
         public event Action<PeerInfo>? ConnectionRequested;
+        public event Action<PeerInfo>? PeerFound;
 
         public WiFiDirectManager()
         {
             _listener = new WiFiDirectListener();
             _connector = new WiFiDirectConnector();
+            _scanner = new WiFiDirectScanner();
 
             _listener.LogReceived += OnListenerLogReceived;
             _listener.ConnectionRequested += OnListenerConnectionRequested;
 
             _connector.LogReceived += OnConnectorLogReceived;
             _connector.Connected += OnConnectorConnected;
+
+            _scanner.LogReceived += OnScannerLogReceived;
+            _scanner.PeerFound += OnScannerPeerFound;
         }
 
         private void OnListenerLogReceived(string message)
@@ -51,10 +54,31 @@ namespace direct_module.WiFiDirect
             LogReceived?.Invoke($"Manager: 接続完了 {session.Peer.DisplayName}");
         }
 
+        private void OnScannerLogReceived(string message)
+        {
+            LogReceived?.Invoke(message);
+        }
+
+        private void OnScannerPeerFound(PeerInfo peer)
+        {
+            PeerFound?.Invoke(peer);
+        }
+
         public void Start()
         {
             _listener.Start();
         }
+
+        public void StartScan()
+        {
+            _scanner.Start();
+        }
+
+        public void StopScan()
+        {
+            _scanner.Stop();
+        }
+
         public async Task ConnectAsync(PeerInfo peer)
         {
             await _connector.ConnectAsync(peer);
