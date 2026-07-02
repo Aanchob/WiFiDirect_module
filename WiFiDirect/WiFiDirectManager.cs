@@ -69,10 +69,7 @@ namespace direct_module.WiFiDirect
             _listener.Start();
         }
 
-        public async Task StartScanAsync()
-        {
-            await _scanner.StartAsync(10);
-        }
+        public async Task StartScanAsync() => await _scanner.StartAsync(10);
 
         public void StopScan()
         {

@@ -61,22 +61,39 @@ namespace direct_module.Discovery
 
                 string payloadText = ReadBufferAsString(data.Data);
 
-                if (!payloadText.StartsWith("DCHAT|"))
+                if (!payloadText.StartsWith("DC|"))
                 {
                     continue;
                 }
 
-                string displayName = payloadText.Substring("DCHAT|".Length);
+                string[] parts = payloadText.Split('|');
+
+                if (parts.Length < 4)
+                {
+                    LogReceived?.Invoke($"BLE広告形式が不正です: {payloadText}");
+                    continue;
+                }
+
+                string displayName = parts[1];
+                string shortSessionId = parts[2];
+
+                if (!int.TryParse(parts[3], out int tcpPort))
+                {
+                    LogReceived?.Invoke($"TcpPortの解析に失敗: {parts[3]}");
+                    continue;
+                }
 
                 PeerInfo peer = new PeerInfo
                 {
                     DisplayName = displayName,
                     DeviceId = "",
                     DiscoveredByBle = true,
+                    ShortSessionId = shortSessionId,
+                    TcpPort = tcpPort,
                     IsConnected = false
                 };
 
-                LogReceived?.Invoke($"BLE発見: {peer.DisplayName}");
+                LogReceived?.Invoke($"BLE発見: {peer.DisplayName}, ShortSession={peer.ShortSessionId}, Port={peer.TcpPort}");
 
                 PeerFound?.Invoke(peer);
             }

@@ -14,7 +14,7 @@ namespace direct_module.Discovery
         // 自分たちのアプリ用の識別子
         private const ushort ManufacturerId = 0x1234;
 
-        public void Start(string displayName)
+        public void Start(string displayName, Guid sessionId, int tcpPort)
         {
             if (_publisher != null)
             {
@@ -24,7 +24,10 @@ namespace direct_module.Discovery
 
             var advertisement = new BluetoothLEAdvertisement();
 
-            string payloadText = $"DCHAT|{displayName}";
+            string shortName = Shorten(displayName, 6);
+            string shortSessionId = sessionId.ToString("N")[..4];
+
+            string payloadText = $"DC|{shortName}|{shortSessionId}|{tcpPort}";
             byte[] payloadBytes = Encoding.UTF8.GetBytes(payloadText);
 
             var writer = new DataWriter();
@@ -42,9 +45,9 @@ namespace direct_module.Discovery
 
             _publisher.StatusChanged += OnStatusChanged;
 
-            _publisher.Start();
-
             LogReceived?.Invoke($"BLE広告開始: {payloadText}");
+
+            _publisher.Start();
         }
 
         public void Stop()
@@ -67,6 +70,18 @@ namespace direct_module.Discovery
             BluetoothLEAdvertisementPublisherStatusChangedEventArgs args)
         {
             LogReceived?.Invoke($"BLE広告状態: {args.Status}, Error: {args.Error}");
+        }
+
+        private static string Shorten(string text, int maxLength)
+        {
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                return "PC";
+            }
+
+            return text.Length <= maxLength
+                ? text
+                : text[..maxLength];
         }
     }
 }

@@ -22,9 +22,9 @@ namespace direct_module.Discovery
             _scanner.PeerFound += OnScannerPeerFound;
         }
 
-        public void StartAdvertise(string displayName)
+        public void StartAdvertise(string displayName, Guid sessionId, int tcpPort)
         {
-            _advertiser.Start(displayName);
+            _advertiser.Start(displayName, sessionId, tcpPort);
         }
 
         public void StopAdvertise()

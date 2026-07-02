@@ -16,5 +16,13 @@ public class PeerInfo
     // BLEで発見した端末かどうか
     public bool DiscoveredByBle { get; set; }
 
+    // BLE広告で共有するセッションID
+    public Guid SessionId { get; set; }
+
+    public string ShortSessionId { get; set; } = "";
+
+    // TCP通信で使う予定のポート番号
+    public int TcpPort { get; set; }
+
     public bool IsConnected { get; set; }
 }

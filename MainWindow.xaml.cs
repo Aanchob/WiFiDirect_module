@@ -14,6 +14,9 @@ namespace direct_module
         private readonly DiscoveryManager _discoveryManager;
         private readonly WiFiDirectManager _manager;
 
+        private readonly Guid _localSessionId = Guid.NewGuid();
+        private const int LocalTcpPort = 50001;
+
         public MainWindow()
         {
             InitializeComponent();
@@ -43,7 +46,14 @@ namespace direct_module
 
         private void StartBleAdvertise_Click(object sender, RoutedEventArgs e)
         {
-            _discoveryManager.StartAdvertise(Environment.MachineName);
+            _discoveryManager.StartAdvertise(
+                Environment.MachineName,
+                _localSessionId,
+                LocalTcpPort
+            );
+
+            AddLog($"Local SessionId: {_localSessionId}");
+            AddLog($"Local TCP Port: {LocalTcpPort}");
         }
 
         private void StartBleScan_Click(object sender, RoutedEventArgs e)
@@ -80,7 +90,11 @@ namespace direct_module
             {
                 _peers.Add(peer);
 
-                PeerList.Items.Add(peer.DisplayName);
+                PeerList.Items.Add($"{peer.DisplayName} / Port:{peer.TcpPort}");
+
+                LogList.Items.Add($"Peer追加: {peer.DisplayName}");
+                LogList.Items.Add($"SessionId: {peer.SessionId}");
+                LogList.Items.Add($"TcpPort: {peer.TcpPort}");
             });
         }
 
