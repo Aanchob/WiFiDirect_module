@@ -18,8 +18,9 @@ public class WiFiDirectListener
     public void Start()
     {
         _listener.ConnectionRequested += OnConnectionRequested;
-        LogReceived?.Invoke("待ち受け開始");
-        // 接続待ち開始
+
+        LogReceived?.Invoke("Wi-Fi Direct Listener 起動");
+        LogReceived?.Invoke("接続要求待ち受け中");
     }
     private void OnConnectionRequested(
     WiFiDirectConnectionListener sender,

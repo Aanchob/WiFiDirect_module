@@ -2,7 +2,6 @@
     x:Class="direct_module.MainWindow"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
-
     <StackPanel Padding="20" Spacing="10">
 
         <Button
@@ -10,22 +9,28 @@
         Click="StartListener_Click"/>
 
         <Button
-        Content="探索開始"
+        Content="Wi-Fi Direct探索開始"
         Click="SearchButton_Click"/>
+
+        <Button
+        Content="BLE広告開始"
+        Click="StartBleAdvertise_Click"/>
+
+        <Button
+        Content="BLEスキャン開始"
+        Click="StartBleScan_Click"/>
 
         <Button
         Content="選択した相手に接続"
         Click="ConnectSelected_Click"/>
 
-        <TextBlock
-        Text="見つかった相手"/>
+        <TextBlock Text="見つかった相手"/>
 
         <ListView
         x:Name="PeerList"
         Height="200"/>
 
-        <TextBlock
-        Text="ログ"/>
+        <TextBlock Text="ログ"/>
 
         <ListView
         x:Name="LogList"

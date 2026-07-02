@@ -8,18 +8,13 @@ namespace direct_module.WiFiDirect.Models;
 
 public class PeerInfo
 {
-    /// <summary>
-    /// 相手に表示する名前
-    /// </summary>
     public string DisplayName { get; set; } = "";
 
-    /// <summary>
-    /// Wi-Fi Direct の DeviceId
-    /// </summary>
+    // Wi-Fi Direct 用
     public string DeviceId { get; set; } = "";
 
-    /// <summary>
-    /// 接続済みか
-    /// </summary>
+    // BLEで発見した端末かどうか
+    public bool DiscoveredByBle { get; set; }
+
     public bool IsConnected { get; set; }
 }

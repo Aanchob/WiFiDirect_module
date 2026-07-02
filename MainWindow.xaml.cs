@@ -1,5 +1,6 @@
 using direct_module.WiFiDirect;
 using direct_module.WiFiDirect.Models;
+using direct_module.Discovery;
 using Microsoft.UI.Xaml;
 using System;
 using System.Collections.Generic;
@@ -9,6 +10,8 @@ namespace direct_module
     public sealed partial class MainWindow : Window
     {
         private readonly List<PeerInfo> _peers = new();
+
+        private readonly DiscoveryManager _discoveryManager;
         private readonly WiFiDirectManager _manager;
 
         public MainWindow()
@@ -16,10 +19,14 @@ namespace direct_module
             InitializeComponent();
 
             _manager = new WiFiDirectManager();
+            _discoveryManager = new DiscoveryManager();
 
             _manager.LogReceived += OnLogReceived;
             _manager.ConnectionRequested += OnConnectionRequested;
             _manager.PeerFound += OnPeerFound;
+
+            _discoveryManager.LogReceived += OnLogReceived;
+            _discoveryManager.PeerFound += OnPeerFound;
         }
 
         private void StartListener_Click(object sender, RoutedEventArgs e)
@@ -32,6 +39,16 @@ namespace direct_module
         private void SearchButton_Click(object sender, RoutedEventArgs e)
         {
             _manager.StartScan();
+        }
+
+        private void StartBleAdvertise_Click(object sender, RoutedEventArgs e)
+        {
+            _discoveryManager.StartAdvertise(Environment.MachineName);
+        }
+
+        private void StartBleScan_Click(object sender, RoutedEventArgs e)
+        {
+            _discoveryManager.StartScan();
         }
 
         private async void ConnectSelected_Click(object sender, RoutedEventArgs e)
