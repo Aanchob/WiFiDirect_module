@@ -45,7 +45,16 @@ namespace direct_module.Discovery
                 return;
             }
 
-            _watcher.Stop();
+            if (_watcher.Status == BluetoothLEAdvertisementWatcherStatus.Started ||
+                _watcher.Status == BluetoothLEAdvertisementWatcherStatus.Created)
+            {
+                LogReceived?.Invoke("BLEスキャン停止要求");
+
+                _watcher.Stop();
+                return;
+            }
+
+            LogReceived?.Invoke($"BLEスキャンは停止できない状態です: {_watcher.Status}");
         }
 
         private void OnReceived(
@@ -113,8 +122,15 @@ namespace direct_module.Discovery
             BluetoothLEAdvertisementWatcher sender,
             BluetoothLEAdvertisementWatcherStoppedEventArgs args)
         {
+            sender.Received -= OnReceived;
+            sender.Stopped -= OnStopped;
+
             LogReceived?.Invoke($"BLEスキャン停止: {args.Error}");
-            _watcher = null;
+
+            if (_watcher == sender)
+            {
+                _watcher = null;
+            }
         }
     }
 }
