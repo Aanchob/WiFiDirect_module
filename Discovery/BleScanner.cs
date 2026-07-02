@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Linq;
 using System.Text;
+using System.Collections.Generic;
 using direct_module.WiFiDirect.Models;
 using Windows.Devices.Bluetooth.Advertisement;
 using Windows.Storage.Streams;
@@ -11,6 +12,8 @@ namespace direct_module.Discovery
     {
         private BluetoothLEAdvertisementWatcher? _watcher;
 
+        private readonly HashSet<string> _foundPeerKeys = new();
+
         public event Action<string>? LogReceived;
         public event Action<PeerInfo>? PeerFound;
 
@@ -20,21 +23,38 @@ namespace direct_module.Discovery
         {
             if (_watcher != null)
             {
-                LogReceived?.Invoke("BLEスキャンはすでに開始されています");
+                LogReceived?.Invoke($"BLEスキャンはすでに作成されています: Status={_watcher.Status}");
                 return;
             }
 
-            _watcher = new BluetoothLEAdvertisementWatcher
+            try
             {
-                ScanningMode = BluetoothLEScanningMode.Active
-            };
+                _watcher = new BluetoothLEAdvertisementWatcher
+                {
+                    ScanningMode = BluetoothLEScanningMode.Active
+                };
 
-            _watcher.Received += OnReceived;
-            _watcher.Stopped += OnStopped;
+                _watcher.Received += OnReceived;
+                _watcher.Stopped += OnStopped;
 
-            LogReceived?.Invoke("BLEスキャン開始");
+                LogReceived?.Invoke($"BLEスキャン開始要求: Status={_watcher.Status}");
 
-            _watcher.Start();
+                _watcher.Start();
+
+                LogReceived?.Invoke($"BLEスキャン開始後: Status={_watcher.Status}");
+            }
+            catch (Exception ex)
+            {
+                LogReceived?.Invoke($"BLEスキャン開始失敗: {ex.GetType().Name}");
+                LogReceived?.Invoke(ex.Message);
+
+                if (_watcher != null)
+                {
+                    _watcher.Received -= OnReceived;
+                    _watcher.Stopped -= OnStopped;
+                    _watcher = null;
+                }
+            }
         }
 
         public void Stop()
@@ -45,16 +65,33 @@ namespace direct_module.Discovery
                 return;
             }
 
-            if (_watcher.Status == BluetoothLEAdvertisementWatcherStatus.Started ||
-                _watcher.Status == BluetoothLEAdvertisementWatcherStatus.Created)
+            try
             {
-                LogReceived?.Invoke("BLEスキャン停止要求");
+                LogReceived?.Invoke($"BLEスキャン停止要求: Status={_watcher.Status}");
 
-                _watcher.Stop();
-                return;
+                if (_watcher.Status == BluetoothLEAdvertisementWatcherStatus.Started ||
+                    _watcher.Status == BluetoothLEAdvertisementWatcherStatus.Created)
+                {
+                    _watcher.Stop();
+                }
+                else
+                {
+                    LogReceived?.Invoke($"BLEスキャンは停止不要です: Status={_watcher.Status}");
+
+                    _watcher.Received -= OnReceived;
+                    _watcher.Stopped -= OnStopped;
+                    _watcher = null;
+                }
             }
+            catch (Exception ex)
+            {
+                LogReceived?.Invoke($"BLEスキャン停止失敗: {ex.GetType().Name}");
+                LogReceived?.Invoke(ex.Message);
 
-            LogReceived?.Invoke($"BLEスキャンは停止できない状態です: {_watcher.Status}");
+                _watcher.Received -= OnReceived;
+                _watcher.Stopped -= OnStopped;
+                _watcher = null;
+            }
         }
 
         private void OnReceived(
@@ -91,6 +128,15 @@ namespace direct_module.Discovery
                     LogReceived?.Invoke($"TcpPortの解析に失敗: {parts[3]}");
                     continue;
                 }
+
+                string peerKey = $"{displayName}|{shortSessionId}|{tcpPort}";
+
+                if (_foundPeerKeys.Contains(peerKey))
+                {
+                    continue;
+                }
+
+                _foundPeerKeys.Add(peerKey);
 
                 PeerInfo peer = new PeerInfo
                 {
