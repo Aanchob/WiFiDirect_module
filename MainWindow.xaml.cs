@@ -122,19 +122,16 @@ namespace direct_module
 
         private void ClearLog_Click(object sender, RoutedEventArgs e)
         {
-            LogList.Items.Clear();
+            LogTextBox.Text = "";
         }
 
         private void ScrollLogBottom_Click(object sender, RoutedEventArgs e)
         {
-            if (LogList.Items.Count == 0)
-            {
-                return;
-            }
-
-            object lastItem = LogList.Items[LogList.Items.Count - 1];
-
-            LogList.ScrollIntoView(lastItem);
+            LogScrollViewer.ChangeView(
+                null,
+                LogScrollViewer.ScrollableHeight,
+                null
+            );
         }
 
         private async void OnPeerFound(PeerInfo peer)
@@ -171,9 +168,14 @@ namespace direct_module
                 string time = DateTime.Now.ToString("HH:mm:ss.fff");
                 string log = $"[{time}] {message}";
 
-                LogList.Items.Add(log);
+                LogTextBox.Text += log + Environment.NewLine;
 
-                LogList.ScrollIntoView(log);
+
+                LogScrollViewer.ChangeView(
+                    null,
+                    LogScrollViewer.ScrollableHeight,
+                    null
+                );
             });
         }
 

@@ -149,9 +149,18 @@
                         Click="ScrollLogBottom_Click"/>
                 </StackPanel>
 
-                <ListView
-                    x:Name="LogList"
-                    Grid.Row="1"/>
+                <ScrollViewer
+    x:Name="LogScrollViewer"
+    Grid.Row="1"
+    VerticalScrollBarVisibility="Auto"
+    HorizontalScrollBarVisibility="Auto">
+
+                    <TextBox
+        x:Name="LogTextBox"
+        IsReadOnly="True"
+        AcceptsReturn="True"
+        TextWrapping="NoWrap"/>
+                </ScrollViewer>
             </Grid>
         </Border>
 
