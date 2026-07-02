@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "direct_module (Package)": {
+      "commandName": "MsixPackage"
+    },
+    "direct_module (Unpackaged)": {
+      "commandName": "Project"
+    }
+  }
+}
