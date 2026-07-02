@@ -22,31 +22,20 @@ namespace direct_module.WiFiDirect
 
             string selector = WiFiDirectDevice.GetDeviceSelector();
 
+            LogReceived?.Invoke($"Selector: {selector}");
+
             _watcher = DeviceInformation.CreateWatcher(selector);
 
             _watcher.Added += OnDeviceAdded;
             _watcher.EnumerationCompleted += OnEnumerationCompleted;
             _watcher.Stopped += OnStopped;
 
+            LogReceived?.Invoke($"Watcher Status before Start: {_watcher.Status}");
             LogReceived?.Invoke("探索開始");
 
             _watcher.Start();
-        }
 
-        public void Stop()
-        {
-            if (_watcher == null)
-            {
-                LogReceived?.Invoke("探索は開始されていません");
-                return;
-            }
-
-            if (_watcher.Status == DeviceWatcherStatus.Started ||
-                _watcher.Status == DeviceWatcherStatus.EnumerationCompleted)
-            {
-                _watcher.Stop();
-                LogReceived?.Invoke("探索停止");
-            }
+            LogReceived?.Invoke($"Watcher Status after Start: {_watcher.Status}");
         }
 
         private void OnDeviceAdded(DeviceWatcher sender, DeviceInformation device)
