@@ -12,7 +12,7 @@ namespace direct_module.WiFiDirect
 
         public event Action<string>? LogReceived;
         public event Action<PeerInfo>? PeerFound;
-        public async Task StartAsync(int scanSeconds = 10)
+        public async Task StartAsync(int scanSeconds = 30)
         {
             if (_watcher != null)
             {
