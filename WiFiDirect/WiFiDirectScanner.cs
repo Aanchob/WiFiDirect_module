@@ -20,7 +20,12 @@ namespace direct_module.WiFiDirect
                 return;
             }
 
-            string selector = WiFiDirectDevice.GetDeviceSelector();
+            string selector = WiFiDirectDevice.GetDeviceSelector(
+                WiFiDirectDeviceSelectorType.AssociationEndpoint
+            );
+            LogReceived?.Invoke($"Wi-Fi Direct Selector Type: AssociationEndpoint");
+            LogReceived?.Invoke($"Wi-Fi Direct Selector: {selector}");
+
 
             _watcher = DeviceInformation.CreateWatcher(selector);
 
