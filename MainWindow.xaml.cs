@@ -59,8 +59,7 @@ namespace direct_module
             _discoveryManager.StartAdvertise(
                 Environment.MachineName,
                 _localSessionId,
-                LocalTcpPort,
-                localIp
+                LocalTcpPort
             );
 
             AddLog($"Local IP: {localIp}");
@@ -86,13 +85,27 @@ namespace direct_module
                 return;
             }
 
+            string ipAddress = TargetIpTextBox.Text.Trim();
+
+            if (string.IsNullOrWhiteSpace(ipAddress))
+            {
+                AddLog("相手のIPアドレスを入力してください");
+                return;
+            }
+
+            if (peer.TcpPort <= 0)
+            {
+                AddLog("相手のTCPポート番号が不正です");
+                return;
+            }
+
             string message = $"Hello from {Environment.MachineName}";
 
-            AddLog($"TCP送信開始: {peer.DisplayText}");
+            AddLog($"TCP送信開始: {ipAddress}:{peer.TcpPort}");
+            AddLog($"送信先Peer: {peer.DisplayText}");
 
-            await _tcpClient.SendAsync(peer.IpAddress, peer.TcpPort, message);
+            await _tcpClient.SendAsync(ipAddress, peer.TcpPort, message);
         }
-
         private async void ConnectSelected_Click(object sender, RoutedEventArgs e)
         {
             if (PeerList.SelectedItem is not PeerInfo peer)
@@ -134,5 +147,7 @@ namespace direct_module
                 LogList.Items.Add($"[{time}] {message}");
             });
         }
+
+
     }
 }

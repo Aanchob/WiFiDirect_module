@@ -24,6 +24,14 @@
         Content="TCP待ち受け開始"
         Click="StartTcpServer_Click"/>
 
+
+        <TextBlock Text="相手のIPアドレス"/>
+
+        <TextBox
+        x:Name="TargetIpTextBox"
+        PlaceholderText="例: 192.168.1.23"/>
+
+
         <Button
         Content="選択した相手にTCP送信"
         Click="SendTcpToSelected_Click"/>

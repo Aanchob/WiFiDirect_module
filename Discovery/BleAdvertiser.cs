@@ -14,7 +14,7 @@ namespace direct_module.Discovery
         // 自分たちのアプリ用の識別子
         private const ushort ManufacturerId = 0x1234;
 
-        public void Start(string displayName, Guid sessionId, int tcpPort, string ipAddress)
+        public void Start(string displayName, Guid sessionId, int tcpPort)
         {
             if (_publisher != null)
             {
@@ -27,7 +27,7 @@ namespace direct_module.Discovery
             string shortName = Shorten(displayName, 4);
             string shortSessionId = sessionId.ToString("N")[..4];
 
-            string payloadText = $"DC|{shortName}|{shortSessionId}|{tcpPort}|{ipAddress}";
+            string payloadText = $"DC|{shortName}|{shortSessionId}|{tcpPort}";
             byte[] payloadBytes = Encoding.UTF8.GetBytes(payloadText);
 
             LogReceived?.Invoke($"BLE payload bytes: {payloadBytes.Length}");
