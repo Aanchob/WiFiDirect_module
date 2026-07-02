@@ -15,13 +15,24 @@ public class WiFiDirectListener
     {
         _listener = new WiFiDirectConnectionListener();
     }
+
+    private bool _isStarted;
+
     public void Start()
     {
+        if (_isStarted)
+        {
+            LogReceived?.Invoke("Wi-Fi Direct Listener はすでに起動中です");
+            return;
+        }
+
         _listener.ConnectionRequested += OnConnectionRequested;
+        _isStarted = true;
 
         LogReceived?.Invoke("Wi-Fi Direct Listener 起動");
-        LogReceived?.Invoke("接続要求待ち受け中");
+        LogReceived?.Invoke("Wi-Fi Direct 接続要求待ち受け中");
     }
+
     private void OnConnectionRequested(
     WiFiDirectConnectionListener sender,
     WiFiDirectConnectionRequestedEventArgs args)

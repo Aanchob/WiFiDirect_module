@@ -30,13 +30,13 @@ namespace direct_module.WiFiDirect
 
             LogReceived?.Invoke($"探索開始: {scanSeconds}秒間スキャンします");
 
-            LogReceived?.Invoke($"Watcher Status before Start: {_watcher.Status}");
-
             _watcher.Start();
 
             LogReceived?.Invoke($"Watcher Status after Start: {_watcher.Status}");
 
             await Task.Delay(scanSeconds * 1000);
+
+            LogReceived?.Invoke($"{scanSeconds}秒経過したので探索を停止します");
 
             Stop();
         }
@@ -80,12 +80,12 @@ namespace direct_module.WiFiDirect
 
         private void OnEnumerationCompleted(DeviceWatcher sender, object args)
         {
-            LogReceived?.Invoke("初回探索が完了しました。スキャンは継続中です");
+            LogReceived?.Invoke($"初回探索完了: Status={sender.Status}");
         }
 
         private void OnStopped(DeviceWatcher sender, object args)
         {
-            LogReceived?.Invoke("探索が停止しました");
+            LogReceived?.Invoke($"Wi-Fi Direct探索停止: Status={sender.Status}");
 
             _watcher = null;
         }

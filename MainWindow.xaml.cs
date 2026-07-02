@@ -106,6 +106,7 @@ namespace direct_module
 
             await _tcpClient.SendAsync(ipAddress, peer.TcpPort, message);
         }
+
         private async void ConnectSelected_Click(object sender, RoutedEventArgs e)
         {
             if (PeerList.SelectedItem is not PeerInfo peer)
@@ -117,6 +118,23 @@ namespace direct_module
             AddLog($"接続開始: {peer.DisplayText}");
 
             await _manager.ConnectAsync(peer);
+        }
+
+        private void ClearLog_Click(object sender, RoutedEventArgs e)
+        {
+            LogList.Items.Clear();
+        }
+
+        private void ScrollLogBottom_Click(object sender, RoutedEventArgs e)
+        {
+            if (LogList.Items.Count == 0)
+            {
+                return;
+            }
+
+            object lastItem = LogList.Items[LogList.Items.Count - 1];
+
+            LogList.ScrollIntoView(lastItem);
         }
 
         private async void OnPeerFound(PeerInfo peer)
@@ -151,7 +169,11 @@ namespace direct_module
             DispatcherQueue.TryEnqueue(() =>
             {
                 string time = DateTime.Now.ToString("HH:mm:ss.fff");
-                LogList.Items.Add($"[{time}] {message}");
+                string log = $"[{time}] {message}";
+
+                LogList.Items.Add(log);
+
+                LogList.ScrollIntoView(log);
             });
         }
 
