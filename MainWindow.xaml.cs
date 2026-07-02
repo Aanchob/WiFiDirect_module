@@ -1,18 +1,18 @@
 using direct_module.WiFiDirect;
 using direct_module.WiFiDirect.Models;
 using direct_module.Discovery;
+using direct_module.Network;
 using Microsoft.UI.Xaml;
 using System;
-using System.Collections.Generic;
 
 namespace direct_module
 {
     public sealed partial class MainWindow : Window
     {
-        private readonly List<PeerInfo> _peers = new();
-
         private readonly DiscoveryManager _discoveryManager;
         private readonly WiFiDirectManager _manager;
+        private readonly TcpServer _tcpServer = new();
+        private readonly TcpClient _tcpClient = new();
 
         private readonly Guid _localSessionId = Guid.NewGuid();
         private const int LocalTcpPort = 50001;
@@ -30,6 +30,14 @@ namespace direct_module
 
             _discoveryManager.LogReceived += OnLogReceived;
             _discoveryManager.PeerFound += OnPeerFound;
+
+            _tcpServer.LogReceived += OnLogReceived;
+            _tcpServer.MessageReceived += message =>
+            {
+                AddLog($"受信メッセージ: {message}");
+            };
+
+            _tcpClient.LogReceived += OnLogReceived;
         }
 
         private void StartListener_Click(object sender, RoutedEventArgs e)
@@ -46,12 +54,16 @@ namespace direct_module
 
         private void StartBleAdvertise_Click(object sender, RoutedEventArgs e)
         {
+            string localIp = LocalNetworkInfo.GetLocalIpv4Address();
+
             _discoveryManager.StartAdvertise(
                 Environment.MachineName,
                 _localSessionId,
-                LocalTcpPort
+                LocalTcpPort,
+                localIp
             );
 
+            AddLog($"Local IP: {localIp}");
             AddLog($"Local SessionId: {_localSessionId}");
             AddLog($"Local TCP Port: {LocalTcpPort}");
         }
@@ -61,25 +73,35 @@ namespace direct_module
             _discoveryManager.StartScan();
         }
 
+        private async void StartTcpServer_Click(object sender, RoutedEventArgs e)
+        {
+            await _tcpServer.StartAsync(LocalTcpPort);
+        }
+
+        private async void SendTcpToSelected_Click(object sender, RoutedEventArgs e)
+        {
+            if (PeerList.SelectedItem is not PeerInfo peer)
+            {
+                AddLog("TCP送信する相手を選択してください");
+                return;
+            }
+
+            string message = $"Hello from {Environment.MachineName}";
+
+            AddLog($"TCP送信開始: {peer.DisplayText}");
+
+            await _tcpClient.SendAsync(peer.IpAddress, peer.TcpPort, message);
+        }
+
         private async void ConnectSelected_Click(object sender, RoutedEventArgs e)
         {
-            int index = PeerList.SelectedIndex;
-
-            if (index < 0)
+            if (PeerList.SelectedItem is not PeerInfo peer)
             {
                 AddLog("接続する相手を選択してください");
                 return;
             }
 
-            if (index >= _peers.Count)
-            {
-                AddLog("選択された相手情報が見つかりません");
-                return;
-            }
-
-            PeerInfo peer = _peers[index];
-
-            AddLog($"接続開始: {peer.DisplayName}");
+            AddLog($"接続開始: {peer.DisplayText}");
 
             await _manager.ConnectAsync(peer);
         }
@@ -88,13 +110,9 @@ namespace direct_module
         {
             DispatcherQueue.TryEnqueue(() =>
             {
-                _peers.Add(peer);
+                PeerList.Items.Add(peer);
 
-                PeerList.Items.Add($"{peer.DisplayName} / Port:{peer.TcpPort}");
-
-                LogList.Items.Add($"Peer追加: {peer.DisplayName}");
-                LogList.Items.Add($"SessionId: {peer.SessionId}");
-                LogList.Items.Add($"TcpPort: {peer.TcpPort}");
+                AddLog($"Peer追加: {peer.DisplayText}");
             });
         }
 

@@ -62,6 +62,9 @@ namespace direct_module.WiFiDirect
                     : device.Name,
 
                 DeviceId = device.Id,
+                DiscoveredByBle = false,
+                TcpPort = 0,
+                ShortSessionId = "",
                 IsConnected = false
             };
 

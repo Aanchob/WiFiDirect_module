@@ -19,6 +19,14 @@
         <Button
         Content="BLEスキャン開始"
         Click="StartBleScan_Click"/>
+        
+        <Button
+        Content="TCP待ち受け開始"
+        Click="StartTcpServer_Click"/>
+
+        <Button
+        Content="選択した相手にTCP送信"
+        Click="SendTcpToSelected_Click"/>
 
         <Button
         Content="選択した相手に接続"
@@ -28,7 +36,13 @@
 
         <ListView
         x:Name="PeerList"
-        Height="200"/>
+        Height="200">
+            <ListView.ItemTemplate>
+                <DataTemplate>
+                    <TextBlock Text="{Binding DisplayText}" />
+                </DataTemplate>
+            </ListView.ItemTemplate>
+        </ListView>
 
         <TextBlock Text="ログ"/>
 

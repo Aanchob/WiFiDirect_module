@@ -17,12 +17,34 @@ public class PeerInfo
     public bool DiscoveredByBle { get; set; }
 
     // BLE広告で共有するセッションID
-    public Guid SessionId { get; set; }
-
     public string ShortSessionId { get; set; } = "";
 
     // TCP通信で使う予定のポート番号
     public int TcpPort { get; set; }
 
     public bool IsConnected { get; set; }
+
+    public string IpAddress { get; set; } = "";
+
+    public string SourceText => DiscoveredByBle ? "BLE" : "Wi-Fi Direct";
+
+    public string DisplayText
+    {
+        get
+        {
+            string portText = TcpPort > 0
+                ? $" / Port:{TcpPort}"
+                : "";
+
+            string sessionText = !string.IsNullOrWhiteSpace(ShortSessionId)
+                ? $" / ID:{ShortSessionId}"
+                : "";
+
+            string ipText = !string.IsNullOrWhiteSpace(IpAddress)
+                ? $" / IP:{IpAddress}"
+                : "";
+
+            return $"[{SourceText}] {DisplayName}{portText}{sessionText}{ipText}";
+        }
+    }
 }

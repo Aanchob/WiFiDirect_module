@@ -114,7 +114,7 @@ namespace direct_module.Discovery
 
                 string[] parts = payloadText.Split('|');
 
-                if (parts.Length < 4)
+                if (parts.Length < 5)
                 {
                     LogReceived?.Invoke($"BLE広告形式が不正です: {payloadText}");
                     continue;
@@ -129,7 +129,9 @@ namespace direct_module.Discovery
                     continue;
                 }
 
-                string peerKey = $"{displayName}|{shortSessionId}|{tcpPort}";
+                string ipAddress = parts[4];
+
+                string peerKey = $"{displayName}|{shortSessionId}|{tcpPort}|{ipAddress}";
 
                 if (_foundPeerKeys.Contains(peerKey))
                 {
@@ -145,10 +147,13 @@ namespace direct_module.Discovery
                     DiscoveredByBle = true,
                     ShortSessionId = shortSessionId,
                     TcpPort = tcpPort,
+                    IpAddress = ipAddress,
                     IsConnected = false
                 };
 
-                LogReceived?.Invoke($"BLE発見: {peer.DisplayName}, ShortSession={peer.ShortSessionId}, Port={peer.TcpPort}");
+                LogReceived?.Invoke(
+                    $"BLE発見: {peer.DisplayName}, ID={peer.ShortSessionId}, Port={peer.TcpPort}, IP={peer.IpAddress}"
+                );
 
                 PeerFound?.Invoke(peer);
             }
