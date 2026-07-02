@@ -36,9 +36,9 @@ namespace direct_module
             AddLog("待ち受け開始ボタンを押しました");
         }
 
-        private void SearchButton_Click(object sender, RoutedEventArgs e)
+        private async void SearchButton_Click(object sender, RoutedEventArgs e)
         {
-            _manager.StartScan();
+            await _manager.StartScanAsync();
         }
 
         private void StartBleAdvertise_Click(object sender, RoutedEventArgs e)

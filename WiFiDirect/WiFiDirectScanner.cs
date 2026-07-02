@@ -1,5 +1,6 @@
-﻿using System;
-using direct_module.WiFiDirect.Models;
+﻿using direct_module.WiFiDirect.Models;
+using System;
+using System.Threading.Tasks;
 using Windows.Devices.Enumeration;
 using Windows.Devices.WiFiDirect;
 
@@ -11,7 +12,7 @@ namespace direct_module.WiFiDirect
 
         public event Action<string>? LogReceived;
         public event Action<PeerInfo>? PeerFound;
-        public void Start()
+        public async Task StartAsync(int scanSeconds = 10)
         {
             if (_watcher != null)
             {
@@ -21,20 +22,19 @@ namespace direct_module.WiFiDirect
 
             string selector = WiFiDirectDevice.GetDeviceSelector();
 
-            LogReceived?.Invoke($"Selector: {selector}");
-
             _watcher = DeviceInformation.CreateWatcher(selector);
 
             _watcher.Added += OnDeviceAdded;
             _watcher.EnumerationCompleted += OnEnumerationCompleted;
             _watcher.Stopped += OnStopped;
 
-            LogReceived?.Invoke($"Watcher Status before Start: {_watcher.Status}");
-            LogReceived?.Invoke("探索開始");
+            LogReceived?.Invoke($"探索開始: {scanSeconds}秒間スキャンします");
 
             _watcher.Start();
 
-            LogReceived?.Invoke($"Watcher Status after Start: {_watcher.Status}");
+            await Task.Delay(scanSeconds * 1000);
+
+            Stop();
         }
 
         public void Stop()
@@ -72,7 +72,7 @@ namespace direct_module.WiFiDirect
 
         private void OnEnumerationCompleted(DeviceWatcher sender, object args)
         {
-            LogReceived?.Invoke("探索が完了しました");
+            LogReceived?.Invoke("初回探索が完了しました。スキャンは継続中です");
         }
 
         private void OnStopped(DeviceWatcher sender, object args)
