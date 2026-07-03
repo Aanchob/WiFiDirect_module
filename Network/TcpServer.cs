@@ -1,4 +1,6 @@
+using direct_module.Crypto;
 using System;
+using System.Text;
 using System.Threading.Tasks;
 using Windows.Networking.Sockets;
 using Windows.Storage.Streams;
@@ -7,7 +9,18 @@ namespace direct_module.Network
 {
     public class TcpServer
     {
+        private readonly IMessageCrypto _messageCrypto;
         private StreamSocketListener? _listener;
+
+        public TcpServer()
+            : this(new NoOpMessageCrypto())
+        {
+        }
+
+        public TcpServer(IMessageCrypto messageCrypto)
+        {
+            _messageCrypto = messageCrypto;
+        }
 
         public event Action<string>? LogReceived;
         public event Action<string>? MessageReceived;
@@ -30,11 +43,13 @@ namespace direct_module.Network
                 await _listener.BindServiceNameAsync(port.ToString());
 
                 LogReceived?.Invoke($"TCPサーバー待ち受け開始: Port={port}");
+                LogReceived?.Invoke($"MessageCrypto: {_messageCrypto.GetType().Name}");
             }
             catch (Exception ex)
             {
                 LogReceived?.Invoke("TCPサーバー待ち受け開始失敗");
                 LogReceived?.Invoke($"例外名: {ex.GetType().Name}");
+                LogReceived?.Invoke($"HResult: 0x{ex.HResult:X8}");
                 LogReceived?.Invoke($"Message: {ex.Message}");
             }
         }
@@ -69,7 +84,7 @@ namespace direct_module.Network
                     InputStreamOptions = InputStreamOptions.Partial
                 };
 
-                uint loaded = await reader.LoadAsync(1024);
+                uint loaded = await reader.LoadAsync(4096);
 
                 if (loaded == 0)
                 {
@@ -77,8 +92,16 @@ namespace direct_module.Network
                     return;
                 }
 
-                string message = reader.ReadString(loaded);
+                byte[] receivedBytes = new byte[loaded];
+                reader.ReadBytes(receivedBytes);
 
+                LogReceived?.Invoke($"受信Bytes: {receivedBytes.Length}");
+                LogReceived?.Invoke($"MessageCrypto: {_messageCrypto.GetType().Name}");
+
+                byte[] plainBytes = _messageCrypto.Decrypt(receivedBytes);
+                string message = Encoding.UTF8.GetString(plainBytes);
+
+                LogReceived?.Invoke($"復号後Bytes: {plainBytes.Length}");
                 LogReceived?.Invoke($"TCP受信: {message}");
                 MessageReceived?.Invoke(message);
             }
@@ -86,6 +109,7 @@ namespace direct_module.Network
             {
                 LogReceived?.Invoke("TCP受信エラー");
                 LogReceived?.Invoke($"例外名: {ex.GetType().Name}");
+                LogReceived?.Invoke($"HResult: 0x{ex.HResult:X8}");
                 LogReceived?.Invoke($"Message: {ex.Message}");
             }
         }

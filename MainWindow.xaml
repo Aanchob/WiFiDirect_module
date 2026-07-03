@@ -10,7 +10,6 @@
             <RowDefinition Height="240"/>
         </Grid.RowDefinitions>
 
-        <!-- 操作エリア -->
         <Grid
             Grid.Row="0"
             RowSpacing="8"
@@ -74,7 +73,7 @@
             <Button
                 Grid.Row="1"
                 Grid.Column="3"
-                Content="選択した相手にTCP送信"
+                Content="選択した相手へTCP送信"
                 Click="SendTcpToSelected_Click"/>
 
             <Button
@@ -84,62 +83,93 @@
                 Click="ClearLog_Click"/>
         </Grid>
 
-        <!-- PeerList + TCP入力 -->
         <Grid
             Grid.Row="1"
-            RowSpacing="8">
+            ColumnSpacing="12">
 
-            <Grid.RowDefinitions>
-                <RowDefinition Height="Auto"/>
-                <RowDefinition Height="Auto"/>
-                <RowDefinition Height="*"/>
-            </Grid.RowDefinitions>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
 
-            <StackPanel
-                Grid.Row="0"
-                Orientation="Horizontal"
-                Spacing="8">
+            <Grid
+                Grid.Column="0"
+                RowSpacing="8">
+
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
+
+                <StackPanel
+                    Grid.Row="0"
+                    Orientation="Horizontal"
+                    Spacing="8">
+
+                    <TextBlock
+                        Text="手入力IP"
+                        VerticalAlignment="Center"/>
+
+                    <TextBox
+                        x:Name="TargetIpTextBox"
+                        Width="180"
+                        PlaceholderText="例: 192.168.1.23"/>
+                </StackPanel>
 
                 <TextBlock
-                    Text="手入力IP"
-                    VerticalAlignment="Center"/>
+                    Grid.Row="1"
+                    Text="見つかった相手"
+                    FontWeight="Bold"/>
 
-                <TextBox
-                    x:Name="TargetIpTextBox"
-                    Width="180"
-                    PlaceholderText="例: 192.168.1.23"/>
+                <ListView
+                    x:Name="PeerList"
+                    Grid.Row="2">
+                    <ListView.ItemTemplate>
+                        <DataTemplate>
+                            <TextBlock Text="{Binding DisplayText}" />
+                        </DataTemplate>
+                    </ListView.ItemTemplate>
+                </ListView>
+            </Grid>
+
+            <Grid
+                Grid.Column="1"
+                RowSpacing="8">
+
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
 
                 <TextBlock
-                    Text="メッセージ"
-                    VerticalAlignment="Center"/>
+                    Grid.Row="0"
+                    Text="チャット"
+                    FontWeight="Bold"/>
 
-                <TextBox
-                    x:Name="MessageTextBox"
-                    Width="260"
-                    Text="Hello"/>
+                <ListView
+                    x:Name="MessageList"
+                    Grid.Row="1"/>
 
-                <Button
-                    Content="送信"
-                    Click="SendTcpToSelected_Click"/>
-            </StackPanel>
+                <StackPanel
+                    Grid.Row="2"
+                    Orientation="Horizontal"
+                    Spacing="8">
 
-            <TextBlock
-                Grid.Row="1"
-                Text="見つかった相手"
-                FontWeight="Bold"/>
+                    <TextBox
+                        x:Name="MessageTextBox"
+                        Width="300"
+                        Text="Hello"/>
 
-            <ListView
-                x:Name="PeerList"
-                Grid.Row="2">
-                <ListView.ItemTemplate>
-                    <DataTemplate>
-                        <TextBlock Text="{Binding DisplayText}" />
-                    </DataTemplate>
-                </ListView.ItemTemplate>
-            </ListView>
+                    <Button
+                        x:Name="SendMessageButton"
+                        Content="送信"
+                        Click="SendTcpToSelected_Click"/>
+                </StackPanel>
+            </Grid>
         </Grid>
 
-        <!-- ログ -->
         <Border
             Grid.Row="2"
             BorderThickness="1"

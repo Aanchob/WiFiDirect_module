@@ -1,7 +1,7 @@
-using direct_module.WiFiDirect;
-using direct_module.WiFiDirect.Models;
 using direct_module.Discovery;
 using direct_module.Network;
+using direct_module.WiFiDirect;
+using direct_module.WiFiDirect.Models;
 using Microsoft.UI.Xaml;
 using System;
 
@@ -36,6 +36,7 @@ namespace direct_module
             _tcpServer.MessageReceived += message =>
             {
                 AddLog($"TCP受信メッセージ: {message}");
+                AddChatMessage($"相手: {message}");
             };
 
             _tcpClient.LogReceived += OnLogReceived;
@@ -116,6 +117,7 @@ namespace direct_module
             AddLog($"送信先Peer: {peer.DisplayText}");
 
             await _tcpClient.SendAsync(ipAddress, LocalTcpPort, message);
+            AddChatMessage($"自分: {message}");
         }
 
         private async void ConnectSelected_Click(object sender, RoutedEventArgs e)
@@ -273,6 +275,16 @@ namespace direct_module
                     AddLog($"接続済みPeerを一覧に追加: {peer.DisplayText}");
                     AddLog("受信acceptで作成されたPeerのため、TCP返信先として選択できます");
                 }
+            });
+        }
+
+        private void AddChatMessage(string message)
+        {
+            DispatcherQueue.TryEnqueue(() =>
+            {
+                string time = DateTime.Now.ToString("HH:mm:ss");
+                MessageList.Items.Add($"[{time}] {message}");
+                MessageList.ScrollIntoView(MessageList.Items[^1]);
             });
         }
 
