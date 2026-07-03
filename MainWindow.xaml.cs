@@ -266,6 +266,13 @@ namespace direct_module
                     AddLog($"Peer表示更新: {peer.DisplayText}");
                     return;
                 }
+
+                if (peer.IsConnected)
+                {
+                    PeerList.Items.Add(peer);
+                    AddLog($"接続済みPeerを一覧に追加: {peer.DisplayText}");
+                    AddLog("受信acceptで作成されたPeerのため、TCP返信先として選択できます");
+                }
             });
         }
 
