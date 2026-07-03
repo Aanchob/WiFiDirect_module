@@ -14,6 +14,7 @@ namespace direct_module
         private readonly WiFiDirectManager _manager;
         private readonly TcpServer _tcpServer = new();
         private ChatConnection? _chatConnection;
+        private bool _isPreparingChatTcp;
 
         private readonly Guid _localSessionId = Guid.NewGuid();
         private const int LocalTcpPort = 50001;
@@ -37,6 +38,25 @@ namespace direct_module
             _tcpServer.ConnectionAccepted += OnTcpConnectionAccepted;
         }
 
+        private async void SearchPeers_Click(object sender, RoutedEventArgs e)
+        {
+            AddLog("相手探索開始");
+            AddLog("Wi-Fi Direct広告+待ち受け開始");
+            _manager.Start();
+
+            AddLog("BLE広告開始");
+            StartBleAdvertiseCore();
+
+            AddLog("BLEスキャン開始");
+            _discoveryManager.StartScan();
+
+            AddLog("AssociationEndpoint探索開始");
+            ClearStaleWiFiDirectPeers();
+            await _manager.StartAssociationEndpointScanAsync();
+
+            AddLog("相手探索処理を開始しました");
+        }
+
         private void StartListener_Click(object sender, RoutedEventArgs e)
         {
             _manager.Start();
@@ -58,6 +78,11 @@ namespace direct_module
         }
 
         private void StartBleAdvertise_Click(object sender, RoutedEventArgs e)
+        {
+            StartBleAdvertiseCore();
+        }
+
+        private void StartBleAdvertiseCore()
         {
             string localIp = LocalNetworkInfo.GetLocalIpv4Address();
 
@@ -104,6 +129,7 @@ namespace direct_module
             if (!chatConnection.IsConnected)
             {
                 await chatConnection.ConnectAsync(ipAddress, LocalTcpPort);
+                MarkSelectedPeerTcpState(chatConnection.IsConnected);
             }
             else
             {
@@ -130,12 +156,17 @@ namespace direct_module
 
             if (peer.DeviceId.Contains("_PendingRequest", StringComparison.OrdinalIgnoreCase))
             {
-                AddLog("PendingRequest付きDeviceIdのため、この候補では接続しません");
-                AddLog("探索後に追加された通常のWi-Fi Direct候補を選択してください");
+                AddLog("_PendingRequest付きDeviceIdのため通常接続を中止します");
                 return;
             }
 
-            AddLog($"接続開始: {peer.DisplayText}");
+            if (string.IsNullOrWhiteSpace(peer.DeviceId))
+            {
+                AddLog("選択中PeerにWi-Fi Direct DeviceIdがありません");
+                return;
+            }
+
+            AddLog($"Wi-Fi Direct接続開始: {peer.DisplayText}");
             await _manager.ConnectAsync(peer);
             RefreshPeerDisplay(peer);
         }
@@ -154,13 +185,7 @@ namespace direct_module
         {
             DispatcherQueue.TryEnqueue(() =>
             {
-                PeerList.Items.Add(peer);
-                AddLog($"Peer追加: {peer.DisplayText}");
-
-                if (peer.DeviceId.Contains("_PendingRequest", StringComparison.OrdinalIgnoreCase))
-                {
-                    AddLog("注意: PendingRequest付きDeviceIdです。この候補では通常接続しません。");
-                }
+                AddOrMergePeer(peer);
             });
 
             if (peer.DiscoveredByBle)
@@ -185,16 +210,71 @@ namespace direct_module
             AddLog($"Wi-Fi Direct接続完了通知: {peer.DisplayText}");
             RefreshPeerDisplay(peer);
             await EnsureTcpServerStartedAsync("Wi-Fi Direct接続完了");
+            await PrepareChatTcpConnectionAsync(peer);
         }
 
         private void OnTcpConnectionAccepted(StreamSocket socket)
         {
             DispatcherQueue.TryEnqueue(() =>
             {
+                if (_chatConnection?.IsConnected == true)
+                {
+                    AddLog("既存のChat TCP接続があるため、後から来たTCP接続は閉じます");
+                    socket.Dispose();
+                    return;
+                }
+
                 AddLog("Chat TCP受信側接続を保持します");
                 ReplaceChatConnection(new ChatConnection());
                 _chatConnection?.AttachAcceptedSocket(socket);
+                MarkSelectedPeerTcpState(true);
             });
+        }
+
+        private async System.Threading.Tasks.Task PrepareChatTcpConnectionAsync(PeerInfo peer)
+        {
+            if (_isPreparingChatTcp)
+            {
+                AddLog("Chat TCP事前接続はすでに処理中です");
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(peer.RemoteIpAddress))
+            {
+                AddLog("Chat TCP事前接続をスキップ: RemoteIpAddressがありません");
+                return;
+            }
+
+            ChatConnection chatConnection = GetOrCreateChatConnection();
+
+            if (chatConnection.IsConnected)
+            {
+                AddLog("Chat TCP事前接続済みなので再利用");
+                peer.IsTcpConnected = true;
+                RefreshPeerDisplay(peer);
+                return;
+            }
+
+            _isPreparingChatTcp = true;
+
+            try
+            {
+                AddLog("Chat TCP事前接続開始");
+                AddLog($"RemoteIpAddress: {peer.RemoteIpAddress}");
+                await chatConnection.ConnectAsync(peer.RemoteIpAddress, LocalTcpPort);
+
+                if (chatConnection.IsConnected)
+                {
+                    peer.IsTcpConnected = true;
+                    AddLog("Chat TCP事前接続成功");
+                    AddLog("Chat TCP受信ループ開始");
+                    RefreshPeerDisplay(peer);
+                }
+            }
+            finally
+            {
+                _isPreparingChatTcp = false;
+            }
         }
 
         private async System.Threading.Tasks.Task EnsureTcpServerStartedAsync(string reason)
@@ -269,6 +349,19 @@ namespace direct_module
         private void OnChatConnectionClosed()
         {
             _chatConnection = null;
+            MarkSelectedPeerTcpState(false);
+        }
+
+        private void MarkSelectedPeerTcpState(bool isConnected)
+        {
+            DispatcherQueue.TryEnqueue(() =>
+            {
+                if (PeerList.SelectedItem is PeerInfo peer)
+                {
+                    peer.IsTcpConnected = isConnected;
+                    RefreshPeerDisplay(peer);
+                }
+            });
         }
 
         private void ClearStaleWiFiDirectPeers()
@@ -297,6 +390,93 @@ namespace direct_module
             });
         }
 
+        private void AddOrMergePeer(PeerInfo incoming)
+        {
+            if (incoming.DeviceId.Contains("_PendingRequest", StringComparison.OrdinalIgnoreCase))
+            {
+                AddLog("PendingRequest DeviceIdを受信しました");
+                AddLog("これは接続要求Accept用なので通常PeerListには追加しません");
+                return;
+            }
+
+            for (int i = 0; i < PeerList.Items.Count; i++)
+            {
+                if (PeerList.Items[i] is not PeerInfo existing)
+                {
+                    continue;
+                }
+
+                if (!IsSamePeer(existing, incoming))
+                {
+                    continue;
+                }
+
+                MergePeer(existing, incoming);
+                PeerList.Items[i] = existing;
+                AddLog($"Peer統合: {existing.DisplayText}");
+                return;
+            }
+
+            PeerList.Items.Add(incoming);
+            AddLog($"Peer追加: {incoming.DisplayText}");
+        }
+
+        private static bool IsSamePeer(PeerInfo left, PeerInfo right)
+        {
+            if (!string.IsNullOrWhiteSpace(left.DeviceId) &&
+                string.Equals(left.DeviceId, right.DeviceId, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            return !string.IsNullOrWhiteSpace(left.DisplayName) &&
+                   !string.IsNullOrWhiteSpace(right.DisplayName) &&
+                   string.Equals(left.DisplayName, right.DisplayName, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static void MergePeer(PeerInfo target, PeerInfo source)
+        {
+            target.DiscoveredByBle |= source.DiscoveredByBle;
+            target.DiscoveredByWiFiDirect |= source.DiscoveredByWiFiDirect || !source.DiscoveredByBle;
+            target.IsConnected |= source.IsConnected;
+            target.IsTcpConnected |= source.IsTcpConnected;
+
+            if (string.IsNullOrWhiteSpace(target.DeviceId))
+            {
+                target.DeviceId = source.DeviceId;
+            }
+
+            if (string.IsNullOrWhiteSpace(target.RemoteIpAddress))
+            {
+                target.RemoteIpAddress = source.RemoteIpAddress;
+            }
+
+            if (string.IsNullOrWhiteSpace(target.IpAddress))
+            {
+                target.IpAddress = source.IpAddress;
+            }
+
+            if (target.TcpPort <= 0)
+            {
+                target.TcpPort = source.TcpPort;
+            }
+
+            if (string.IsNullOrWhiteSpace(target.ShortSessionId))
+            {
+                target.ShortSessionId = source.ShortSessionId;
+            }
+
+            if (!target.IsEnabled.HasValue)
+            {
+                target.IsEnabled = source.IsEnabled;
+            }
+
+            if (string.IsNullOrWhiteSpace(target.DeviceKind))
+            {
+                target.DeviceKind = source.DeviceKind;
+            }
+        }
+
         private void RefreshPeerDisplay(PeerInfo peer)
         {
             DispatcherQueue.TryEnqueue(() =>
@@ -308,17 +488,14 @@ namespace direct_module
                         continue;
                     }
 
-                    bool sameObject = ReferenceEquals(item, peer);
-                    bool sameDeviceId = !string.IsNullOrWhiteSpace(peer.DeviceId) &&
-                                        string.Equals(item.DeviceId, peer.DeviceId, StringComparison.OrdinalIgnoreCase);
-
-                    if (!sameObject && !sameDeviceId)
+                    if (!ReferenceEquals(item, peer) && !IsSamePeer(item, peer))
                     {
                         continue;
                     }
 
-                    PeerList.Items[i] = peer;
-                    AddLog($"Peer表示更新: {peer.DisplayText}");
+                    MergePeer(item, peer);
+                    PeerList.Items[i] = item;
+                    AddLog($"Peer表示更新: {item.DisplayText}");
                     return;
                 }
 

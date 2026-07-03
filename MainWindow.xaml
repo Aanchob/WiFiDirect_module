@@ -2,478 +2,227 @@
     x:Class="direct_module.MainWindow"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-    Title="Direct Module Chat Demo">
+    Title="Direct Module Chat">
 
-    <Window.SystemBackdrop>
-        <MicaBackdrop Kind="BaseAlt" />
-    </Window.SystemBackdrop>
+    <Grid Padding="18" RowSpacing="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="220" />
+        </Grid.RowDefinitions>
 
-    <Grid>
-        <Grid.Resources>
-            <SolidColorBrush x:Key="AppTextBrush" Color="#F3F7FA" />
-            <SolidColorBrush x:Key="MutedTextBrush" Color="#A9B7C2" />
-            <SolidColorBrush x:Key="SubtleTextBrush" Color="#748390" />
-            <SolidColorBrush x:Key="PanelBrush" Color="#CC111820" />
-            <SolidColorBrush x:Key="PanelSoftBrush" Color="#9918222C" />
-            <SolidColorBrush x:Key="InputBrush" Color="#DD151D26" />
-            <SolidColorBrush x:Key="StrokeBrush" Color="#334A5A66" />
-            <SolidColorBrush x:Key="AccentBrush" Color="#00D6FF" />
-            <SolidColorBrush x:Key="AccentSoftBrush" Color="#2A00D6FF" />
-            <SolidColorBrush x:Key="LimeBrush" Color="#B8FF6A" />
-            <SolidColorBrush x:Key="ChatIncomingBrush" Color="#E01B2632" />
+        <Grid Grid.Row="0" RowSpacing="8">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
 
-            <LinearGradientBrush x:Key="ChatOutgoingBrush" StartPoint="0,0" EndPoint="1,1">
-                <GradientStop Color="#FF00C7F2" Offset="0" />
-                <GradientStop Color="#FF3FF087" Offset="1" />
-            </LinearGradientBrush>
+            <Grid ColumnSpacing="8">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
 
-            <Style x:Key="SectionLabelStyle" TargetType="TextBlock">
-                <Setter Property="Foreground" Value="{StaticResource SubtleTextBrush}" />
-                <Setter Property="FontSize" Value="12" />
-                <Setter Property="FontWeight" Value="SemiBold" />
-            </Style>
+                <Button
+                    Grid.Column="0"
+                    Content="相手を探す"
+                    Click="SearchPeers_Click" />
 
-            <Style x:Key="TitleTextStyle" TargetType="TextBlock">
-                <Setter Property="Foreground" Value="{StaticResource AppTextBrush}" />
-                <Setter Property="FontSize" Value="18" />
-                <Setter Property="FontWeight" Value="SemiBold" />
-            </Style>
+                <Button
+                    Grid.Column="1"
+                    Content="接続"
+                    Click="ConnectSelected_Click" />
 
-            <Style TargetType="Button">
-                <Setter Property="MinHeight" Value="38" />
-                <Setter Property="Padding" Value="14,6" />
-                <Setter Property="CornerRadius" Value="10" />
-                <Setter Property="Foreground" Value="{StaticResource AppTextBrush}" />
-                <Setter Property="Background" Value="#221B2630" />
-                <Setter Property="BorderBrush" Value="{StaticResource StrokeBrush}" />
-                <Setter Property="BorderThickness" Value="1" />
-            </Style>
+                <Button
+                    Grid.Column="2"
+                    Content="TCP待ち受け開始"
+                    Click="StartTcpServer_Click" />
 
-            <Style TargetType="TextBox">
-                <Setter Property="Foreground" Value="{StaticResource AppTextBrush}" />
-                <Setter Property="Background" Value="{StaticResource InputBrush}" />
-                <Setter Property="BorderBrush" Value="{StaticResource StrokeBrush}" />
-                <Setter Property="BorderThickness" Value="1" />
-                <Setter Property="CornerRadius" Value="12" />
-                <Setter Property="Padding" Value="12,8" />
-            </Style>
+                <Button
+                    Grid.Column="3"
+                    Content="ログ消去"
+                    Click="ClearLog_Click" />
+            </Grid>
 
-            <Style TargetType="ListView">
-                <Setter Property="Background" Value="Transparent" />
-                <Setter Property="BorderBrush" Value="Transparent" />
-                <Setter Property="Padding" Value="0" />
-            </Style>
-        </Grid.Resources>
+            <Expander
+                Grid.Row="1"
+                Header="詳細操作 / 検証用">
+                <Grid ColumnSpacing="8" RowSpacing="8" Padding="0,8,0,0">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
 
-        <Grid.Background>
-            <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
-                <GradientStop Color="#FF0A0D12" Offset="0" />
-                <GradientStop Color="#FF0F151C" Offset="0.5" />
-                <GradientStop Color="#FF09120F" Offset="1" />
-            </LinearGradientBrush>
-        </Grid.Background>
+                    <Button
+                        Grid.Row="0"
+                        Grid.Column="0"
+                        Content="Wi-Fi Direct広告+待ち受け"
+                        Click="StartListener_Click" />
 
-        <Grid Padding="18" RowSpacing="12">
+                    <Button
+                        Grid.Row="0"
+                        Grid.Column="1"
+                        Content="AssociationEndpoint探索"
+                        Click="SearchButton_Click" />
+
+                    <Button
+                        Grid.Row="0"
+                        Grid.Column="2"
+                        Content="通常Wi-Fi Direct探索"
+                        Click="SearchDefaultButton_Click" />
+
+                    <Button
+                        Grid.Row="0"
+                        Grid.Column="3"
+                        Content="BLE広告開始"
+                        Click="StartBleAdvertise_Click" />
+
+                    <Button
+                        Grid.Row="0"
+                        Grid.Column="4"
+                        Content="BLEスキャン開始"
+                        Click="StartBleScan_Click" />
+
+                    <TextBlock
+                        Grid.Row="1"
+                        Grid.Column="0"
+                        VerticalAlignment="Center"
+                        Text="手入力IP" />
+
+                    <TextBox
+                        x:Name="TargetIpTextBox"
+                        Grid.Row="1"
+                        Grid.Column="1"
+                        Grid.ColumnSpan="2"
+                        PlaceholderText="例: 192.168.1.23" />
+
+                    <Button
+                        Grid.Row="1"
+                        Grid.Column="3"
+                        Content="送信"
+                        Click="SendTcpToSelected_Click" />
+
+                    <Button
+                        Grid.Row="1"
+                        Grid.Column="4"
+                        Content="ログ末尾へ"
+                        Click="ScrollLogBottom_Click" />
+                </Grid>
+            </Expander>
+        </Grid>
+
+        <Grid Grid.Row="1" ColumnSpacing="12">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="340" MinWidth="280" />
+                <ColumnDefinition Width="*" MinWidth="420" />
+            </Grid.ColumnDefinitions>
+
+            <Grid Grid.Column="0" RowSpacing="8">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+
+                <TextBlock
+                    Text="見つかった相手"
+                    FontSize="18"
+                    FontWeight="SemiBold" />
+
+                <ListView
+                    x:Name="PeerList"
+                    Grid.Row="1"
+                    SelectionMode="Single">
+                    <ListView.ItemTemplate>
+                        <DataTemplate>
+                            <TextBlock
+                                Margin="0,6"
+                                Text="{Binding DisplayText}"
+                                TextWrapping="Wrap" />
+                        </DataTemplate>
+                    </ListView.ItemTemplate>
+                </ListView>
+            </Grid>
+
+            <Grid Grid.Column="1" RowSpacing="8">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+
+                <TextBlock
+                    Text="チャット"
+                    FontSize="18"
+                    FontWeight="SemiBold" />
+
+                <ListView
+                    x:Name="MessageList"
+                    Grid.Row="1" />
+
+                <Grid Grid.Row="2" ColumnSpacing="8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+
+                    <TextBox
+                        x:Name="MessageTextBox"
+                        MinHeight="42"
+                        PlaceholderText="メッセージを入力"
+                        Text="Hello" />
+
+                    <Button
+                        x:Name="SendMessageButton"
+                        Grid.Column="1"
+                        MinWidth="100"
+                        Content="送信"
+                        Click="SendTcpToSelected_Click" />
+                </Grid>
+            </Grid>
+        </Grid>
+
+        <Grid Grid.Row="2" RowSpacing="6">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="*" />
-                <RowDefinition Height="220" />
             </Grid.RowDefinitions>
 
-            <Border
-                Grid.Row="0"
-                Background="{StaticResource PanelBrush}"
-                BorderBrush="{StaticResource StrokeBrush}"
-                BorderThickness="1"
-                CornerRadius="18"
-                Padding="14">
-                <Grid RowSpacing="10">
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto" />
-                        <RowDefinition Height="Auto" />
-                    </Grid.RowDefinitions>
-
-                    <Grid ColumnSpacing="12">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="Auto" />
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="Auto" />
-                        </Grid.ColumnDefinitions>
-
-                        <Border Width="46" Height="46" CornerRadius="14">
-                            <Border.Background>
-                                <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
-                                    <GradientStop Color="#FF00D6FF" Offset="0" />
-                                    <GradientStop Color="#FFB8FF6A" Offset="1" />
-                                </LinearGradientBrush>
-                            </Border.Background>
-                            <TextBlock
-                                HorizontalAlignment="Center"
-                                VerticalAlignment="Center"
-                                FontSize="18"
-                                FontWeight="Bold"
-                                Foreground="#FF071016"
-                                Text="P2P" />
-                        </Border>
-
-                        <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="2">
-                            <TextBlock Style="{StaticResource TitleTextStyle}" Text="Direct Module Chat Demo" />
-                            <TextBlock
-                                Foreground="{StaticResource MutedTextBrush}"
-                                FontSize="12"
-                                Text="BLE discovery / Wi-Fi Direct / TCP chat" />
-                        </StackPanel>
-
-                        <StackPanel Grid.Column="2" VerticalAlignment="Center" Orientation="Horizontal" Spacing="8">
-                            <TextBlock
-                                VerticalAlignment="Center"
-                                Foreground="{StaticResource MutedTextBrush}"
-                                FontSize="12"
-                                Text="Manual IP" />
-                            <TextBox
-                                x:Name="TargetIpTextBox"
-                                Width="190"
-                                PlaceholderText="192.168.1.23" />
-                        </StackPanel>
-                    </Grid>
-
-                    <Grid Grid.Row="1" ColumnSpacing="8" RowSpacing="8">
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="Auto" />
-                            <RowDefinition Height="Auto" />
-                        </Grid.RowDefinitions>
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="*" />
-                        </Grid.ColumnDefinitions>
-
-                        <Button
-                            Grid.Row="0"
-                            Grid.Column="0"
-                            Content="Wi-Fi Direct 広告 + 待受"
-                            Click="StartListener_Click" />
-                        <Button
-                            Grid.Row="0"
-                            Grid.Column="1"
-                            Content="AssociationEndpoint 探索"
-                            Click="SearchButton_Click" />
-                        <Button
-                            Grid.Row="0"
-                            Grid.Column="2"
-                            Content="通常 Wi-Fi Direct 探索"
-                            Click="SearchDefaultButton_Click" />
-                        <Button
-                            Grid.Row="0"
-                            Grid.Column="3"
-                            Content="BLE 広告開始"
-                            Click="StartBleAdvertise_Click" />
-                        <Button
-                            Grid.Row="0"
-                            Grid.Column="4"
-                            Content="BLE スキャン開始"
-                            Click="StartBleScan_Click" />
-
-                        <Button
-                            Grid.Row="1"
-                            Grid.Column="0"
-                            Content="選択Peerへ接続"
-                            Click="ConnectSelected_Click" />
-                        <Button
-                            Grid.Row="1"
-                            Grid.Column="1"
-                            Content="TCP 待受開始"
-                            Click="StartTcpServer_Click" />
-                        <Button
-                            Grid.Row="1"
-                            Grid.Column="2"
-                            Content="選択PeerへTCP送信"
-                            Click="SendTcpToSelected_Click" />
-                        <Button
-                            Grid.Row="1"
-                            Grid.Column="3"
-                            Content="ログ消去"
-                            Click="ClearLog_Click" />
-                        <Button
-                            Grid.Row="1"
-                            Grid.Column="4"
-                            Content="ログ末尾へ"
-                            Click="ScrollLogBottom_Click" />
-                    </Grid>
-                </Grid>
-            </Border>
-
-            <Grid Grid.Row="1" ColumnSpacing="12">
+            <Grid>
                 <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="330" MinWidth="280" />
-                    <ColumnDefinition Width="*" MinWidth="420" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
 
-                <Border
-                    Grid.Column="0"
-                    Background="{StaticResource PanelBrush}"
-                    BorderBrush="{StaticResource StrokeBrush}"
-                    BorderThickness="1"
-                    CornerRadius="18"
-                    Padding="14">
-                    <Grid RowSpacing="12">
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="Auto" />
-                            <RowDefinition Height="Auto" />
-                            <RowDefinition Height="*" />
-                        </Grid.RowDefinitions>
+                <TextBlock
+                    Text="通信ログ"
+                    FontSize="16"
+                    FontWeight="SemiBold" />
 
-                        <Grid>
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="Auto" />
-                            </Grid.ColumnDefinitions>
-                            <StackPanel Spacing="2">
-                                <TextBlock Style="{StaticResource TitleTextStyle}" Text="発見した相手" />
-                                <TextBlock
-                                    Foreground="{StaticResource MutedTextBrush}"
-                                    FontSize="12"
-                                    Text="BLE / Wi-Fi Direct で見つかったPeer" />
-                            </StackPanel>
-                            <Border
-                                Grid.Column="1"
-                                MinWidth="58"
-                                Height="28"
-                                VerticalAlignment="Center"
-                                Background="{StaticResource AccentSoftBrush}"
-                                BorderBrush="#6600D6FF"
-                                BorderThickness="1"
-                                CornerRadius="14"
-                                Padding="10,0">
-                                <TextBlock
-                                    HorizontalAlignment="Center"
-                                    VerticalAlignment="Center"
-                                    Foreground="{StaticResource AccentBrush}"
-                                    FontSize="12"
-                                    FontWeight="SemiBold"
-                                    Text="Peer" />
-                            </Border>
-                        </Grid>
-
-                        <TextBlock
-                            Grid.Row="1"
-                            Style="{StaticResource SectionLabelStyle}"
-                            Text="PEER LIST" />
-
-                        <ListView
-                            x:Name="PeerList"
-                            Grid.Row="2"
-                            SelectionMode="Single">
-                            <ListView.ItemTemplate>
-                                <DataTemplate>
-                                    <Border
-                                        Margin="0,4"
-                                        Padding="12"
-                                        Background="{StaticResource PanelSoftBrush}"
-                                        BorderBrush="{StaticResource StrokeBrush}"
-                                        BorderThickness="1"
-                                        CornerRadius="14">
-                                        <Grid ColumnSpacing="12">
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="Auto" />
-                                                <ColumnDefinition Width="*" />
-                                            </Grid.ColumnDefinitions>
-                                            <Grid Width="42" Height="42">
-                                                <Ellipse Fill="#FF1D303A" />
-                                                <TextBlock
-                                                    HorizontalAlignment="Center"
-                                                    VerticalAlignment="Center"
-                                                    FontSize="13"
-                                                    FontWeight="SemiBold"
-                                                    Foreground="{StaticResource AccentBrush}"
-                                                    Text="P" />
-                                                <Ellipse
-                                                    Width="10"
-                                                    Height="10"
-                                                    Margin="0,0,1,1"
-                                                    HorizontalAlignment="Right"
-                                                    VerticalAlignment="Bottom"
-                                                    Fill="{StaticResource LimeBrush}"
-                                                    Stroke="#FF101820"
-                                                    StrokeThickness="2" />
-                                            </Grid>
-                                            <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="3">
-                                                <TextBlock
-                                                    Foreground="{StaticResource AppTextBrush}"
-                                                    FontSize="14"
-                                                    FontWeight="SemiBold"
-                                                    Text="{Binding DisplayText}"
-                                                    TextTrimming="CharacterEllipsis" />
-                                                <TextBlock
-                                                    Foreground="{StaticResource MutedTextBrush}"
-                                                    FontSize="12"
-                                                    Text="Tap and connect with Wi-Fi Direct"
-                                                    TextTrimming="CharacterEllipsis" />
-                                            </StackPanel>
-                                        </Grid>
-                                    </Border>
-                                </DataTemplate>
-                            </ListView.ItemTemplate>
-                        </ListView>
-                    </Grid>
-                </Border>
-
-                <Border
+                <Button
                     Grid.Column="1"
-                    Background="{StaticResource PanelBrush}"
-                    BorderBrush="{StaticResource StrokeBrush}"
-                    BorderThickness="1"
-                    CornerRadius="18">
-                    <Grid RowSpacing="0">
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="Auto" />
-                            <RowDefinition Height="*" />
-                            <RowDefinition Height="Auto" />
-                        </Grid.RowDefinitions>
-
-                        <Border BorderBrush="{StaticResource StrokeBrush}" BorderThickness="0,0,0,1" Padding="18,16">
-                            <Grid>
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*" />
-                                    <ColumnDefinition Width="Auto" />
-                                </Grid.ColumnDefinitions>
-                                <StackPanel Spacing="2">
-                                    <TextBlock Style="{StaticResource TitleTextStyle}" Text="チャット" />
-                                    <TextBlock
-                                        Foreground="{StaticResource MutedTextBrush}"
-                                        FontSize="12"
-                                        Text="TCP送受信メッセージ" />
-                                </StackPanel>
-                                <Border
-                                    Grid.Column="1"
-                                    VerticalAlignment="Center"
-                                    Background="#2CB8FF6A"
-                                    BorderBrush="#55B8FF6A"
-                                    BorderThickness="1"
-                                    CornerRadius="14"
-                                    Padding="10,5">
-                                    <TextBlock
-                                        Foreground="{StaticResource LimeBrush}"
-                                        FontSize="12"
-                                        FontWeight="SemiBold"
-                                        Text="DEMO READY" />
-                                </Border>
-                            </Grid>
-                        </Border>
-
-                        <ListView
-                            x:Name="MessageList"
-                            Grid.Row="1"
-                            Padding="18,14">
-                            <ListView.ItemTemplate>
-                                <DataTemplate>
-                                    <Border
-                                        MaxWidth="760"
-                                        Margin="0,4"
-                                        Padding="13,10"
-                                        HorizontalAlignment="Left"
-                                        Background="{StaticResource ChatIncomingBrush}"
-                                        BorderBrush="{StaticResource StrokeBrush}"
-                                        BorderThickness="1"
-                                        CornerRadius="4,16,16,16">
-                                        <TextBlock
-                                            Foreground="{StaticResource AppTextBrush}"
-                                            FontSize="14"
-                                            Text="{Binding}"
-                                            TextWrapping="Wrap" />
-                                    </Border>
-                                </DataTemplate>
-                            </ListView.ItemTemplate>
-                        </ListView>
-
-                        <Border
-                            Grid.Row="2"
-                            BorderBrush="{StaticResource StrokeBrush}"
-                            BorderThickness="0,1,0,0"
-                            Padding="16">
-                            <Grid ColumnSpacing="10">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*" />
-                                    <ColumnDefinition Width="Auto" />
-                                </Grid.ColumnDefinitions>
-                                <TextBox
-                                    x:Name="MessageTextBox"
-                                    MinHeight="44"
-                                    VerticalAlignment="Center"
-                                    PlaceholderText="メッセージを入力"
-                                    Text="Hello" />
-                                <Button
-                                    x:Name="SendMessageButton"
-                                    Grid.Column="1"
-                                    MinWidth="104"
-                                    Height="44"
-                                    BorderBrush="#8800D6FF"
-                                    BorderThickness="1"
-                                    Click="SendTcpToSelected_Click">
-                                    <Button.Background>
-                                        <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
-                                            <GradientStop Color="#FF00D6FF" Offset="0" />
-                                            <GradientStop Color="#FFB8FF6A" Offset="1" />
-                                        </LinearGradientBrush>
-                                    </Button.Background>
-                                    <TextBlock
-                                        Foreground="#FF061016"
-                                        FontWeight="SemiBold"
-                                        Text="送信" />
-                                </Button>
-                            </Grid>
-                        </Border>
-                    </Grid>
-                </Border>
+                    Content="末尾へ"
+                    Click="ScrollLogBottom_Click" />
             </Grid>
 
-            <Border
-                Grid.Row="2"
-                Background="{StaticResource PanelBrush}"
-                BorderBrush="{StaticResource StrokeBrush}"
-                BorderThickness="1"
-                CornerRadius="18"
-                Padding="14">
-                <Grid RowSpacing="8">
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto" />
-                        <RowDefinition Height="*" />
-                    </Grid.RowDefinitions>
-
-                    <Grid>
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="Auto" />
-                        </Grid.ColumnDefinitions>
-                        <StackPanel Orientation="Horizontal" Spacing="8">
-                            <TextBlock Style="{StaticResource TitleTextStyle}" Text="通信ログ" />
-                            <TextBlock
-                                VerticalAlignment="Center"
-                                Foreground="{StaticResource MutedTextBrush}"
-                                FontSize="12"
-                                Text="コピー可能" />
-                        </StackPanel>
-                        <Button
-                            Grid.Column="1"
-                            MinWidth="100"
-                            Content="末尾へ"
-                            Click="ScrollLogBottom_Click" />
-                    </Grid>
-
-                    <TextBox
-                        x:Name="LogTextBox"
-                        Grid.Row="1"
-                        AcceptsReturn="True"
-                        FontFamily="Consolas"
-                        FontSize="12"
-                        IsReadOnly="True"
-                        ScrollViewer.HorizontalScrollBarVisibility="Auto"
-                        ScrollViewer.VerticalScrollBarVisibility="Auto"
-                        TextWrapping="NoWrap" />
-                </Grid>
-            </Border>
+            <TextBox
+                x:Name="LogTextBox"
+                Grid.Row="1"
+                AcceptsReturn="True"
+                FontFamily="Consolas"
+                FontSize="12"
+                IsReadOnly="True"
+                ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                ScrollViewer.VerticalScrollBarVisibility="Auto"
+                TextWrapping="NoWrap" />
         </Grid>
     </Grid>
 </Window>

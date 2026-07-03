@@ -134,6 +134,7 @@ namespace direct_module.WiFiDirect
                 DeviceKind = device.Kind.ToString(),
                 IsEnabled = device.IsEnabled,
                 DiscoveredByBle = false,
+                DiscoveredByWiFiDirect = true,
                 TcpPort = 0,
                 ShortSessionId = "",
                 IsConnected = false

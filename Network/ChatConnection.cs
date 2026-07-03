@@ -141,6 +141,7 @@ namespace direct_module.Network
             }
 
             _isReceiveLoopStarted = true;
+            LogReceived?.Invoke("Chat TCP受信ループ開始");
             _ = ReceiveLoopAsync();
         }
 
