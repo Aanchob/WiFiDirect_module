@@ -11,6 +11,7 @@ public class WiFiDirectListener
 
     public event Action<string>? LogReceived;
     public event Action<PeerInfo>? ConnectionRequested;
+    public event Action<PeerInfo, WiFiDirectConnectionRequest>? IncomingConnectionRequested;
 
     public bool IsStarted => _isStarted;
 
@@ -50,9 +51,11 @@ public class WiFiDirectListener
         WiFiDirectConnectionListener sender,
         WiFiDirectConnectionRequestedEventArgs args)
     {
+        WiFiDirectConnectionRequest? request = null;
+
         try
         {
-            using WiFiDirectConnectionRequest request = args.GetConnectionRequest();
+            request = args.GetConnectionRequest();
             var deviceInfo = request.DeviceInformation;
 
             LogReceived?.Invoke("接続要求を受信");
@@ -74,11 +77,25 @@ public class WiFiDirectListener
             };
 
             ConnectionRequested?.Invoke(peer);
+
+            if (IncomingConnectionRequested == null)
+            {
+                LogReceived?.Invoke("IncomingConnectionRequested購読なし: 接続要求を破棄します");
+                request.Dispose();
+                return;
+            }
+
+            // このrequestはaccept処理が終わるまで破棄しない。
+            // _PendingRequestのFromIdAsyncは、元のWiFiDirectConnectionRequestを保持した状態で行う。
+            IncomingConnectionRequested.Invoke(peer, request);
+            request = null;
         }
         catch (Exception ex)
         {
             LogReceived?.Invoke($"ConnectionRequested処理失敗: {ex.GetType().Name}");
+            LogReceived?.Invoke($"HResult: 0x{ex.HResult:X8}");
             LogReceived?.Invoke($"Message: {ex.Message}");
+            request?.Dispose();
         }
     }
 

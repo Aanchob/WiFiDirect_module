@@ -1,6 +1,7 @@
-﻿using System;
+using System;
 using System.Threading.Tasks;
 using direct_module.WiFiDirect.Models;
+using Windows.Devices.WiFiDirect;
 
 namespace direct_module.WiFiDirect
 {
@@ -25,6 +26,7 @@ namespace direct_module.WiFiDirect
 
             _listener.LogReceived += OnListenerLogReceived;
             _listener.ConnectionRequested += OnListenerConnectionRequested;
+            _listener.IncomingConnectionRequested += OnIncomingConnectionRequested;
 
             _advertiser.LogReceived += OnAdvertiserLogReceived;
 
@@ -45,16 +47,30 @@ namespace direct_module.WiFiDirect
             LogReceived?.Invoke(message);
         }
 
-        private async void OnListenerConnectionRequested(PeerInfo peer)
+        private void OnListenerConnectionRequested(PeerInfo peer)
         {
             ConnectionRequested?.Invoke(peer);
 
             LogReceived?.Invoke($"Manager: 接続要求を受信しました {peer.DisplayName}");
             LogReceived?.Invoke($"PendingRequest DeviceId: {peer.DeviceId}");
             LogReceived?.Invoke("これは接続要求Accept用なのでPeerListには追加しません");
+        }
+
+        private async void OnIncomingConnectionRequested(
+            PeerInfo peer,
+            WiFiDirectConnectionRequest request)
+        {
             LogReceived?.Invoke("受信側で接続要求をacceptします");
 
-            await _connector.AcceptIncomingConnectionAsync(peer);
+            try
+            {
+                await _connector.AcceptIncomingConnectionAsync(peer, request);
+            }
+            finally
+            {
+                request.Dispose();
+                LogReceived?.Invoke("Wi-Fi Direct接続要求Requestを破棄しました");
+            }
         }
 
         private void OnConnectorLogReceived(string message)

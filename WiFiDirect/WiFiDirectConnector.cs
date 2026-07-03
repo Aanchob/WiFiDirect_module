@@ -64,7 +64,9 @@ namespace direct_module.WiFiDirect
             }
         }
 
-        public async Task AcceptIncomingConnectionAsync(PeerInfo peer)
+        public async Task AcceptIncomingConnectionAsync(
+            PeerInfo peer,
+            WiFiDirectConnectionRequest request)
         {
             LogReceived?.Invoke("Wi-Fi Direct接続要求Accept開始");
             LogReceived?.Invoke($"Request Name: {peer.DisplayName}");
@@ -94,8 +96,11 @@ namespace direct_module.WiFiDirect
 
             try
             {
+                string requestDeviceId = request.DeviceInformation.Id;
+                LogReceived?.Invoke($"保持中Request DeviceId: {requestDeviceId}");
+
                 WiFiDirectDevice? device = await CreateDeviceFromIdAsync(
-                    peer.DeviceId,
+                    requestDeviceId,
                     "接続要求Accept FromIdAsync",
                     "Request");
 
