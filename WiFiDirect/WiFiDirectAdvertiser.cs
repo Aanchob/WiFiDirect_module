@@ -27,8 +27,8 @@ namespace direct_module.WiFiDirect
                 _publisher.StatusChanged += OnStatusChanged;
                 LogReceived?.Invoke("AdvertisementPublisher StatusChanged登録済み");
 
-                // 公式UWPサンプルのAdvertiserシナリオと同じく、まずは通常の発見可能状態で広告します。
-                // LegacySettingsやAutonomousGroupOwnerは環境差が大きいため、ここでは最小構成にします。
+                // 公式UWPサンプルのAdvertiserシナリオに近い最小構成で広告する。
+                // LegacySettingsやAutonomousGroupOwnerは環境差が大きいため、ここでは使わない。
                 _publisher.Advertisement.ListenStateDiscoverability =
                     WiFiDirectAdvertisementListenStateDiscoverability.Normal;
                 _publisher.Advertisement.IsAutonomousGroupOwnerEnabled = false;
