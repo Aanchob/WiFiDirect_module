@@ -51,9 +51,6 @@ namespace direct_module.Network
                 byte[] plainBytes = Encoding.UTF8.GetBytes(message);
                 byte[] sendBytes = _messageCrypto.Encrypt(plainBytes);
 
-                LogReceived?.Invoke($"平文Bytes: {plainBytes.Length}");
-                LogReceived?.Invoke($"送信Bytes: {sendBytes.Length}");
-
                 using var socket = new StreamSocket();
 
                 await socket.ConnectAsync(
@@ -61,14 +58,19 @@ namespace direct_module.Network
                     port.ToString()
                 );
 
-                using var writer = new DataWriter(socket.OutputStream);
+                using var writer = new DataWriter(socket.OutputStream)
+                {
+                    ByteOrder = ByteOrder.LittleEndian
+                };
 
+                writer.WriteInt32(sendBytes.Length);
                 writer.WriteBytes(sendBytes);
                 await writer.StoreAsync();
                 await writer.FlushAsync();
 
                 LogReceived?.Invoke($"TCP送信成功: {ipAddress}:{port}");
-                LogReceived?.Invoke($"送信内容: {message}");
+                LogReceived?.Invoke($"平文Bytes: {plainBytes.Length}");
+                LogReceived?.Invoke($"送信Bytes: {sendBytes.Length}");
             }
             catch (Exception ex)
             {
