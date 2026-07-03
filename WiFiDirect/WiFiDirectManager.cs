@@ -14,6 +14,7 @@ namespace direct_module.WiFiDirect
         public event Action<string>? LogReceived;
         public event Action<PeerInfo>? ConnectionRequested;
         public event Action<PeerInfo>? PeerFound;
+        public event Action<PeerInfo>? Connected;
 
         public WiFiDirectManager()
         {
@@ -62,6 +63,7 @@ namespace direct_module.WiFiDirect
         private void OnConnectorConnected(WiFiDirectSession session)
         {
             LogReceived?.Invoke($"Manager: 接続完了 {session.Peer.DisplayName}");
+            Connected?.Invoke(session.Peer);
         }
 
         private void OnScannerLogReceived(string message)

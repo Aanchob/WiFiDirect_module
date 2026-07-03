@@ -27,6 +27,7 @@ namespace direct_module
             _manager.LogReceived += OnLogReceived;
             _manager.ConnectionRequested += OnConnectionRequested;
             _manager.PeerFound += OnPeerFound;
+            _manager.Connected += OnWiFiDirectConnected;
 
             _discoveryManager.LogReceived += OnLogReceived;
             _discoveryManager.PeerFound += OnPeerFound;
@@ -80,7 +81,7 @@ namespace direct_module
 
         private async void StartTcpServer_Click(object sender, RoutedEventArgs e)
         {
-            await _tcpServer.StartAsync(LocalTcpPort);
+            await EnsureTcpServerStartedAsync("手動操作");
         }
 
         private async void SendTcpToSelected_Click(object sender, RoutedEventArgs e)
@@ -125,7 +126,7 @@ namespace direct_module
 
             AddLog($"接続開始: {peer.DisplayText}");
             await _manager.ConnectAsync(peer);
-            RefreshSelectedPeerDisplay(peer);
+            RefreshPeerDisplay(peer);
         }
 
         private void ClearLog_Click(object sender, RoutedEventArgs e)
@@ -163,6 +164,25 @@ namespace direct_module
             AddLog($"接続要求: {peer.DisplayName}");
         }
 
+        private async void OnWiFiDirectConnected(PeerInfo peer)
+        {
+            AddLog($"Wi-Fi Direct接続完了通知: {peer.DisplayText}");
+            RefreshPeerDisplay(peer);
+            await EnsureTcpServerStartedAsync("Wi-Fi Direct接続完了");
+        }
+
+        private async System.Threading.Tasks.Task EnsureTcpServerStartedAsync(string reason)
+        {
+            if (_tcpServer.IsStarted)
+            {
+                AddLog($"TCP待ち受け確認: すでに開始済み ({reason})");
+                return;
+            }
+
+            AddLog($"TCP待ち受け自動開始: Port={LocalTcpPort}, Reason={reason}");
+            await _tcpServer.StartAsync(LocalTcpPort);
+        }
+
         private string ResolveTcpDestinationIp(PeerInfo peer)
         {
             if (!string.IsNullOrWhiteSpace(peer.RemoteIpAddress))
@@ -182,20 +202,30 @@ namespace direct_module
             return string.Empty;
         }
 
-        private void RefreshSelectedPeerDisplay(PeerInfo peer)
+        private void RefreshPeerDisplay(PeerInfo peer)
         {
             DispatcherQueue.TryEnqueue(() =>
             {
-                int selectedIndex = PeerList.SelectedIndex;
-
-                if (selectedIndex < 0)
+                for (int i = 0; i < PeerList.Items.Count; i++)
                 {
+                    if (PeerList.Items[i] is not PeerInfo item)
+                    {
+                        continue;
+                    }
+
+                    bool sameObject = ReferenceEquals(item, peer);
+                    bool sameDeviceId = !string.IsNullOrWhiteSpace(peer.DeviceId) &&
+                                        string.Equals(item.DeviceId, peer.DeviceId, StringComparison.OrdinalIgnoreCase);
+
+                    if (!sameObject && !sameDeviceId)
+                    {
+                        continue;
+                    }
+
+                    PeerList.Items[i] = peer;
+                    AddLog($"Peer表示更新: {peer.DisplayText}");
                     return;
                 }
-
-                PeerList.Items[selectedIndex] = peer;
-                PeerList.SelectedIndex = selectedIndex;
-                AddLog($"Peer表示更新: {peer.DisplayText}");
             });
         }
 

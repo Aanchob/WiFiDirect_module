@@ -12,6 +12,8 @@ namespace direct_module.Network
         public event Action<string>? LogReceived;
         public event Action<string>? MessageReceived;
 
+        public bool IsStarted => _listener != null;
+
         public async Task StartAsync(int port)
         {
             if (_listener != null)
