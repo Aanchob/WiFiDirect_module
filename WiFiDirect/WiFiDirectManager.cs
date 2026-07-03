@@ -45,14 +45,14 @@ namespace direct_module.WiFiDirect
             LogReceived?.Invoke(message);
         }
 
-        private async void OnListenerConnectionRequested(PeerInfo peer)
+        private void OnListenerConnectionRequested(PeerInfo peer)
         {
             PeerFound?.Invoke(peer);
             ConnectionRequested?.Invoke(peer);
 
-            LogReceived?.Invoke($"Manager: 接続要求元へ接続します {peer.DisplayName}");
-
-            await ConnectAsync(peer);
+            LogReceived?.Invoke($"Manager: 接続要求を受信しました {peer.DisplayName}");
+            LogReceived?.Invoke("受信側では自動FromIdAsyncしません。接続開始は探索側だけが行います。");
+            LogReceived?.Invoke($"PendingRequest DeviceId: {peer.DeviceId}");
         }
 
         private void OnConnectorLogReceived(string message)

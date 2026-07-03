@@ -50,12 +50,14 @@ namespace direct_module
         private async void SearchButton_Click(object sender, RoutedEventArgs e)
         {
             AddLog("AssociationEndpoint探索ボタンを押しました");
+            ClearStaleWiFiDirectPeers();
             await _manager.StartAssociationEndpointScanAsync();
         }
 
         private async void SearchDefaultButton_Click(object sender, RoutedEventArgs e)
         {
             AddLog("通常Wi-Fi Direct探索ボタンを押しました");
+            ClearStaleWiFiDirectPeers();
             await _manager.StartDefaultScanAsync();
         }
 
@@ -124,6 +126,13 @@ namespace direct_module
                 return;
             }
 
+            if (peer.DeviceId.Contains("_PendingRequest", StringComparison.OrdinalIgnoreCase))
+            {
+                AddLog("PendingRequest付きDeviceIdのため、この候補では接続しません");
+                AddLog("探索後に追加された通常のWi-Fi Direct候補を選択してください");
+                return;
+            }
+
             AddLog($"接続開始: {peer.DisplayText}");
             await _manager.ConnectAsync(peer);
             RefreshPeerDisplay(peer);
@@ -145,6 +154,11 @@ namespace direct_module
             {
                 PeerList.Items.Add(peer);
                 AddLog($"Peer追加: {peer.DisplayText}");
+
+                if (peer.DeviceId.Contains("_PendingRequest", StringComparison.OrdinalIgnoreCase))
+                {
+                    AddLog("注意: PendingRequest付きDeviceIdです。この候補では通常接続しません。");
+                }
             });
 
             if (peer.DiscoveredByBle)
@@ -200,6 +214,32 @@ namespace direct_module
             }
 
             return string.Empty;
+        }
+
+        private void ClearStaleWiFiDirectPeers()
+        {
+            DispatcherQueue.TryEnqueue(() =>
+            {
+                int removed = 0;
+
+                for (int i = PeerList.Items.Count - 1; i >= 0; i--)
+                {
+                    if (PeerList.Items[i] is not PeerInfo peer)
+                    {
+                        continue;
+                    }
+
+                    if (peer.DiscoveredByBle || peer.IsConnected)
+                    {
+                        continue;
+                    }
+
+                    PeerList.Items.RemoveAt(i);
+                    removed++;
+                }
+
+                AddLog($"古いWi-Fi Direct候補を削除: {removed}件");
+            });
         }
 
         private void RefreshPeerDisplay(PeerInfo peer)
