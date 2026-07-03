@@ -34,7 +34,7 @@ namespace direct_module
             _tcpServer.LogReceived += OnLogReceived;
             _tcpServer.MessageReceived += message =>
             {
-                AddLog($"受信メッセージ: {message}");
+                AddLog($"TCP受信メッセージ: {message}");
             };
 
             _tcpClient.LogReceived += OnLogReceived;
@@ -91,26 +91,28 @@ namespace direct_module
                 return;
             }
 
-            string ipAddress = TargetIpTextBox.Text.Trim();
+            string ipAddress = ResolveTcpDestinationIp(peer);
 
             if (string.IsNullOrWhiteSpace(ipAddress))
             {
-                AddLog("相手のIPアドレスを入力してください");
+                AddLog("送信先IPがありません");
                 return;
             }
 
-            if (peer.TcpPort <= 0)
+            string message = MessageTextBox.Text.Trim();
+
+            if (string.IsNullOrWhiteSpace(message))
             {
-                AddLog("相手のTCPポート番号が不正です");
-                return;
+                message = $"Hello from {Environment.MachineName}";
             }
 
-            string message = $"Hello from {Environment.MachineName}";
-
-            AddLog($"TCP送信開始: {ipAddress}:{peer.TcpPort}");
+            AddLog("TCP送信開始");
+            AddLog($"送信先IP: {ipAddress}");
+            AddLog($"送信先Port: {LocalTcpPort}");
+            AddLog($"送信内容: {message}");
             AddLog($"送信先Peer: {peer.DisplayText}");
 
-            await _tcpClient.SendAsync(ipAddress, peer.TcpPort, message);
+            await _tcpClient.SendAsync(ipAddress, LocalTcpPort, message);
         }
 
         private async void ConnectSelected_Click(object sender, RoutedEventArgs e)
@@ -123,6 +125,7 @@ namespace direct_module
 
             AddLog($"接続開始: {peer.DisplayText}");
             await _manager.ConnectAsync(peer);
+            RefreshSelectedPeerDisplay(peer);
         }
 
         private void ClearLog_Click(object sender, RoutedEventArgs e)
@@ -158,6 +161,42 @@ namespace direct_module
         private void OnConnectionRequested(PeerInfo peer)
         {
             AddLog($"接続要求: {peer.DisplayName}");
+        }
+
+        private string ResolveTcpDestinationIp(PeerInfo peer)
+        {
+            if (!string.IsNullOrWhiteSpace(peer.RemoteIpAddress))
+            {
+                AddLog($"TCP送信先: PeerInfo.RemoteIpAddress を使用 {peer.RemoteIpAddress}");
+                return peer.RemoteIpAddress;
+            }
+
+            string manualIp = TargetIpTextBox.Text.Trim();
+
+            if (!string.IsNullOrWhiteSpace(manualIp))
+            {
+                AddLog($"TCP送信先: 手入力IPを使用 {manualIp}");
+                return manualIp;
+            }
+
+            return string.Empty;
+        }
+
+        private void RefreshSelectedPeerDisplay(PeerInfo peer)
+        {
+            DispatcherQueue.TryEnqueue(() =>
+            {
+                int selectedIndex = PeerList.SelectedIndex;
+
+                if (selectedIndex < 0)
+                {
+                    return;
+                }
+
+                PeerList.Items[selectedIndex] = peer;
+                PeerList.SelectedIndex = selectedIndex;
+                AddLog($"Peer表示更新: {peer.DisplayText}");
+            });
         }
 
         private void AddLog(string message)

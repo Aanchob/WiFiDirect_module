@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Threading.Tasks;
 using Windows.Networking;
 using Windows.Networking.Sockets;
@@ -14,19 +14,24 @@ namespace direct_module.Network
         {
             if (string.IsNullOrWhiteSpace(ipAddress))
             {
-                LogReceived?.Invoke("TCP送信失敗: IPアドレスが空です");
+                LogReceived?.Invoke("TCP送信失敗");
+                LogReceived?.Invoke("Message: IPアドレスが空です");
                 return;
             }
 
             if (port <= 0)
             {
-                LogReceived?.Invoke("TCP送信失敗: ポート番号が不正です");
+                LogReceived?.Invoke("TCP送信失敗");
+                LogReceived?.Invoke("Message: ポート番号が不正です");
                 return;
             }
 
             try
             {
-                LogReceived?.Invoke($"TCP接続開始: {ipAddress}:{port}");
+                LogReceived?.Invoke("TCP送信開始");
+                LogReceived?.Invoke($"送信先IP: {ipAddress}");
+                LogReceived?.Invoke($"送信先Port: {port}");
+                LogReceived?.Invoke($"送信内容: {message}");
 
                 using var socket = new StreamSocket();
 
@@ -41,11 +46,14 @@ namespace direct_module.Network
                 await writer.StoreAsync();
                 await writer.FlushAsync();
 
-                LogReceived?.Invoke($"TCP送信完了: {message}");
+                LogReceived?.Invoke($"TCP送信成功: {ipAddress}:{port}");
+                LogReceived?.Invoke($"送信内容: {message}");
             }
             catch (Exception ex)
             {
-                LogReceived?.Invoke($"TCP送信失敗: {ex.Message}");
+                LogReceived?.Invoke("TCP送信失敗");
+                LogReceived?.Invoke($"例外名: {ex.GetType().Name}");
+                LogReceived?.Invoke($"Message: {ex.Message}");
             }
         }
     }

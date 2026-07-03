@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Threading.Tasks;
 using Windows.Networking.Sockets;
 using Windows.Storage.Streams;
@@ -20,12 +20,21 @@ namespace direct_module.Network
                 return;
             }
 
-            _listener = new StreamSocketListener();
-            _listener.ConnectionReceived += OnConnectionReceived;
+            try
+            {
+                _listener = new StreamSocketListener();
+                _listener.ConnectionReceived += OnConnectionReceived;
 
-            await _listener.BindServiceNameAsync(port.ToString());
+                await _listener.BindServiceNameAsync(port.ToString());
 
-            LogReceived?.Invoke($"TCPサーバー待ち受け開始: Port={port}");
+                LogReceived?.Invoke($"TCPサーバー待ち受け開始: Port={port}");
+            }
+            catch (Exception ex)
+            {
+                LogReceived?.Invoke("TCPサーバー待ち受け開始失敗");
+                LogReceived?.Invoke($"例外名: {ex.GetType().Name}");
+                LogReceived?.Invoke($"Message: {ex.Message}");
+            }
         }
 
         public void Stop()
@@ -48,6 +57,8 @@ namespace direct_module.Network
             StreamSocketListenerConnectionReceivedEventArgs args)
         {
             LogReceived?.Invoke("TCP接続を受信");
+            LogReceived?.Invoke($"RemoteAddress: {args.Socket.Information.RemoteAddress?.DisplayName}");
+            LogReceived?.Invoke($"RemotePort: {args.Socket.Information.RemotePort}");
 
             try
             {
@@ -71,7 +82,9 @@ namespace direct_module.Network
             }
             catch (Exception ex)
             {
-                LogReceived?.Invoke($"TCP受信エラー: {ex.Message}");
+                LogReceived?.Invoke("TCP受信エラー");
+                LogReceived?.Invoke($"例外名: {ex.GetType().Name}");
+                LogReceived?.Invoke($"Message: {ex.Message}");
             }
         }
     }

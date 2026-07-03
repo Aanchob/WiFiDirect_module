@@ -84,7 +84,7 @@
                 Click="ClearLog_Click"/>
         </Grid>
 
-        <!-- PeerList + IP入力 -->
+        <!-- PeerList + TCP入力 -->
         <Grid
             Grid.Row="1"
             RowSpacing="8">
@@ -101,13 +101,26 @@
                 Spacing="8">
 
                 <TextBlock
-                    Text="相手のIPアドレス"
+                    Text="手入力IP"
                     VerticalAlignment="Center"/>
 
                 <TextBox
                     x:Name="TargetIpTextBox"
-                    Width="220"
+                    Width="180"
                     PlaceholderText="例: 192.168.1.23"/>
+
+                <TextBlock
+                    Text="メッセージ"
+                    VerticalAlignment="Center"/>
+
+                <TextBox
+                    x:Name="MessageTextBox"
+                    Width="260"
+                    Text="Hello"/>
+
+                <Button
+                    Content="送信"
+                    Click="SendTcpToSelected_Click"/>
             </StackPanel>
 
             <TextBlock

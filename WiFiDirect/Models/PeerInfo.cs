@@ -26,6 +26,8 @@ public class PeerInfo
 
     public string IpAddress { get; set; } = "";
 
+    public string RemoteIpAddress { get; set; } = "";
+
     public bool? IsEnabled { get; set; }
 
     public string DeviceKind { get; set; } = "";
@@ -44,7 +46,11 @@ public class PeerInfo
                 ? $" / ID:{ShortSessionId}"
                 : "";
 
-            string ipText = !string.IsNullOrWhiteSpace(IpAddress)
+            string remoteIpText = !string.IsNullOrWhiteSpace(RemoteIpAddress)
+                ? $" / IP:{RemoteIpAddress}"
+                : "";
+
+            string ipText = string.IsNullOrWhiteSpace(RemoteIpAddress) && !string.IsNullOrWhiteSpace(IpAddress)
                 ? $" / IP:{IpAddress}"
                 : "";
 
@@ -60,7 +66,7 @@ public class PeerInfo
                 ? $" / Kind:{DeviceKind}"
                 : "";
 
-            return $"[{SourceText}] {DisplayName}{deviceIdText}{enabledText}{kindText}{portText}{sessionText}{ipText}";
+            return $"[{SourceText}] {DisplayName}{remoteIpText}{deviceIdText}{enabledText}{kindText}{portText}{sessionText}{ipText}";
         }
     }
 }

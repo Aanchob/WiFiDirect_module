@@ -18,7 +18,7 @@ namespace direct_module.WiFiDirect
 
             if (string.IsNullOrWhiteSpace(peer.DeviceId))
             {
-                LogReceived?.Invoke("接続失敗: DeviceId が空です");
+                LogReceived?.Invoke("Wi-Fi Direct接続失敗: DeviceId が空です");
                 return;
             }
 
@@ -31,7 +31,7 @@ namespace direct_module.WiFiDirect
                 if (device == null)
                 {
                     LogReceived?.Invoke("FromIdAsync結果: null");
-                    LogReceived?.Invoke("接続失敗: WiFiDirectDevice を作成できませんでした");
+                    LogReceived?.Invoke("Wi-Fi Direct接続失敗: WiFiDirectDevice を作成できませんでした");
                     return;
                 }
 
@@ -39,15 +39,22 @@ namespace direct_module.WiFiDirect
 
                 var endpoints = device.GetConnectionEndpointPairs();
 
+                LogReceived?.Invoke("Wi-Fi Direct接続成功");
                 LogReceived?.Invoke($"Endpoint数: {endpoints.Count}");
 
                 foreach (var endpoint in endpoints)
                 {
                     LogReceived?.Invoke("---- Wi-Fi Direct Endpoint ----");
-                    LogReceived?.Invoke($"LocalHostName: {endpoint.LocalHostName}");
+                    LogReceived?.Invoke($"LocalHostName: {endpoint.LocalHostName.DisplayName}");
                     LogReceived?.Invoke($"LocalServiceName: {endpoint.LocalServiceName}");
-                    LogReceived?.Invoke($"RemoteHostName: {endpoint.RemoteHostName}");
+                    LogReceived?.Invoke($"RemoteHostName: {endpoint.RemoteHostName.DisplayName}");
                     LogReceived?.Invoke($"RemoteServiceName: {endpoint.RemoteServiceName}");
+
+                    if (string.IsNullOrWhiteSpace(peer.RemoteIpAddress))
+                    {
+                        peer.RemoteIpAddress = endpoint.RemoteHostName.DisplayName;
+                        LogReceived?.Invoke($"Wi-Fi Direct RemoteIpAddress保存: {peer.RemoteIpAddress}");
+                    }
                 }
 
                 peer.IsConnected = true;
@@ -57,7 +64,8 @@ namespace direct_module.WiFiDirect
             }
             catch (Exception ex)
             {
-                LogReceived?.Invoke($"Wi-Fi Direct接続失敗: {ex.GetType().Name}");
+                LogReceived?.Invoke("Wi-Fi Direct接続失敗");
+                LogReceived?.Invoke($"例外名: {ex.GetType().Name}");
                 LogReceived?.Invoke($"Message: {ex.Message}");
             }
         }
