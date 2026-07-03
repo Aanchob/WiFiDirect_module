@@ -4,20 +4,20 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
 
     <Grid Padding="20" RowSpacing="12">
-
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
             <RowDefinition Height="240"/>
         </Grid.RowDefinitions>
 
-        <!-- 上：操作エリア -->
+        <!-- 操作エリア -->
         <Grid
             Grid.Row="0"
             RowSpacing="8"
             ColumnSpacing="8">
 
             <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="Auto"/>
             </Grid.RowDefinitions>
@@ -29,7 +29,6 @@
                 <ColumnDefinition Width="*"/>
             </Grid.ColumnDefinitions>
 
-            <!-- 1段目：Discovery / Wi-Fi Direct -->
             <Button
                 Grid.Row="0"
                 Grid.Column="0"
@@ -39,48 +38,53 @@
             <Button
                 Grid.Row="0"
                 Grid.Column="1"
-                Content="Wi-Fi Direct探索開始"
+                Content="AssociationEndpoint探索"
                 Click="SearchButton_Click"/>
 
             <Button
                 Grid.Row="0"
                 Grid.Column="2"
-                Content="BLE広告開始"
-                Click="StartBleAdvertise_Click"/>
+                Content="通常Wi-Fi Direct探索"
+                Click="SearchDefaultButton_Click"/>
 
             <Button
                 Grid.Row="0"
                 Grid.Column="3"
-                Content="BLEスキャン開始"
-                Click="StartBleScan_Click"/>
+                Content="BLE広告開始"
+                Click="StartBleAdvertise_Click"/>
 
-            <!-- 2段目：接続 / TCP / ログ -->
             <Button
                 Grid.Row="1"
                 Grid.Column="0"
+                Content="BLEスキャン開始"
+                Click="StartBleScan_Click"/>
+
+            <Button
+                Grid.Row="1"
+                Grid.Column="1"
                 Content="選択した相手に接続"
                 Click="ConnectSelected_Click"/>
 
             <Button
                 Grid.Row="1"
-                Grid.Column="1"
+                Grid.Column="2"
                 Content="TCP待ち受け開始"
                 Click="StartTcpServer_Click"/>
 
             <Button
                 Grid.Row="1"
-                Grid.Column="2"
+                Grid.Column="3"
                 Content="選択した相手にTCP送信"
                 Click="SendTcpToSelected_Click"/>
 
             <Button
-                Grid.Row="1"
-                Grid.Column="3"
+                Grid.Row="2"
+                Grid.Column="0"
                 Content="ログ消去"
                 Click="ClearLog_Click"/>
         </Grid>
 
-        <!-- 中央：PeerList + IP入力 -->
+        <!-- PeerList + IP入力 -->
         <Grid
             Grid.Row="1"
             RowSpacing="8">
@@ -122,7 +126,7 @@
             </ListView>
         </Grid>
 
-        <!-- 下：ログ -->
+        <!-- ログ -->
         <Border
             Grid.Row="2"
             BorderThickness="1"
@@ -145,24 +149,19 @@
                         VerticalAlignment="Center"/>
 
                     <Button
-                        Content="最新へ"
+                        Content="末尾へ"
                         Click="ScrollLogBottom_Click"/>
                 </StackPanel>
 
-                <ScrollViewer
-    x:Name="LogScrollViewer"
-    Grid.Row="1"
-    VerticalScrollBarVisibility="Auto"
-    HorizontalScrollBarVisibility="Auto">
-
-                    <TextBox
-        x:Name="LogTextBox"
-        IsReadOnly="True"
-        AcceptsReturn="True"
-        TextWrapping="NoWrap"/>
-                </ScrollViewer>
+                <TextBox
+                    x:Name="LogTextBox"
+                    Grid.Row="1"
+                    IsReadOnly="True"
+                    AcceptsReturn="True"
+                    TextWrapping="NoWrap"
+                    ScrollViewer.VerticalScrollBarVisibility="Auto"
+                    ScrollViewer.HorizontalScrollBarVisibility="Auto"/>
             </Grid>
         </Border>
-
     </Grid>
 </Window>

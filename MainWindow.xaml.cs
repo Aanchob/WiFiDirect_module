@@ -43,13 +43,19 @@ namespace direct_module
         private void StartListener_Click(object sender, RoutedEventArgs e)
         {
             _manager.Start();
-
-            AddLog("待ち受け開始ボタンを押しました");
+            AddLog("Wi-Fi Direct待ち受け開始ボタンを押しました");
         }
 
         private async void SearchButton_Click(object sender, RoutedEventArgs e)
         {
-            await _manager.StartScanAsync();
+            AddLog("AssociationEndpoint探索ボタンを押しました");
+            await _manager.StartAssociationEndpointScanAsync();
+        }
+
+        private async void SearchDefaultButton_Click(object sender, RoutedEventArgs e)
+        {
+            AddLog("通常Wi-Fi Direct探索ボタンを押しました");
+            await _manager.StartDefaultScanAsync();
         }
 
         private void StartBleAdvertise_Click(object sender, RoutedEventArgs e)
@@ -116,22 +122,17 @@ namespace direct_module
             }
 
             AddLog($"接続開始: {peer.DisplayText}");
-
             await _manager.ConnectAsync(peer);
         }
 
         private void ClearLog_Click(object sender, RoutedEventArgs e)
         {
-            LogTextBox.Text = "";
+            LogTextBox.Text = string.Empty;
         }
 
         private void ScrollLogBottom_Click(object sender, RoutedEventArgs e)
         {
-            LogScrollViewer.ChangeView(
-                null,
-                LogScrollViewer.ScrollableHeight,
-                null
-            );
+            MoveLogCaretToEnd();
         }
 
         private async void OnPeerFound(PeerInfo peer)
@@ -139,15 +140,13 @@ namespace direct_module
             DispatcherQueue.TryEnqueue(() =>
             {
                 PeerList.Items.Add(peer);
-
                 AddLog($"Peer追加: {peer.DisplayText}");
             });
 
             if (peer.DiscoveredByBle)
             {
-                AddLog("BLEで相手を発見したため、Wi-Fi Direct探索を開始します");
-
-                await _manager.StartScanAsync();
+                AddLog("BLEで相手を発見したため、AssociationEndpoint探索を開始します");
+                await _manager.StartAssociationEndpointScanAsync();
             }
         }
 
@@ -169,16 +168,13 @@ namespace direct_module
                 string log = $"[{time}] {message}";
 
                 LogTextBox.Text += log + Environment.NewLine;
-
-
-                LogScrollViewer.ChangeView(
-                    null,
-                    LogScrollViewer.ScrollableHeight,
-                    null
-                );
+                MoveLogCaretToEnd();
             });
         }
 
-
+        private void MoveLogCaretToEnd()
+        {
+            LogTextBox.Select(LogTextBox.Text.Length, 0);
+        }
     }
 }

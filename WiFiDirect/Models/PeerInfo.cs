@@ -26,6 +26,10 @@ public class PeerInfo
 
     public string IpAddress { get; set; } = "";
 
+    public bool? IsEnabled { get; set; }
+
+    public string DeviceKind { get; set; } = "";
+
     public string SourceText => DiscoveredByBle ? "BLE" : "Wi-Fi Direct";
 
     public string DisplayText
@@ -44,7 +48,19 @@ public class PeerInfo
                 ? $" / IP:{IpAddress}"
                 : "";
 
-            return $"[{SourceText}] {DisplayName}{portText}{sessionText}{ipText}";
+            string deviceIdText = !string.IsNullOrWhiteSpace(DeviceId)
+                ? " / DeviceId:あり"
+                : " / DeviceId:なし";
+
+            string enabledText = IsEnabled.HasValue
+                ? $" / IsEnabled:{IsEnabled.Value}"
+                : "";
+
+            string kindText = !string.IsNullOrWhiteSpace(DeviceKind)
+                ? $" / Kind:{DeviceKind}"
+                : "";
+
+            return $"[{SourceText}] {DisplayName}{deviceIdText}{enabledText}{kindText}{portText}{sessionText}{ipText}";
         }
     }
 }

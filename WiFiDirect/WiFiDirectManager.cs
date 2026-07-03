@@ -37,6 +37,7 @@ namespace direct_module.WiFiDirect
 
         private async void OnListenerConnectionRequested(PeerInfo peer)
         {
+            PeerFound?.Invoke(peer);
             ConnectionRequested?.Invoke(peer);
 
             LogReceived?.Invoke($"Manager: 接続要求元へ接続します {peer.DisplayName}");
@@ -69,7 +70,11 @@ namespace direct_module.WiFiDirect
             _listener.Start();
         }
 
-        public async Task StartScanAsync() => await _scanner.StartAsync();
+        public async Task StartScanAsync() => await _scanner.StartAssociationEndpointAsync();
+
+        public async Task StartDefaultScanAsync() => await _scanner.StartDefaultAsync();
+
+        public async Task StartAssociationEndpointScanAsync() => await _scanner.StartAssociationEndpointAsync();
 
         public void StopScan()
         {
