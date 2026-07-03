@@ -7,6 +7,7 @@ namespace direct_module.WiFiDirect
     public class WiFiDirectManager
     {
         private readonly WiFiDirectListener _listener;
+        private readonly WiFiDirectAdvertiser _advertiser;
         private readonly WiFiDirectConnector _connector;
         private readonly WiFiDirectScanner _scanner;
 
@@ -17,11 +18,14 @@ namespace direct_module.WiFiDirect
         public WiFiDirectManager()
         {
             _listener = new WiFiDirectListener();
+            _advertiser = new WiFiDirectAdvertiser();
             _connector = new WiFiDirectConnector();
             _scanner = new WiFiDirectScanner();
 
             _listener.LogReceived += OnListenerLogReceived;
             _listener.ConnectionRequested += OnListenerConnectionRequested;
+
+            _advertiser.LogReceived += OnAdvertiserLogReceived;
 
             _connector.LogReceived += OnConnectorLogReceived;
             _connector.Connected += OnConnectorConnected;
@@ -31,6 +35,11 @@ namespace direct_module.WiFiDirect
         }
 
         private void OnListenerLogReceived(string message)
+        {
+            LogReceived?.Invoke(message);
+        }
+
+        private void OnAdvertiserLogReceived(string message)
         {
             LogReceived?.Invoke(message);
         }
@@ -67,7 +76,9 @@ namespace direct_module.WiFiDirect
 
         public void Start()
         {
+            LogReceived?.Invoke("Manager: Wi-Fi Direct Listener + Advertisement 起動開始");
             _listener.Start();
+            _advertiser.Start(listenerRegistered: _listener.IsStarted);
         }
 
         public async Task StartScanAsync() => await _scanner.StartAssociationEndpointAsync();

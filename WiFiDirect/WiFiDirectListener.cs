@@ -12,6 +12,8 @@ public class WiFiDirectListener
     public event Action<string>? LogReceived;
     public event Action<PeerInfo>? ConnectionRequested;
 
+    public bool IsStarted => _isStarted;
+
     public WiFiDirectListener()
     {
         _listener = new WiFiDirectConnectionListener();

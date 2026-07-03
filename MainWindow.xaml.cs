@@ -43,7 +43,7 @@ namespace direct_module
         private void StartListener_Click(object sender, RoutedEventArgs e)
         {
             _manager.Start();
-            AddLog("Wi-Fi Direct待ち受け開始ボタンを押しました");
+            AddLog("Wi-Fi Direct広告+待ち受け開始ボタンを押しました");
         }
 
         private async void SearchButton_Click(object sender, RoutedEventArgs e)

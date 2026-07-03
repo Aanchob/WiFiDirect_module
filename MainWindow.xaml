@@ -32,7 +32,7 @@
             <Button
                 Grid.Row="0"
                 Grid.Column="0"
-                Content="待ち受け開始"
+                Content="Wi-Fi Direct広告+待ち受け"
                 Click="StartListener_Click"/>
 
             <Button
