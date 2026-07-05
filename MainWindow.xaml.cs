@@ -4,20 +4,33 @@ using direct_module.WiFiDirect;
 using direct_module.WiFiDirect.Models;
 using Microsoft.UI.Xaml;
 using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Linq;
 using Windows.Networking.Sockets;
 
 namespace direct_module
 {
+    public enum LogLevel
+    {
+        Info,
+        Success,
+        Debug,
+        Error
+    }
+
     public sealed partial class MainWindow : Window
     {
         private readonly DiscoveryManager _discoveryManager;
         private readonly WiFiDirectManager _manager;
         private readonly TcpServer _tcpServer = new();
+        private readonly List<string> _logLines = new();
         private ChatConnection? _chatConnection;
         private bool _isPreparingChatTcp;
 
         private readonly Guid _localSessionId = Guid.NewGuid();
         private const int LocalTcpPort = 50001;
+        private const int MaxLogLines = 500;
 
         public MainWindow()
         {
@@ -109,41 +122,69 @@ namespace direct_module
 
         private async void SendTcpToSelected_Click(object sender, RoutedEventArgs e)
         {
-            string ipAddress = ResolveTcpDestinationIp();
+            var totalWatch = Stopwatch.StartNew();
+            SendMessageButton.IsEnabled = false;
 
-            if (string.IsNullOrWhiteSpace(ipAddress))
+            try
             {
-                AddLog("送信先IPがありません");
-                return;
+                AddLog("SendMessage_Click開始");
+
+                var stepWatch = Stopwatch.StartNew();
+                string message = MessageTextBox.Text.Trim();
+                if (string.IsNullOrWhiteSpace(message))
+                {
+                    message = $"Hello from {Environment.MachineName}";
+                }
+                AddLog($"入力メッセージ取得完了: {stepWatch.ElapsedMilliseconds}ms");
+
+                stepWatch.Restart();
+                string ipAddress = ResolveTcpDestinationIp();
+                AddLog($"選択Peer/IP取得完了: {stepWatch.ElapsedMilliseconds}ms");
+                AddLog($"Peer RemoteIpAddress: {ipAddress}");
+
+                if (string.IsNullOrWhiteSpace(ipAddress))
+                {
+                    AddLog("送信先IPがありません");
+                    return;
+                }
+
+                ChatConnection chatConnection = GetOrCreateChatConnection();
+                AddLog($"ChatConnection接続状態: {chatConnection.IsConnected}");
+
+                if (!chatConnection.IsConnected)
+                {
+                    AddLog("SendAsync内でConnectが必要か: True");
+                    AddLog("Chat TCP未接続のため接続します");
+                    await chatConnection.ConnectAsync(ipAddress, LocalTcpPort);
+                    MarkSelectedPeerTcpState(chatConnection.IsConnected);
+                }
+                else
+                {
+                    AddLog("SendAsync内でConnectが必要か: False");
+                    AddLog("Chat TCP接続済みなので再利用");
+                }
+
+                if (!chatConnection.IsConnected)
+                {
+                    AddLog("Chat TCPが未接続のため送信を中止します");
+                    return;
+                }
+
+                stepWatch.Restart();
+                AddLog("ChatConnection.SendAsync呼び出し開始");
+                await chatConnection.SendAsync(message);
+                AddLog($"ChatConnection.SendAsync呼び出し完了: {stepWatch.ElapsedMilliseconds}ms");
+
+                stepWatch.Restart();
+                AddLog("MessageList自分表示開始");
+                AddChatMessage($"自分: {message}");
+                AddLog($"MessageList自分表示完了: {stepWatch.ElapsedMilliseconds}ms");
             }
-
-            string message = MessageTextBox.Text.Trim();
-
-            if (string.IsNullOrWhiteSpace(message))
+            finally
             {
-                message = $"Hello from {Environment.MachineName}";
+                SendMessageButton.IsEnabled = true;
+                AddLog($"SendMessage_Click完了 合計: {totalWatch.ElapsedMilliseconds}ms");
             }
-
-            ChatConnection chatConnection = GetOrCreateChatConnection();
-
-            if (!chatConnection.IsConnected)
-            {
-                await chatConnection.ConnectAsync(ipAddress, LocalTcpPort);
-                MarkSelectedPeerTcpState(chatConnection.IsConnected);
-            }
-            else
-            {
-                AddLog("Chat TCP接続済みなので再利用");
-            }
-
-            if (!chatConnection.IsConnected)
-            {
-                AddLog("Chat TCPが未接続のため送信を中止します");
-                return;
-            }
-
-            await chatConnection.SendAsync(message);
-            AddChatMessage($"自分: {message}");
         }
 
         private async void ConnectSelected_Click(object sender, RoutedEventArgs e)
@@ -173,6 +214,7 @@ namespace direct_module
 
         private void ClearLog_Click(object sender, RoutedEventArgs e)
         {
+            _logLines.Clear();
             LogTextBox.Text = string.Empty;
         }
 
@@ -197,7 +239,7 @@ namespace direct_module
 
         private void OnLogReceived(string message)
         {
-            AddLog(message);
+            AddLog(message, ClassifyLogMessage(message));
         }
 
         private void OnConnectionRequested(PeerInfo peer)
@@ -518,16 +560,160 @@ namespace direct_module
             });
         }
 
-        private void AddLog(string message)
+        private void AddLog(string message, LogLevel level = LogLevel.Info)
         {
             DispatcherQueue.TryEnqueue(() =>
             {
-                string time = DateTime.Now.ToString("HH:mm:ss.fff");
-                string log = $"[{time}] {message}";
+                LogLevel effectiveLevel = level == LogLevel.Info
+                    ? ClassifyLogMessage(message)
+                    : level;
 
-                LogTextBox.Text += log + Environment.NewLine;
+                if (effectiveLevel == LogLevel.Debug && ShowDebugLogCheckBox?.IsChecked != true)
+                {
+                    return;
+                }
+
+                string time = DateTime.Now.ToString("HH:mm:ss.fff");
+                string log = $"[{time}] [{effectiveLevel}] {message}";
+
+                _logLines.Add(log);
+
+                if (_logLines.Count > MaxLogLines)
+                {
+                    int removeCount = _logLines.Count - MaxLogLines;
+                    _logLines.RemoveRange(0, removeCount);
+                }
+
+                LogTextBox.Text = string.Join(Environment.NewLine, _logLines) + Environment.NewLine;
                 MoveLogCaretToEnd();
             });
+        }
+
+        private static LogLevel ClassifyLogMessage(string message)
+        {
+            if (IsErrorLogMessage(message))
+            {
+                return LogLevel.Error;
+            }
+
+            if (IsDebugLogMessage(message))
+            {
+                return LogLevel.Debug;
+            }
+
+            if (IsSuccessLogMessage(message))
+            {
+                return LogLevel.Success;
+            }
+
+            return LogLevel.Info;
+        }
+
+        private static bool IsDebugLogMessage(string message)
+        {
+            string[] debugKeywords =
+            {
+                "Selector:",
+                "Watcher Status",
+                "Added",
+                "Updated",
+                "Removed",
+                "EnumerationCompleted",
+                "Stopped",
+                "Kind:",
+                "IsEnabled:",
+                "InformationElements.Count",
+                "LegacySettings.IsEnabled",
+                "ListenStateDiscoverability",
+                "LocalServiceName",
+                "RemoteServiceName",
+                "Socket.",
+                "Socket作成",
+                "DataWriter",
+                "DataReader",
+                "WriteUInt32",
+                "WriteBytes",
+                "StoreAsync",
+                "FlushAsync",
+                "平文Bytes",
+                "暗号化後Bytes",
+                "送信Bytes",
+                "送信フレームBytes",
+                "受信Bytes",
+                "復号後Bytes",
+                "length読み取り",
+                "本文読み取り",
+                "受信予定Bytes",
+                "Decrypt",
+                "MessageCrypto",
+                "SendMessage_Click",
+                "入力メッセージ",
+                "選択Peer/IP",
+                "ChatConnection接続状態",
+                "SendAsync内でConnect",
+                "MessageList",
+                "Local IP:",
+                "Local SessionId:",
+                "Local TCP Port:",
+                "蟷ｳ譁③ytes",
+                "證怜捷蛹門ｾ沓ytes",
+                "騾∽ｿ｡Bytes",
+                "騾∽ｿ｡繝輔Ξ繝ｼ繝Bytes",
+                "length隱ｭ縺ｿ蜿悶ｊ",
+                "譛ｬ譁・ｪｭ縺ｿ蜿悶ｊ"
+            };
+
+            return debugKeywords.Any(keyword =>
+                message.Contains(keyword, StringComparison.OrdinalIgnoreCase));
+        }
+
+        private static bool IsErrorLogMessage(string message)
+        {
+            string[] errorKeywords =
+            {
+                "失敗",
+                "エラー",
+                "例外",
+                "Exception",
+                "HResult",
+                "Message:",
+                "不正",
+                "切断",
+                "中止",
+                "ありません",
+                "読み取り不足",
+                "本文不足",
+                "螟ｱ謨・",
+                "繧ｨ繝ｩ繝ｼ",
+                "萓句､・",
+                "荳肴ｭ｣",
+                "蛻・妙"
+            };
+
+            return errorKeywords.Any(keyword =>
+                message.Contains(keyword, StringComparison.OrdinalIgnoreCase));
+        }
+
+        private static bool IsSuccessLogMessage(string message)
+        {
+            string[] successKeywords =
+            {
+                "成功",
+                "完了",
+                "接続済み",
+                "送信成功",
+                "受信",
+                "RemoteIpAddress保存",
+                "謌仙粥",
+                "螳御ｺ・",
+                "謗･邯壽ｸ医∩",
+                "騾∽ｿ｡謌仙粥",
+                "蜿嶺ｿ｡",
+                "RemoteIpAddress菫晏ｭ・"
+            };
+
+            return successKeywords.Any(keyword =>
+                message.Contains(keyword, StringComparison.OrdinalIgnoreCase));
         }
 
         private void MoveLogCaretToEnd()

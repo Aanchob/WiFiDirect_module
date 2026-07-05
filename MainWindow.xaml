@@ -207,6 +207,14 @@
                     FontSize="16"
                     FontWeight="SemiBold" />
 
+                <CheckBox
+                    x:Name="ShowDebugLogCheckBox"
+                    Grid.Column="1"
+                    Margin="0,0,92,0"
+                    VerticalAlignment="Center"
+                    Content="詳細ログ"
+                    IsChecked="False" />
+
                 <Button
                     Grid.Column="1"
                     Content="末尾へ"

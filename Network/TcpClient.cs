@@ -63,7 +63,7 @@ namespace direct_module.Network
                     ByteOrder = ByteOrder.LittleEndian
                 };
 
-                writer.WriteInt32(sendBytes.Length);
+                writer.WriteUInt32((uint)sendBytes.Length);
                 writer.WriteBytes(sendBytes);
                 await writer.StoreAsync();
                 await writer.FlushAsync();
@@ -71,6 +71,7 @@ namespace direct_module.Network
                 LogReceived?.Invoke($"TCP送信成功: {ipAddress}:{port}");
                 LogReceived?.Invoke($"平文Bytes: {plainBytes.Length}");
                 LogReceived?.Invoke($"送信Bytes: {sendBytes.Length}");
+                LogReceived?.Invoke($"送信フレームBytes: {sizeof(uint) + sendBytes.Length}");
             }
             catch (Exception ex)
             {
