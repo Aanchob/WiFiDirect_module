@@ -32,7 +32,7 @@ namespace direct_module.Network
                 await _listener.BindServiceNameAsync(port.ToString());
 
                 LogReceived?.Invoke($"TCPサーバー待ち受け開始: Port={port}");
-                LogReceived?.Invoke("Chat TCP接続待機中");
+                LogReceived?.Invoke("Chat TCP複数接続待機中");
             }
             catch (Exception ex)
             {
@@ -66,7 +66,6 @@ namespace direct_module.Network
             LogReceived?.Invoke($"RemoteAddress: {args.Socket.Information.RemoteAddress?.DisplayName}");
             LogReceived?.Invoke($"RemotePort: {args.Socket.Information.RemotePort}");
             LogReceived?.Invoke("Chat TCP受信側Connection作成");
-            LogReceived?.Invoke("Chat TCP ReceiveLoop開始要求");
 
             ConnectionAccepted?.Invoke(args.Socket);
         }

@@ -2,6 +2,7 @@ using direct_module.Crypto;
 using System;
 using System.Diagnostics;
 using System.Text;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Windows.Networking;
@@ -32,11 +33,17 @@ namespace direct_module.Network
             _messageCrypto = messageCrypto;
         }
 
-        public event Action<string>? LogReceived;
-        public event Action<string>? MessageReceived;
-        public event Action? Closed;
+        public string PeerId { get; set; } = "";
+
+        public string PeerName { get; set; } = "";
+
+        public string RemoteIpAddress { get; set; } = "";
 
         public bool IsConnected => _isConnected;
+
+        public event Action<ChatMessage, ChatConnection>? MessageReceived;
+        public event Action<string>? LogReceived;
+        public event Action<ChatConnection>? Disconnected;
 
         public async Task ConnectAsync(string ipAddress, int port)
         {
@@ -53,13 +60,6 @@ namespace direct_module.Network
                 return;
             }
 
-            if (port <= 0)
-            {
-                LogReceived?.Invoke("Chat TCPエラー");
-                LogReceived?.Invoke("Message: ポート番号が不正です");
-                return;
-            }
-
             var totalWatch = Stopwatch.StartNew();
 
             try
@@ -71,6 +71,7 @@ namespace direct_module.Network
                 var socket = new StreamSocket();
                 await socket.ConnectAsync(new HostName(ipAddress), port.ToString());
 
+                RemoteIpAddress = ipAddress;
                 AttachSocket(socket);
 
                 LogReceived?.Invoke("Chat TCP接続成功");
@@ -87,25 +88,42 @@ namespace direct_module.Network
 
         public void AttachAcceptedSocket(StreamSocket socket)
         {
-            var totalWatch = Stopwatch.StartNew();
-
             Close();
+
+            RemoteIpAddress = socket.Information.RemoteAddress?.DisplayName ?? "";
+            PeerId = string.IsNullOrWhiteSpace(PeerId)
+                ? $"{RemoteIpAddress}:{socket.Information.RemotePort}"
+                : PeerId;
+            PeerName = string.IsNullOrWhiteSpace(PeerName)
+                ? RemoteIpAddress
+                : PeerName;
+
             AttachSocket(socket);
 
             LogReceived?.Invoke("Chat TCP接続成功");
             LogReceived?.Invoke("Chat TCP受信側socketを保持しました");
-            LogReceived?.Invoke($"MessageCrypto: {_messageCrypto.GetType().Name}");
-            LogReceived?.Invoke($"Chat TCP受信Connection作成完了: {totalWatch.ElapsedMilliseconds}ms");
+            LogReceived?.Invoke($"RemoteAddress: {RemoteIpAddress}");
             StartReceiveLoop();
         }
 
         public async Task SendAsync(string message)
         {
+            var chatMessage = new ChatMessage
+            {
+                Body = message
+            };
+
+            await SendAsync(chatMessage);
+        }
+
+        public async Task SendAsync(ChatMessage message)
+        {
             var totalWatch = Stopwatch.StartNew();
 
             LogReceived?.Invoke("Chat TCP送信開始");
-            LogReceived?.Invoke($"送信内容: {message}");
-            LogReceived?.Invoke($"接続状態: IsConnected={_isConnected}");
+            LogReceived?.Invoke($"MessageId: {message.MessageId}");
+            LogReceived?.Invoke($"SenderName: {message.SenderName}");
+            LogReceived?.Invoke($"送信内容: {message.Body}");
 
             if (!_isConnected || _writer == null)
             {
@@ -118,7 +136,8 @@ namespace direct_module.Network
 
             try
             {
-                byte[] plainBytes = Encoding.UTF8.GetBytes(message);
+                string json = JsonSerializer.Serialize(message);
+                byte[] plainBytes = Encoding.UTF8.GetBytes(json);
                 byte[] encryptedBytes = _messageCrypto.Encrypt(plainBytes);
 
                 _writer.WriteUInt32((uint)encryptedBytes.Length);
@@ -143,12 +162,7 @@ namespace direct_module.Network
 
         public void StartReceiveLoop()
         {
-            if (!_isConnected || _reader == null)
-            {
-                return;
-            }
-
-            if (_isReceiveLoopStarted)
+            if (!_isConnected || _reader == null || _isReceiveLoopStarted)
             {
                 return;
             }
@@ -194,12 +208,30 @@ namespace direct_module.Network
                     _reader.ReadBytes(encryptedBytes);
 
                     byte[] plainBytes = _messageCrypto.Decrypt(encryptedBytes);
-                    string message = Encoding.UTF8.GetString(plainBytes);
+                    string json = Encoding.UTF8.GetString(plainBytes);
+                    ChatMessage? message = JsonSerializer.Deserialize<ChatMessage>(json);
+
+                    if (message == null)
+                    {
+                        LogReceived?.Invoke("Chat TCP受信失敗: JSONをChatMessageに変換できません");
+                        continue;
+                    }
+
+                    if (string.IsNullOrWhiteSpace(PeerName) && !string.IsNullOrWhiteSpace(message.SenderName))
+                    {
+                        PeerName = message.SenderName;
+                    }
+
+                    if (string.IsNullOrWhiteSpace(PeerId) && !string.IsNullOrWhiteSpace(message.SenderId))
+                    {
+                        PeerId = message.SenderId;
+                    }
 
                     LogReceived?.Invoke("Chat TCP受信");
-                    LogReceived?.Invoke($"受信Bytes: {encryptedBytes.Length}");
-                    LogReceived?.Invoke($"TCP受信: {message}");
-                    MessageReceived?.Invoke(message);
+                    LogReceived?.Invoke($"MessageId: {message.MessageId}");
+                    LogReceived?.Invoke($"SenderName: {message.SenderName}");
+                    LogReceived?.Invoke($"TCP受信: {message.Body}");
+                    MessageReceived?.Invoke(message, this);
                 }
             }
             catch (Exception ex)
@@ -234,7 +266,7 @@ namespace direct_module.Network
             if (wasConnected)
             {
                 LogReceived?.Invoke("Chat TCP切断");
-                Closed?.Invoke();
+                Disconnected?.Invoke(this);
             }
         }
 
