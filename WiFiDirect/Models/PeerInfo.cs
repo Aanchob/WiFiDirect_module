@@ -10,6 +10,12 @@ public class PeerInfo
 
     public bool DiscoveredByWiFiDirect { get; set; }
 
+    public string BleName { get; set; } = "";
+
+    public string WiFiDirectName { get; set; } = "";
+
+    public string MatchKey { get; set; } = "";
+
     public string ShortSessionId { get; set; } = "";
 
     public int TcpPort { get; set; }
@@ -59,17 +65,20 @@ public class PeerInfo
             string remoteIpText = !string.IsNullOrWhiteSpace(RemoteIpAddress)
                 ? $" / RemoteIp:{RemoteIpAddress}"
                 : "";
-            string ipText = string.IsNullOrWhiteSpace(RemoteIpAddress) && !string.IsNullOrWhiteSpace(IpAddress)
-                ? $" / IP:{IpAddress}"
-                : "";
-            string portText = TcpPort > 0 ? $" / Port:{TcpPort}" : "";
             string sessionText = !string.IsNullOrWhiteSpace(ShortSessionId)
-                ? $" / ID:{ShortSessionId}"
+                ? $" / ShortSessionId:{ShortSessionId}"
                 : "";
-            string enabledText = IsEnabled.HasValue ? $" / IsEnabled:{IsEnabled.Value}" : "";
-            string kindText = !string.IsNullOrWhiteSpace(DeviceKind) ? $" / Kind:{DeviceKind}" : "";
+            string bleNameText = !string.IsNullOrWhiteSpace(BleName)
+                ? $" / BLE名:{BleName}"
+                : "";
+            string wifiNameText = !string.IsNullOrWhiteSpace(WiFiDirectName)
+                ? $" / Wi-Fi名:{WiFiDirectName}"
+                : "";
+            string kindText = !string.IsNullOrWhiteSpace(DeviceKind)
+                ? $" / Kind:{DeviceKind}"
+                : "";
 
-            return $"{DisplayName} / {SourceText} / {bleText} / {wifiText} / {tcpText} / {statusText}{remoteIpText}{ipText}{portText}{sessionText}{enabledText}{kindText}";
+            return $"{DisplayName} / {SourceText} / {bleText} / {wifiText} / {tcpText} / {statusText}{remoteIpText}{sessionText}{bleNameText}{wifiNameText}{kindText}";
         }
     }
 }

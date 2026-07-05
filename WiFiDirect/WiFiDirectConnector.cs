@@ -1,6 +1,6 @@
+using direct_module.WiFiDirect.Models;
 using System;
 using System.Threading.Tasks;
-using direct_module.WiFiDirect.Models;
 using Windows.Devices.WiFiDirect;
 
 namespace direct_module.WiFiDirect
@@ -36,7 +36,7 @@ namespace direct_module.WiFiDirect
             if (IsPendingRequestDeviceId(peer.DeviceId))
             {
                 LogReceived?.Invoke("_PendingRequest付きDeviceIdのため通常接続を中止します");
-                LogReceived?.Invoke("このDeviceIdは受信要求accept専用です");
+                LogReceived?.Invoke("このDeviceIdは受信要求Accept専用です");
                 return;
             }
 

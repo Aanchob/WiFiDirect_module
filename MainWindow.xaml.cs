@@ -21,16 +21,17 @@ namespace direct_module
 
     public sealed partial class MainWindow : Window
     {
+        private const int LocalTcpPort = 50001;
+        private const int MaxLogLines = 500;
+
         private readonly DiscoveryManager _discoveryManager;
         private readonly WiFiDirectManager _manager;
         private readonly TcpServer _tcpServer = new();
         private readonly List<string> _logLines = new();
+        private readonly Guid _localSessionId = Guid.NewGuid();
+
         private ChatConnection? _chatConnection;
         private bool _isPreparingChatTcp;
-
-        private readonly Guid _localSessionId = Guid.NewGuid();
-        private const int LocalTcpPort = 50001;
-        private const int MaxLogLines = 500;
 
         public MainWindow()
         {
@@ -51,19 +52,21 @@ namespace direct_module
             _tcpServer.ConnectionAccepted += OnTcpConnectionAccepted;
         }
 
+        private string GetLocalShortSessionId()
+        {
+            return _localSessionId.ToString("N")[..4];
+        }
+
         private async void SearchPeers_Click(object sender, RoutedEventArgs e)
         {
             AddLog("相手探索開始");
-            AddLog("Wi-Fi Direct広告+待ち受け開始");
-            _manager.Start();
+            AddLog($"Local ShortSessionId: {GetLocalShortSessionId()}");
 
-            AddLog("BLE広告開始");
+            _manager.Start(Environment.MachineName, GetLocalShortSessionId());
+
             StartBleAdvertiseCore();
-
-            AddLog("BLEスキャン開始");
             _discoveryManager.StartScan();
 
-            AddLog("AssociationEndpoint探索開始");
             ClearStaleWiFiDirectPeers();
             await _manager.StartAssociationEndpointScanAsync();
 
@@ -72,7 +75,7 @@ namespace direct_module
 
         private void StartListener_Click(object sender, RoutedEventArgs e)
         {
-            _manager.Start();
+            _manager.Start(Environment.MachineName, GetLocalShortSessionId());
             AddLog("Wi-Fi Direct広告+待ち受け開始ボタンを押しました");
         }
 
@@ -102,11 +105,11 @@ namespace direct_module
             _discoveryManager.StartAdvertise(
                 Environment.MachineName,
                 _localSessionId,
-                LocalTcpPort
-            );
+                LocalTcpPort);
 
             AddLog($"Local IP: {localIp}");
             AddLog($"Local SessionId: {_localSessionId}");
+            AddLog($"Local ShortSessionId: {GetLocalShortSessionId()}");
             AddLog($"Local TCP Port: {LocalTcpPort}");
         }
 
@@ -120,70 +123,52 @@ namespace direct_module
             await EnsureTcpServerStartedAsync("手動操作");
         }
 
-        private async void SendTcpToSelected_Click(object sender, RoutedEventArgs e)
+        private async void SendMessage_Click(object sender, RoutedEventArgs e)
         {
             var totalWatch = Stopwatch.StartNew();
             SendMessageButton.IsEnabled = false;
 
             try
             {
-                AddLog("SendMessage_Click開始");
-
-                var stepWatch = Stopwatch.StartNew();
                 string message = MessageTextBox.Text.Trim();
                 if (string.IsNullOrWhiteSpace(message))
                 {
                     message = $"Hello from {Environment.MachineName}";
                 }
-                AddLog($"入力メッセージ取得完了: {stepWatch.ElapsedMilliseconds}ms");
 
-                stepWatch.Restart();
                 string ipAddress = ResolveTcpDestinationIp();
-                AddLog($"選択Peer/IP取得完了: {stepWatch.ElapsedMilliseconds}ms");
-                AddLog($"Peer RemoteIpAddress: {ipAddress}");
-
                 if (string.IsNullOrWhiteSpace(ipAddress))
                 {
-                    AddLog("送信先IPがありません");
+                    AddLog("送信先RemoteIpAddressがありません。先にWi-Fi Direct接続してください。", LogLevel.Error);
                     return;
                 }
 
                 ChatConnection chatConnection = GetOrCreateChatConnection();
-                AddLog($"ChatConnection接続状態: {chatConnection.IsConnected}");
 
                 if (!chatConnection.IsConnected)
                 {
-                    AddLog("SendAsync内でConnectが必要か: True");
                     AddLog("Chat TCP未接続のため接続します");
                     await chatConnection.ConnectAsync(ipAddress, LocalTcpPort);
                     MarkSelectedPeerTcpState(chatConnection.IsConnected);
                 }
                 else
                 {
-                    AddLog("SendAsync内でConnectが必要か: False");
                     AddLog("Chat TCP接続済みなので再利用");
                 }
 
                 if (!chatConnection.IsConnected)
                 {
-                    AddLog("Chat TCPが未接続のため送信を中止します");
+                    AddLog("Chat TCPが未接続のため送信を中止します", LogLevel.Error);
                     return;
                 }
 
-                stepWatch.Restart();
-                AddLog("ChatConnection.SendAsync呼び出し開始");
                 await chatConnection.SendAsync(message);
-                AddLog($"ChatConnection.SendAsync呼び出し完了: {stepWatch.ElapsedMilliseconds}ms");
-
-                stepWatch.Restart();
-                AddLog("MessageList自分表示開始");
                 AddChatMessage($"自分: {message}");
-                AddLog($"MessageList自分表示完了: {stepWatch.ElapsedMilliseconds}ms");
+                AddLog($"SendMessage_Click完了 合計: {totalWatch.ElapsedMilliseconds}ms", LogLevel.Debug);
             }
             finally
             {
                 SendMessageButton.IsEnabled = true;
-                AddLog($"SendMessage_Click完了 合計: {totalWatch.ElapsedMilliseconds}ms");
             }
         }
 
@@ -191,19 +176,19 @@ namespace direct_module
         {
             if (PeerList.SelectedItem is not PeerInfo peer)
             {
-                AddLog("接続する相手を選択してください");
+                AddLog("接続する相手を選択してください", LogLevel.Error);
                 return;
             }
 
             if (peer.DeviceId.Contains("_PendingRequest", StringComparison.OrdinalIgnoreCase))
             {
-                AddLog("_PendingRequest付きDeviceIdのため通常接続を中止します");
+                AddLog("_PendingRequest付きDeviceIdのため通常接続を中止します", LogLevel.Error);
                 return;
             }
 
             if (string.IsNullOrWhiteSpace(peer.DeviceId))
             {
-                AddLog("選択中PeerにWi-Fi Direct DeviceIdがありません");
+                AddLog("選択中PeerにWi-Fi Direct DeviceIdがありません", LogLevel.Error);
                 return;
             }
 
@@ -232,27 +217,35 @@ namespace direct_module
 
             if (peer.DiscoveredByBle)
             {
-                AddLog("BLEで相手を発見したため、AssociationEndpoint探索を開始します");
                 await _manager.StartAssociationEndpointScanAsync();
             }
         }
 
         private void OnLogReceived(string message)
         {
-            AddLog(message, ClassifyLogMessage(message));
+            DispatcherQueue.TryEnqueue(() =>
+            {
+                AddLog(message, ClassifyLogMessage(message));
+            });
         }
 
         private void OnConnectionRequested(PeerInfo peer)
         {
-            AddLog($"接続要求: {peer.DisplayName}");
+            DispatcherQueue.TryEnqueue(() =>
+            {
+                AddLog($"接続要求: {peer.DisplayName}");
+            });
         }
 
-        private async void OnWiFiDirectConnected(PeerInfo peer)
+        private void OnWiFiDirectConnected(PeerInfo peer)
         {
-            AddLog($"Wi-Fi Direct接続完了通知: {peer.DisplayText}");
-            RefreshPeerDisplay(peer);
-            await EnsureTcpServerStartedAsync("Wi-Fi Direct接続完了");
-            await PrepareChatTcpConnectionAsync(peer);
+            DispatcherQueue.TryEnqueue(async () =>
+            {
+                AddLog($"Wi-Fi Direct接続完了通知: {peer.DisplayText}", LogLevel.Success);
+                AddOrMergePeer(peer);
+                await EnsureTcpServerStartedAsync("Wi-Fi Direct接続完了");
+                await PrepareChatTcpConnectionAsync(peer);
+            });
         }
 
         private void OnTcpConnectionAccepted(StreamSocket socket)
@@ -261,15 +254,45 @@ namespace direct_module
             {
                 if (_chatConnection?.IsConnected == true)
                 {
-                    AddLog("既存のChat TCP接続があるため、後から来たTCP接続は閉じます");
+                    AddLog("既存のChat TCP接続があるため、後から来たTCP接続を閉じます");
                     socket.Dispose();
                     return;
                 }
 
-                AddLog("Chat TCP受信側接続を保持します");
-                ReplaceChatConnection(new ChatConnection());
-                _chatConnection?.AttachAcceptedSocket(socket);
+                ChatConnection chatConnection = GetOrCreateChatConnection();
+                chatConnection.AttachAcceptedSocket(socket);
                 MarkSelectedPeerTcpState(true);
+            });
+        }
+
+        private ChatConnection GetOrCreateChatConnection()
+        {
+            if (_chatConnection != null)
+            {
+                return _chatConnection;
+            }
+
+            _chatConnection = new ChatConnection();
+            _chatConnection.LogReceived += OnLogReceived;
+            _chatConnection.MessageReceived += OnChatMessageReceived;
+            _chatConnection.Closed += OnChatConnectionClosed;
+            return _chatConnection;
+        }
+
+        private void OnChatMessageReceived(string message)
+        {
+            DispatcherQueue.TryEnqueue(() =>
+            {
+                AddChatMessage($"相手: {message}");
+                AddLog($"TCP受信メッセージ: {message}", LogLevel.Success);
+            });
+        }
+
+        private void OnChatConnectionClosed()
+        {
+            DispatcherQueue.TryEnqueue(() =>
+            {
+                MarkSelectedPeerTcpState(false);
             });
         }
 
@@ -277,21 +300,20 @@ namespace direct_module
         {
             if (_isPreparingChatTcp)
             {
-                AddLog("Chat TCP事前接続はすでに処理中です");
+                AddLog("Chat TCP接続準備中のためスキップします", LogLevel.Debug);
                 return;
             }
 
             if (string.IsNullOrWhiteSpace(peer.RemoteIpAddress))
             {
-                AddLog("Chat TCP事前接続をスキップ: RemoteIpAddressがありません");
+                AddLog("RemoteIpAddressがないためChat TCP自動接続をスキップします");
                 return;
             }
 
             ChatConnection chatConnection = GetOrCreateChatConnection();
-
             if (chatConnection.IsConnected)
             {
-                AddLog("Chat TCP事前接続済みなので再利用");
+                AddLog("Chat TCP接続済みなので再利用");
                 peer.IsTcpConnected = true;
                 RefreshPeerDisplay(peer);
                 return;
@@ -301,17 +323,10 @@ namespace direct_module
 
             try
             {
-                AddLog("Chat TCP事前接続開始");
-                AddLog($"RemoteIpAddress: {peer.RemoteIpAddress}");
+                AddLog($"Chat TCP自動接続開始: {peer.RemoteIpAddress}:{LocalTcpPort}");
                 await chatConnection.ConnectAsync(peer.RemoteIpAddress, LocalTcpPort);
-
-                if (chatConnection.IsConnected)
-                {
-                    peer.IsTcpConnected = true;
-                    AddLog("Chat TCP事前接続成功");
-                    AddLog("Chat TCP受信ループ開始");
-                    RefreshPeerDisplay(peer);
-                }
+                peer.IsTcpConnected = chatConnection.IsConnected;
+                RefreshPeerDisplay(peer);
             }
             finally
             {
@@ -323,139 +338,55 @@ namespace direct_module
         {
             if (_tcpServer.IsStarted)
             {
-                AddLog($"TCP待ち受け確認: すでに開始済み ({reason})");
+                AddLog($"TCP待ち受けは開始済みです: Reason={reason}", LogLevel.Debug);
                 return;
             }
 
-            AddLog($"TCP待ち受け自動開始: Port={LocalTcpPort}, Reason={reason}");
+            AddLog($"TCP待ち受け開始: Port={LocalTcpPort}, Reason={reason}");
             await _tcpServer.StartAsync(LocalTcpPort);
         }
 
         private string ResolveTcpDestinationIp()
         {
-            if (PeerList.SelectedItem is PeerInfo peer)
+            if (PeerList.SelectedItem is PeerInfo peer &&
+                !string.IsNullOrWhiteSpace(peer.RemoteIpAddress))
             {
-                if (!string.IsNullOrWhiteSpace(peer.RemoteIpAddress))
-                {
-                    AddLog($"TCP送信先: PeerInfo.RemoteIpAddress を使用 {peer.RemoteIpAddress}");
-                    return peer.RemoteIpAddress;
-                }
-
-                AddLog("選択中PeerにRemoteIpAddressがありません");
+                AddLog($"TCP送信先: PeerInfo.RemoteIpAddress を使用 {peer.RemoteIpAddress}");
+                return peer.RemoteIpAddress;
             }
 
-            string manualIp = TargetIpTextBox.Text.Trim();
-
-            if (!string.IsNullOrWhiteSpace(manualIp))
-            {
-                AddLog($"TCP送信先: 手入力IPを使用 {manualIp}");
-                return manualIp;
-            }
-
+            AddLog("選択中PeerにRemoteIpAddressがありません", LogLevel.Error);
             return string.Empty;
-        }
-
-        private ChatConnection GetOrCreateChatConnection()
-        {
-            if (_chatConnection != null)
-            {
-                return _chatConnection;
-            }
-
-            ReplaceChatConnection(new ChatConnection());
-            return _chatConnection!;
-        }
-
-        private void ReplaceChatConnection(ChatConnection chatConnection)
-        {
-            if (_chatConnection != null)
-            {
-                _chatConnection.LogReceived -= OnLogReceived;
-                _chatConnection.MessageReceived -= OnChatMessageReceived;
-                _chatConnection.Closed -= OnChatConnectionClosed;
-                _chatConnection.Close();
-            }
-
-            _chatConnection = chatConnection;
-            _chatConnection.LogReceived += OnLogReceived;
-            _chatConnection.MessageReceived += OnChatMessageReceived;
-            _chatConnection.Closed += OnChatConnectionClosed;
-        }
-
-        private void OnChatMessageReceived(string message)
-        {
-            AddLog($"TCP受信メッセージ: {message}");
-            AddChatMessage($"相手: {message}");
-        }
-
-        private void OnChatConnectionClosed()
-        {
-            _chatConnection = null;
-            MarkSelectedPeerTcpState(false);
-        }
-
-        private void MarkSelectedPeerTcpState(bool isConnected)
-        {
-            DispatcherQueue.TryEnqueue(() =>
-            {
-                if (PeerList.SelectedItem is PeerInfo peer)
-                {
-                    peer.IsTcpConnected = isConnected;
-                    RefreshPeerDisplay(peer);
-                }
-            });
-        }
-
-        private void ClearStaleWiFiDirectPeers()
-        {
-            DispatcherQueue.TryEnqueue(() =>
-            {
-                int removed = 0;
-
-                for (int i = PeerList.Items.Count - 1; i >= 0; i--)
-                {
-                    if (PeerList.Items[i] is not PeerInfo peer)
-                    {
-                        continue;
-                    }
-
-                    if (peer.DiscoveredByBle || peer.IsConnected)
-                    {
-                        continue;
-                    }
-
-                    PeerList.Items.RemoveAt(i);
-                    removed++;
-                }
-
-                AddLog($"古いWi-Fi Direct候補を削除: {removed}件");
-            });
         }
 
         private void AddOrMergePeer(PeerInfo incoming)
         {
             if (incoming.DeviceId.Contains("_PendingRequest", StringComparison.OrdinalIgnoreCase))
             {
-                AddLog("PendingRequest DeviceIdを受信しました");
-                AddLog("これは接続要求Accept用なので通常PeerListには追加しません");
+                AddLog($"PendingRequestはPeerListに追加しません: {incoming.DisplayName}", LogLevel.Debug);
                 return;
             }
 
-            for (int i = 0; i < PeerList.Items.Count; i++)
-            {
-                if (PeerList.Items[i] is not PeerInfo existing)
-                {
-                    continue;
-                }
+            AddLog(
+                $"Peer照合開始: Name={incoming.DisplayName}, ShortSessionId={incoming.ShortSessionId}, DeviceIdあり={!string.IsNullOrWhiteSpace(incoming.DeviceId)}",
+                LogLevel.Debug);
 
-                if (!IsSamePeer(existing, incoming))
+            foreach (PeerInfo existing in PeerList.Items.Cast<PeerInfo>())
+            {
+                string matchReason = GetPeerMatchReason(existing, incoming);
+                if (string.IsNullOrEmpty(matchReason))
                 {
                     continue;
                 }
 
                 MergePeer(existing, incoming);
-                PeerList.Items[i] = existing;
-                AddLog($"Peer統合: {existing.DisplayText}");
+                RefreshPeerDisplay(existing);
+
+                LogLevel level = matchReason.StartsWith("注意:", StringComparison.Ordinal)
+                    ? LogLevel.Error
+                    : LogLevel.Success;
+
+                AddLog($"Peer統合: {matchReason} -> {existing.DisplayText}", level);
                 return;
             }
 
@@ -463,262 +394,219 @@ namespace direct_module
             AddLog($"Peer追加: {incoming.DisplayText}");
         }
 
-        private static bool IsSamePeer(PeerInfo left, PeerInfo right)
+        private static string GetPeerMatchReason(PeerInfo existing, PeerInfo incoming)
         {
-            if (!string.IsNullOrWhiteSpace(left.DeviceId) &&
-                string.Equals(left.DeviceId, right.DeviceId, StringComparison.OrdinalIgnoreCase))
+            if (HasSameValue(existing.ShortSessionId, incoming.ShortSessionId))
             {
-                return true;
+                return $"ShortSessionId一致 ({incoming.ShortSessionId})";
             }
 
-            return !string.IsNullOrWhiteSpace(left.DisplayName) &&
-                   !string.IsNullOrWhiteSpace(right.DisplayName) &&
-                   string.Equals(left.DisplayName, right.DisplayName, StringComparison.OrdinalIgnoreCase);
+            if (HasSameValue(existing.MatchKey, incoming.MatchKey))
+            {
+                return $"MatchKey一致 ({incoming.MatchKey})";
+            }
+
+            if (HasSameValue(existing.DeviceId, incoming.DeviceId))
+            {
+                return "DeviceId一致";
+            }
+
+            if (HasSameValue(existing.DisplayName, incoming.DisplayName))
+            {
+                return $"DisplayName完全一致 ({incoming.DisplayName})";
+            }
+
+            string existingName = existing.DisplayName ?? "";
+            string incomingName = incoming.DisplayName ?? "";
+
+            if (existingName.Length >= 4 &&
+                incomingName.Length >= 4 &&
+                (existingName.Contains(incomingName, StringComparison.OrdinalIgnoreCase) ||
+                 incomingName.Contains(existingName, StringComparison.OrdinalIgnoreCase)))
+            {
+                return $"注意: 名前の部分一致 ({existingName} / {incomingName})";
+            }
+
+            return "";
         }
 
-        private static void MergePeer(PeerInfo target, PeerInfo source)
+        private static bool HasSameValue(string left, string right)
         {
+            return !string.IsNullOrWhiteSpace(left) &&
+                   !string.IsNullOrWhiteSpace(right) &&
+                   string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private void MergePeer(PeerInfo target, PeerInfo source)
+        {
+            if (!string.IsNullOrWhiteSpace(source.DisplayName) &&
+                (string.IsNullOrWhiteSpace(target.DisplayName) ||
+                 source.DisplayName.Length > target.DisplayName.Length))
+            {
+                target.DisplayName = source.DisplayName;
+            }
+
             target.DiscoveredByBle |= source.DiscoveredByBle;
-            target.DiscoveredByWiFiDirect |= source.DiscoveredByWiFiDirect || !source.DiscoveredByBle;
-            target.IsConnected |= source.IsConnected;
-            target.IsTcpConnected |= source.IsTcpConnected;
+            target.DiscoveredByWiFiDirect |= source.DiscoveredByWiFiDirect;
 
-            if (string.IsNullOrWhiteSpace(target.DeviceId))
-            {
-                target.DeviceId = source.DeviceId;
-            }
+            CopyIfPresent(source.BleName, value => target.BleName = value);
+            CopyIfPresent(source.WiFiDirectName, value => target.WiFiDirectName = value);
+            CopyIfPresent(source.MatchKey, value => target.MatchKey = value);
+            CopyIfPresent(source.ShortSessionId, value => target.ShortSessionId = value);
+            CopyIfPresent(source.DeviceId, value => target.DeviceId = value);
+            CopyIfPresent(source.DeviceKind, value => target.DeviceKind = value);
+            CopyIfPresent(source.IpAddress, value => target.IpAddress = value);
+            CopyIfPresent(source.RemoteIpAddress, value => target.RemoteIpAddress = value);
 
-            if (string.IsNullOrWhiteSpace(target.RemoteIpAddress))
-            {
-                target.RemoteIpAddress = source.RemoteIpAddress;
-            }
-
-            if (string.IsNullOrWhiteSpace(target.IpAddress))
-            {
-                target.IpAddress = source.IpAddress;
-            }
-
-            if (target.TcpPort <= 0)
+            if (source.TcpPort > 0)
             {
                 target.TcpPort = source.TcpPort;
             }
 
-            if (string.IsNullOrWhiteSpace(target.ShortSessionId))
-            {
-                target.ShortSessionId = source.ShortSessionId;
-            }
-
-            if (!target.IsEnabled.HasValue)
+            if (source.IsEnabled.HasValue)
             {
                 target.IsEnabled = source.IsEnabled;
             }
 
-            if (string.IsNullOrWhiteSpace(target.DeviceKind))
+            target.IsConnected |= source.IsConnected;
+            target.IsTcpConnected |= source.IsTcpConnected;
+        }
+
+        private static void CopyIfPresent(string value, Action<string> apply)
+        {
+            if (!string.IsNullOrWhiteSpace(value))
             {
-                target.DeviceKind = source.DeviceKind;
+                apply(value);
             }
+        }
+
+        private void ClearStaleWiFiDirectPeers()
+        {
+            int removed = 0;
+            var peers = PeerList.Items.Cast<PeerInfo>().ToList();
+
+            foreach (PeerInfo peer in peers)
+            {
+                if (!peer.DiscoveredByWiFiDirect || peer.IsConnected)
+                {
+                    continue;
+                }
+
+                if (peer.DiscoveredByBle)
+                {
+                    peer.DiscoveredByWiFiDirect = false;
+                    peer.WiFiDirectName = "";
+                    peer.DeviceId = "";
+                    peer.DeviceKind = "";
+                    peer.IsEnabled = null;
+                    RefreshPeerDisplay(peer);
+                }
+                else
+                {
+                    PeerList.Items.Remove(peer);
+                }
+
+                removed++;
+            }
+
+            AddLog($"古いWi-Fi Direct候補を削除: {removed}件");
         }
 
         private void RefreshPeerDisplay(PeerInfo peer)
         {
-            DispatcherQueue.TryEnqueue(() =>
+            int selectedIndex = PeerList.SelectedIndex;
+            int index = PeerList.Items.IndexOf(peer);
+            if (index < 0)
             {
-                for (int i = 0; i < PeerList.Items.Count; i++)
-                {
-                    if (PeerList.Items[i] is not PeerInfo item)
-                    {
-                        continue;
-                    }
+                return;
+            }
 
-                    if (!ReferenceEquals(item, peer) && !IsSamePeer(item, peer))
-                    {
-                        continue;
-                    }
+            PeerList.Items.RemoveAt(index);
+            PeerList.Items.Insert(index, peer);
 
-                    MergePeer(item, peer);
-                    PeerList.Items[i] = item;
-                    AddLog($"Peer表示更新: {item.DisplayText}");
-                    return;
-                }
+            if (selectedIndex >= 0 && selectedIndex < PeerList.Items.Count)
+            {
+                PeerList.SelectedIndex = selectedIndex;
+            }
+        }
 
-                if (peer.IsConnected)
-                {
-                    PeerList.Items.Add(peer);
-                    AddLog($"接続済みPeerを一覧に追加: {peer.DisplayText}");
-                    AddLog("受信acceptで作成されたPeerのため、TCP返信先として選択できます");
-                }
-            });
+        private void MarkSelectedPeerTcpState(bool isConnected)
+        {
+            if (PeerList.SelectedItem is not PeerInfo peer)
+            {
+                return;
+            }
+
+            peer.IsTcpConnected = isConnected;
+            RefreshPeerDisplay(peer);
         }
 
         private void AddChatMessage(string message)
         {
-            DispatcherQueue.TryEnqueue(() =>
-            {
-                string time = DateTime.Now.ToString("HH:mm:ss");
-                MessageList.Items.Add($"[{time}] {message}");
-                MessageList.ScrollIntoView(MessageList.Items[MessageList.Items.Count - 1]);
-            });
+            MessageList.Items.Add(message);
+            MessageList.ScrollIntoView(message);
         }
 
         private void AddLog(string message, LogLevel level = LogLevel.Info)
         {
-            DispatcherQueue.TryEnqueue(() =>
+            LogLevel effectiveLevel = level == LogLevel.Info
+                ? ClassifyLogMessage(message)
+                : level;
+
+            if (effectiveLevel == LogLevel.Debug && ShowDebugLogCheckBox?.IsChecked != true)
             {
-                LogLevel effectiveLevel = level == LogLevel.Info
-                    ? ClassifyLogMessage(message)
-                    : level;
+                return;
+            }
 
-                if (effectiveLevel == LogLevel.Debug && ShowDebugLogCheckBox?.IsChecked != true)
-                {
-                    return;
-                }
+            string line = $"[{DateTime.Now:HH:mm:ss.fff}] {message}";
+            _logLines.Add(line);
 
-                string time = DateTime.Now.ToString("HH:mm:ss.fff");
-                string log = $"[{time}] [{effectiveLevel}] {message}";
+            while (_logLines.Count > MaxLogLines)
+            {
+                _logLines.RemoveAt(0);
+            }
 
-                _logLines.Add(log);
-
-                if (_logLines.Count > MaxLogLines)
-                {
-                    int removeCount = _logLines.Count - MaxLogLines;
-                    _logLines.RemoveRange(0, removeCount);
-                }
-
-                LogTextBox.Text = string.Join(Environment.NewLine, _logLines) + Environment.NewLine;
-                MoveLogCaretToEnd();
-            });
+            LogTextBox.Text = string.Join(Environment.NewLine, _logLines);
+            MoveLogCaretToEnd();
         }
 
         private static LogLevel ClassifyLogMessage(string message)
         {
-            if (IsErrorLogMessage(message))
+            if (message.Contains("失敗", StringComparison.OrdinalIgnoreCase) ||
+                message.Contains("エラー", StringComparison.OrdinalIgnoreCase) ||
+                message.Contains("例外", StringComparison.OrdinalIgnoreCase) ||
+                message.Contains("不正", StringComparison.OrdinalIgnoreCase) ||
+                message.Contains("ありません", StringComparison.OrdinalIgnoreCase) ||
+                message.Contains("注意:", StringComparison.OrdinalIgnoreCase))
             {
                 return LogLevel.Error;
             }
 
-            if (IsDebugLogMessage(message))
-            {
-                return LogLevel.Debug;
-            }
-
-            if (IsSuccessLogMessage(message))
+            if (message.Contains("成功", StringComparison.OrdinalIgnoreCase) ||
+                message.Contains("完了", StringComparison.OrdinalIgnoreCase) ||
+                message.Contains("受信", StringComparison.OrdinalIgnoreCase) ||
+                message.Contains("Peer統合", StringComparison.OrdinalIgnoreCase))
             {
                 return LogLevel.Success;
+            }
+
+            if (message.Contains("Status", StringComparison.OrdinalIgnoreCase) ||
+                message.Contains("Selector", StringComparison.OrdinalIgnoreCase) ||
+                message.Contains("Bytes", StringComparison.OrdinalIgnoreCase) ||
+                message.Contains("照合", StringComparison.OrdinalIgnoreCase) ||
+                message.Contains("Debug", StringComparison.OrdinalIgnoreCase))
+            {
+                return LogLevel.Debug;
             }
 
             return LogLevel.Info;
         }
 
-        private static bool IsDebugLogMessage(string message)
-        {
-            string[] debugKeywords =
-            {
-                "Selector:",
-                "Watcher Status",
-                "Added",
-                "Updated",
-                "Removed",
-                "EnumerationCompleted",
-                "Stopped",
-                "Kind:",
-                "IsEnabled:",
-                "InformationElements.Count",
-                "LegacySettings.IsEnabled",
-                "ListenStateDiscoverability",
-                "LocalServiceName",
-                "RemoteServiceName",
-                "Socket.",
-                "Socket作成",
-                "DataWriter",
-                "DataReader",
-                "WriteUInt32",
-                "WriteBytes",
-                "StoreAsync",
-                "FlushAsync",
-                "平文Bytes",
-                "暗号化後Bytes",
-                "送信Bytes",
-                "送信フレームBytes",
-                "受信Bytes",
-                "復号後Bytes",
-                "length読み取り",
-                "本文読み取り",
-                "受信予定Bytes",
-                "Decrypt",
-                "MessageCrypto",
-                "SendMessage_Click",
-                "入力メッセージ",
-                "選択Peer/IP",
-                "ChatConnection接続状態",
-                "SendAsync内でConnect",
-                "MessageList",
-                "Local IP:",
-                "Local SessionId:",
-                "Local TCP Port:",
-                "蟷ｳ譁③ytes",
-                "證怜捷蛹門ｾ沓ytes",
-                "騾∽ｿ｡Bytes",
-                "騾∽ｿ｡繝輔Ξ繝ｼ繝Bytes",
-                "length隱ｭ縺ｿ蜿悶ｊ",
-                "譛ｬ譁・ｪｭ縺ｿ蜿悶ｊ"
-            };
-
-            return debugKeywords.Any(keyword =>
-                message.Contains(keyword, StringComparison.OrdinalIgnoreCase));
-        }
-
-        private static bool IsErrorLogMessage(string message)
-        {
-            string[] errorKeywords =
-            {
-                "失敗",
-                "エラー",
-                "例外",
-                "Exception",
-                "HResult",
-                "Message:",
-                "不正",
-                "切断",
-                "中止",
-                "ありません",
-                "読み取り不足",
-                "本文不足",
-                "螟ｱ謨・",
-                "繧ｨ繝ｩ繝ｼ",
-                "萓句､・",
-                "荳肴ｭ｣",
-                "蛻・妙"
-            };
-
-            return errorKeywords.Any(keyword =>
-                message.Contains(keyword, StringComparison.OrdinalIgnoreCase));
-        }
-
-        private static bool IsSuccessLogMessage(string message)
-        {
-            string[] successKeywords =
-            {
-                "成功",
-                "完了",
-                "接続済み",
-                "送信成功",
-                "受信",
-                "RemoteIpAddress保存",
-                "謌仙粥",
-                "螳御ｺ・",
-                "謗･邯壽ｸ医∩",
-                "騾∽ｿ｡謌仙粥",
-                "蜿嶺ｿ｡",
-                "RemoteIpAddress菫晏ｭ・"
-            };
-
-            return successKeywords.Any(keyword =>
-                message.Contains(keyword, StringComparison.OrdinalIgnoreCase));
-        }
-
         private void MoveLogCaretToEnd()
         {
-            LogTextBox.Select(LogTextBox.Text.Length, 0);
+            LogTextBox.SelectionStart = LogTextBox.Text.Length;
+            LogTextBox.SelectionLength = 0;
+            LogTextBox.Focus(FocusState.Programmatic);
         }
     }
 }

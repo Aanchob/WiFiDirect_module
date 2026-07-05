@@ -62,10 +62,10 @@ namespace direct_module.Network
             StreamSocketListener sender,
             StreamSocketListenerConnectionReceivedEventArgs args)
         {
-            LogReceived?.Invoke("Chat TCP接続受信");
+            LogReceived?.Invoke("Chat TCP接続を受信");
             LogReceived?.Invoke($"RemoteAddress: {args.Socket.Information.RemoteAddress?.DisplayName}");
             LogReceived?.Invoke($"RemotePort: {args.Socket.Information.RemotePort}");
-            LogReceived?.Invoke("Chat TCP受信Connection作成");
+            LogReceived?.Invoke("Chat TCP受信側Connection作成");
             LogReceived?.Invoke("Chat TCP ReceiveLoop開始要求");
 
             ConnectionAccepted?.Invoke(args.Socket);

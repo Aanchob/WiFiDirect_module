@@ -1,5 +1,7 @@
 using System;
+using System.Text;
 using Windows.Devices.WiFiDirect;
+using Windows.Storage.Streams;
 
 namespace direct_module.WiFiDirect
 {
@@ -10,7 +12,7 @@ namespace direct_module.WiFiDirect
 
         public event Action<string>? LogReceived;
 
-        public void Start(bool listenerRegistered)
+        public void Start(bool listenerRegistered, string displayName = "", string shortSessionId = "")
         {
             if (_isStarted)
             {
@@ -27,11 +29,15 @@ namespace direct_module.WiFiDirect
                 _publisher.StatusChanged += OnStatusChanged;
                 LogReceived?.Invoke("AdvertisementPublisher StatusChanged登録済み");
 
-                // 公式UWPサンプルのAdvertiserシナリオに近い最小構成で広告する。
-                // LegacySettingsやAutonomousGroupOwnerは環境差が大きいため、ここでは使わない。
                 _publisher.Advertisement.ListenStateDiscoverability =
                     WiFiDirectAdvertisementListenStateDiscoverability.Normal;
                 _publisher.Advertisement.IsAutonomousGroupOwnerEnabled = false;
+
+                TryAddAppInformationElement(
+                    _publisher.Advertisement,
+                    displayName,
+                    shortSessionId
+                );
 
                 LogReceived?.Invoke("Advertisement設定内容");
                 LogReceived?.Invoke($"ListenStateDiscoverability: {_publisher.Advertisement.ListenStateDiscoverability}");
@@ -63,9 +69,9 @@ namespace direct_module.WiFiDirect
 
             try
             {
-                LogReceived?.Invoke($"AdvertisementPublisher Stop前 Status: {_publisher.Status}");
+                LogReceived?.Invoke($"AdvertisementPublisher Stop前Status: {_publisher.Status}");
                 _publisher.Stop();
-                LogReceived?.Invoke($"AdvertisementPublisher Stop後 Status: {_publisher.Status}");
+                LogReceived?.Invoke($"AdvertisementPublisher Stop後Status: {_publisher.Status}");
             }
             catch (Exception ex)
             {
@@ -76,6 +82,48 @@ namespace direct_module.WiFiDirect
             {
                 CleanupPublisher();
             }
+        }
+
+        private void TryAddAppInformationElement(
+            WiFiDirectAdvertisement advertisement,
+            string displayName,
+            string shortSessionId)
+        {
+            if (string.IsNullOrWhiteSpace(shortSessionId))
+            {
+                LogReceived?.Invoke("Wi-Fi Direct InformationElement追加スキップ: ShortSessionIdなし");
+                return;
+            }
+
+            try
+            {
+                string payload = string.IsNullOrWhiteSpace(displayName)
+                    ? $"DCHAT|{shortSessionId}"
+                    : $"DCHAT|{displayName}|{shortSessionId}";
+
+                var informationElement = new WiFiDirectInformationElement
+                {
+                    Oui = CreateBuffer(new byte[] { 0x44, 0x43, 0x48 }),
+                    OuiType = 1,
+                    Value = CreateBuffer(Encoding.UTF8.GetBytes(payload))
+                };
+
+                advertisement.InformationElements.Add(informationElement);
+                LogReceived?.Invoke($"Wi-Fi Direct InformationElement追加成功: {payload}");
+            }
+            catch (Exception ex)
+            {
+                LogReceived?.Invoke("Wi-Fi Direct InformationElement追加失敗");
+                LogReceived?.Invoke($"例外名: {ex.GetType().Name}");
+                LogReceived?.Invoke($"Message: {ex.Message}");
+            }
+        }
+
+        private static IBuffer CreateBuffer(byte[] bytes)
+        {
+            var writer = new DataWriter();
+            writer.WriteBytes(bytes);
+            return writer.DetachBuffer();
         }
 
         private void OnStatusChanged(

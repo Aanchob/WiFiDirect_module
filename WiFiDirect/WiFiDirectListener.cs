@@ -69,10 +69,14 @@ public class WiFiDirectListener
                 DisplayName = string.IsNullOrWhiteSpace(deviceInfo.Name)
                     ? "Unknown Wi-Fi Direct device"
                     : deviceInfo.Name,
+                WiFiDirectName = string.IsNullOrWhiteSpace(deviceInfo.Name)
+                    ? "Unknown Wi-Fi Direct device"
+                    : deviceInfo.Name,
                 DeviceId = deviceInfo.Id,
                 DeviceKind = deviceInfo.Kind.ToString(),
                 IsEnabled = deviceInfo.IsEnabled,
                 DiscoveredByBle = false,
+                DiscoveredByWiFiDirect = true,
                 IsConnected = false
             };
 

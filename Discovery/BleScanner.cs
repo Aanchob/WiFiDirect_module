@@ -88,9 +88,12 @@ namespace direct_module.Discovery
                 LogReceived?.Invoke($"BLEスキャン停止失敗: {ex.GetType().Name}");
                 LogReceived?.Invoke(ex.Message);
 
-                _watcher.Received -= OnReceived;
-                _watcher.Stopped -= OnStopped;
-                _watcher = null;
+                if (_watcher != null)
+                {
+                    _watcher.Received -= OnReceived;
+                    _watcher.Stopped -= OnStopped;
+                    _watcher = null;
+                }
             }
         }
 
@@ -143,16 +146,18 @@ namespace direct_module.Discovery
                 PeerInfo peer = new PeerInfo
                 {
                     DisplayName = displayName,
+                    BleName = displayName,
                     DeviceId = "",
                     DiscoveredByBle = true,
                     ShortSessionId = shortSessionId,
+                    MatchKey = shortSessionId,
                     TcpPort = tcpPort,
                     IpAddress = "",
                     IsConnected = false
                 };
 
                 LogReceived?.Invoke(
-                    $"BLE発見: {peer.DisplayName}, ID={peer.ShortSessionId}, Port={peer.TcpPort}, IP={peer.IpAddress}"
+                    $"BLE Peer発見: Name={peer.DisplayName}, ShortSessionId={peer.ShortSessionId}, Port={peer.TcpPort}"
                 );
 
                 PeerFound?.Invoke(peer);

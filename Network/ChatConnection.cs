@@ -42,7 +42,7 @@ namespace direct_module.Network
         {
             if (_isConnected)
             {
-                LogReceived?.Invoke("Chat TCP ConnectAsyncスキップ: すでに接続済み");
+                LogReceived?.Invoke("Chat TCP接続済みなので再利用");
                 return;
             }
 
@@ -64,19 +64,12 @@ namespace direct_module.Network
 
             try
             {
-                LogReceived?.Invoke("Chat TCP ConnectAsync開始");
+                LogReceived?.Invoke("Chat TCP接続開始");
                 LogReceived?.Invoke($"接続先IP: {ipAddress}");
                 LogReceived?.Invoke($"接続先Port: {port}");
 
-                var stepWatch = Stopwatch.StartNew();
-                LogReceived?.Invoke("Socket作成開始");
                 var socket = new StreamSocket();
-                LogReceived?.Invoke($"Socket作成完了: {stepWatch.ElapsedMilliseconds}ms");
-
-                stepWatch.Restart();
-                LogReceived?.Invoke("Socket.ConnectAsync開始");
                 await socket.ConnectAsync(new HostName(ipAddress), port.ToString());
-                LogReceived?.Invoke($"Socket.ConnectAsync完了: {stepWatch.ElapsedMilliseconds}ms");
 
                 AttachSocket(socket);
 
@@ -110,10 +103,9 @@ namespace direct_module.Network
         {
             var totalWatch = Stopwatch.StartNew();
 
-            LogReceived?.Invoke("Chat TCP SendAsync開始");
-            LogReceived?.Invoke($"送信メッセージ文字数: {message.Length}");
-            LogReceived?.Invoke($"接続状態 IsConnected={_isConnected}");
-            LogReceived?.Invoke($"SendAsync内でConnectが必要か: {!_isConnected}");
+            LogReceived?.Invoke("Chat TCP送信開始");
+            LogReceived?.Invoke($"送信内容: {message}");
+            LogReceived?.Invoke($"接続状態: IsConnected={_isConnected}");
 
             if (!_isConnected || _writer == null)
             {
@@ -122,42 +114,21 @@ namespace direct_module.Network
                 return;
             }
 
-            var lockWatch = Stopwatch.StartNew();
-            LogReceived?.Invoke("送信ロック待機開始");
             await _sendLock.WaitAsync();
-            LogReceived?.Invoke($"送信ロック取得: {lockWatch.ElapsedMilliseconds}ms");
 
             try
             {
                 byte[] plainBytes = Encoding.UTF8.GetBytes(message);
                 byte[] encryptedBytes = _messageCrypto.Encrypt(plainBytes);
 
-                LogReceived?.Invoke($"平文Bytes: {plainBytes.Length}");
-                LogReceived?.Invoke($"暗号化後Bytes: {encryptedBytes.Length}");
-                LogReceived?.Invoke($"送信フレームBytes: {sizeof(uint) + encryptedBytes.Length}");
-
-                var stepWatch = Stopwatch.StartNew();
-                LogReceived?.Invoke("WriteUInt32開始");
                 _writer.WriteUInt32((uint)encryptedBytes.Length);
-                LogReceived?.Invoke($"WriteUInt32完了: {stepWatch.ElapsedMilliseconds}ms");
-
-                stepWatch.Restart();
-                LogReceived?.Invoke("WriteBytes開始");
                 _writer.WriteBytes(encryptedBytes);
-                LogReceived?.Invoke($"WriteBytes完了: {stepWatch.ElapsedMilliseconds}ms");
-
-                stepWatch.Restart();
-                LogReceived?.Invoke("StoreAsync開始");
                 await _writer.StoreAsync();
-                LogReceived?.Invoke($"StoreAsync完了: {stepWatch.ElapsedMilliseconds}ms");
-
-                stepWatch.Restart();
-                LogReceived?.Invoke("FlushAsync開始");
                 await _writer.FlushAsync();
-                LogReceived?.Invoke($"FlushAsync完了: {stepWatch.ElapsedMilliseconds}ms");
 
                 LogReceived?.Invoke("Chat TCP送信成功");
-                LogReceived?.Invoke($"Chat TCP SendAsync完了 合計: {totalWatch.ElapsedMilliseconds}ms");
+                LogReceived?.Invoke($"送信Bytes: {encryptedBytes.Length}");
+                LogReceived?.Invoke($"Chat TCP送信完了 合計: {totalWatch.ElapsedMilliseconds}ms");
             }
             catch (Exception ex)
             {
@@ -167,7 +138,6 @@ namespace direct_module.Network
             finally
             {
                 _sendLock.Release();
-                LogReceived?.Invoke("送信ロック解放");
             }
         }
 
@@ -199,13 +169,7 @@ namespace direct_module.Network
             {
                 while (_isConnected)
                 {
-                    var messageWatch = Stopwatch.StartNew();
-                    var stepWatch = Stopwatch.StartNew();
-
-                    LogReceived?.Invoke("length読み取り待機開始");
                     bool lengthRead = await LoadExactAsync(sizeof(uint), "length");
-                    LogReceived?.Invoke($"length読み取り完了: {stepWatch.ElapsedMilliseconds}ms");
-
                     if (!lengthRead)
                     {
                         LogReceived?.Invoke("Chat TCP切断: lengthを読み取れませんでした");
@@ -213,19 +177,13 @@ namespace direct_module.Network
                     }
 
                     uint messageLength = _reader.ReadUInt32();
-                    LogReceived?.Invoke($"受信予定Bytes: {messageLength}");
-
                     if (messageLength == 0 || messageLength > MaxMessageBytes)
                     {
                         LogReceived?.Invoke($"不正なメッセージ長: {messageLength}");
                         break;
                     }
 
-                    stepWatch.Restart();
-                    LogReceived?.Invoke("本文読み取り開始");
-                    bool bodyRead = await LoadExactAsync(messageLength, "本文");
-                    LogReceived?.Invoke($"本文読み取り完了: {stepWatch.ElapsedMilliseconds}ms");
-
+                    bool bodyRead = await LoadExactAsync(messageLength, "body");
                     if (!bodyRead)
                     {
                         LogReceived?.Invoke($"本文不足: {_reader.UnconsumedBufferLength}/{messageLength}");
@@ -235,18 +193,12 @@ namespace direct_module.Network
                     byte[] encryptedBytes = new byte[messageLength];
                     _reader.ReadBytes(encryptedBytes);
 
-                    stepWatch.Restart();
-                    LogReceived?.Invoke("Decrypt開始");
                     byte[] plainBytes = _messageCrypto.Decrypt(encryptedBytes);
-                    LogReceived?.Invoke($"Decrypt完了: {stepWatch.ElapsedMilliseconds}ms");
-
                     string message = Encoding.UTF8.GetString(plainBytes);
 
                     LogReceived?.Invoke("Chat TCP受信");
                     LogReceived?.Invoke($"受信Bytes: {encryptedBytes.Length}");
-                    LogReceived?.Invoke($"復号後Bytes: {plainBytes.Length}");
-                    LogReceived?.Invoke($"受信メッセージ: {message}");
-                    LogReceived?.Invoke($"Chat TCP受信完了 合計: {messageWatch.ElapsedMilliseconds}ms");
+                    LogReceived?.Invoke($"TCP受信: {message}");
                     MessageReceived?.Invoke(message);
                 }
             }
@@ -264,17 +216,19 @@ namespace direct_module.Network
         public void Close()
         {
             bool wasConnected = _isConnected;
+
             _isConnected = false;
             _isReceiveLoopStarted = false;
 
-            _writer?.DetachStream();
             _reader?.DetachStream();
-            _writer?.Dispose();
+            _writer?.DetachStream();
+
             _reader?.Dispose();
+            _writer?.Dispose();
             _socket?.Dispose();
 
-            _writer = null;
             _reader = null;
+            _writer = null;
             _socket = null;
 
             if (wasConnected)
@@ -286,43 +240,36 @@ namespace direct_module.Network
 
         private void AttachSocket(StreamSocket socket)
         {
-            var stepWatch = Stopwatch.StartNew();
-            LogReceived?.Invoke("DataWriter作成開始");
-            _writer = new DataWriter(socket.OutputStream)
-            {
-                ByteOrder = ByteOrder.LittleEndian
-            };
-            LogReceived?.Invoke($"DataWriter作成完了: {stepWatch.ElapsedMilliseconds}ms");
-
-            stepWatch.Restart();
-            LogReceived?.Invoke("DataReader作成開始");
+            _socket = socket;
+            _writer = new DataWriter(socket.OutputStream);
             _reader = new DataReader(socket.InputStream)
             {
-                ByteOrder = ByteOrder.LittleEndian,
-                InputStreamOptions = InputStreamOptions.None
+                InputStreamOptions = InputStreamOptions.Partial
             };
-            LogReceived?.Invoke($"DataReader作成完了: {stepWatch.ElapsedMilliseconds}ms");
-
-            _socket = socket;
             _isConnected = true;
             _isReceiveLoopStarted = false;
         }
 
-        private async Task<bool> LoadExactAsync(uint byteCount, string label)
+        private async Task<bool> LoadExactAsync(uint bytesToRead, string label)
         {
-            while (_reader != null && _reader.UnconsumedBufferLength < byteCount)
+            if (_reader == null)
             {
-                uint remaining = byteCount - _reader.UnconsumedBufferLength;
-                uint loaded = await _reader.LoadAsync(remaining);
+                return false;
+            }
+
+            while (_reader.UnconsumedBufferLength < bytesToRead)
+            {
+                uint need = bytesToRead - _reader.UnconsumedBufferLength;
+                uint loaded = await _reader.LoadAsync(need);
 
                 if (loaded == 0)
                 {
-                    LogReceived?.Invoke($"{label}読み取り不足: {_reader.UnconsumedBufferLength}/{byteCount}");
+                    LogReceived?.Invoke($"Chat TCP切断: {label}読み取り中に0 bytes");
                     return false;
                 }
             }
 
-            return _reader != null && _reader.UnconsumedBufferLength >= byteCount;
+            return true;
         }
 
         private void LogException(Exception ex)
