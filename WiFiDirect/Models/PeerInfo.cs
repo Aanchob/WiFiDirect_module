@@ -24,6 +24,8 @@ public class PeerInfo
 
     public bool IsTcpConnected { get; set; }
 
+    public bool IsHelloVerified { get; set; }
+
     public bool IsChatReady { get; set; }
 
     public string StatusText { get; set; } = "";
@@ -65,6 +67,7 @@ public class PeerInfo
             string tcpText = StatusText == "エラー"
                 ? "TCP:エラー"
                 : IsTcpConnected ? "TCP:接続済み" : IsConnected ? "TCP:準備中" : "TCP:未接続";
+            string helloText = IsHelloVerified ? "HELLO:確認済み" : "HELLO:未確認";
             string statusText = !string.IsNullOrWhiteSpace(StatusText)
                 ? $"状態:{StatusText}"
                 : IsChatReady
@@ -86,7 +89,7 @@ public class PeerInfo
                 ? $" / Kind:{DeviceKind}"
                 : "";
 
-            return $"{DisplayName} / {SourceText} / {bleText} / {wifiText} / {tcpText} / {statusText}{remoteIpText}{sessionText}{bleNameText}{wifiNameText}{kindText}";
+            return $"{DisplayName} / {SourceText} / {bleText} / {wifiText} / {tcpText} / {helloText} / {statusText}{remoteIpText}{sessionText}{bleNameText}{wifiNameText}{kindText}";
         }
     }
 }

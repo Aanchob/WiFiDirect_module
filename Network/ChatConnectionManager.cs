@@ -93,6 +93,30 @@ namespace direct_module.Network
             }
         }
 
+        public ChatConnection? GetConnectionByPeerId(string peerId)
+        {
+            return FindByPeerId(peerId);
+        }
+
+        public ChatConnection? FindByShortSessionId(string shortSessionId)
+        {
+            if (string.IsNullOrWhiteSpace(shortSessionId))
+            {
+                return null;
+            }
+
+            lock (_lock)
+            {
+                return _connections.FirstOrDefault(connection =>
+                    string.Equals(connection.ShortSessionId, shortSessionId, StringComparison.OrdinalIgnoreCase));
+            }
+        }
+
+        public ChatConnection? GetConnectionByShortSessionId(string shortSessionId)
+        {
+            return FindByShortSessionId(shortSessionId);
+        }
+
         public ChatConnection? FindByRemoteIpAddress(string remoteIpAddress)
         {
             if (string.IsNullOrWhiteSpace(remoteIpAddress))
@@ -107,6 +131,11 @@ namespace direct_module.Network
             }
         }
 
+        public ChatConnection? GetConnectionByRemoteIpAddress(string remoteIpAddress)
+        {
+            return FindByRemoteIpAddress(remoteIpAddress);
+        }
+
         public async Task BroadcastAsync(ChatMessage message)
         {
             await BroadcastExceptAsync(message, null);
@@ -119,10 +148,11 @@ namespace direct_module.Network
             lock (_lock)
             {
                 targets = _connections
-                    .Where(connection => connection.IsConnected && connection != exceptConnection)
+                    .Where(connection => connection.IsConnected && connection.IsReady && connection != exceptConnection)
                     .ToList();
             }
 
+            LogReceived?.Invoke($"Host Broadcast対象Connection数: {targets.Count}");
             LogReceived?.Invoke($"ChatConnectionManager: Broadcast開始 TargetCount={targets.Count}, MessageId={message.MessageId}");
 
             foreach (ChatConnection connection in targets)

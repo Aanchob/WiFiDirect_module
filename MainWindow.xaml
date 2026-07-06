@@ -122,7 +122,8 @@
                 <ListView
                     x:Name="PeerList"
                     Grid.Row="1"
-                    SelectionMode="Single">
+                    SelectionMode="Single"
+                    SelectionChanged="PeerList_SelectionChanged">
                     <ListView.ItemTemplate>
                         <DataTemplate>
                             <TextBlock
@@ -197,10 +198,6 @@
                     Content="詳細ログ"
                     IsChecked="False" />
 
-                <Button
-                    Grid.Column="1"
-                    Content="末尾へ"
-                    Click="ScrollLogBottom_Click" />
             </Grid>
 
             <TextBox

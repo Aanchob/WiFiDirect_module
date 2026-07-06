@@ -39,6 +39,12 @@ namespace direct_module.Network
 
         public string RemoteIpAddress { get; set; } = "";
 
+        public string ShortSessionId { get; set; } = "";
+
+        public bool IsHelloVerified { get; set; }
+
+        public bool IsReady { get; set; }
+
         public bool IsConnected => _isConnected;
 
         public bool IsReceiveLoopStarted => _isReceiveLoopStarted;
@@ -265,6 +271,8 @@ namespace direct_module.Network
 
             _isConnected = false;
             _isReceiveLoopStarted = false;
+            IsHelloVerified = false;
+            IsReady = false;
 
             _reader?.DetachStream();
             _writer?.DetachStream();

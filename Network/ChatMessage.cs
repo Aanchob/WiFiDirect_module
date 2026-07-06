@@ -6,9 +6,13 @@ namespace direct_module.Network
     {
         public string MessageId { get; set; } = Guid.NewGuid().ToString();
 
+        public string Type { get; set; } = "chat";
+
         public string SenderId { get; set; } = "";
 
         public string SenderName { get; set; } = "";
+
+        public string ShortSessionId { get; set; } = "";
 
         public string Body { get; set; } = "";
 

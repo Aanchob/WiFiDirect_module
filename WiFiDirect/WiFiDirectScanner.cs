@@ -133,6 +133,10 @@ namespace direct_module.WiFiDirect
             LogReceived?.Invoke(string.IsNullOrWhiteSpace(shortSessionId)
                 ? "Wi-Fi Direct InformationElement読み取り不可: ShortSessionIdなし"
                 : $"Wi-Fi Direct InformationElement取得: ShortSessionId={shortSessionId}");
+            if (string.IsNullOrWhiteSpace(shortSessionId))
+            {
+                LogReceived?.Invoke("ShortSessionId取得不可のため名前照合にフォールバック");
+            }
             LogReceived?.Invoke("IsEnabledで除外せずPeerFoundへ流します");
             LogReceived?.Invoke($"Wi-Fi Direct Candidate発見: Name={displayName}, DeviceId={device.Id}");
 
