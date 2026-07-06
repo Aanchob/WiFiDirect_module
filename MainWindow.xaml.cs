@@ -58,34 +58,35 @@ namespace direct_module
 
         private async void SearchPeers_Click(object sender, RoutedEventArgs e)
         {
-            AddLog("相手探索開始");
-            AddLog("Wi-Fi Direct広告+待ち受け開始");
-            _manager.Start();
+            if (sender is not Button button)
+            {
+                return;
+            }
 
-            AddLog("BLE広告開始");
-            StartBleAdvertiseCore();
+            await RunWithCooldownAsync(button, async () =>
+            {
+                AddLog("相手探索開始");
+                AddLog("Wi-Fi Direct広告+待ち受け開始");
+                _manager.Start();
 
-            AddLog("BLEスキャン開始");
-            _discoveryManager.StartScan();
+                AddLog("BLE広告開始");
+                StartBleAdvertiseCore();
 
-            AddLog("AssociationEndpoint探索開始");
-            ClearStaleWiFiDirectPeers();
-            await _manager.StartAssociationEndpointScanAsync();
+                AddLog("BLEスキャン開始");
+                _discoveryManager.StartScan();
 
-            AddLog("相手探索処理を開始しました");
+                AddLog("AssociationEndpoint探索開始");
+                ClearStaleWiFiDirectPeers();
+                await _manager.StartAssociationEndpointScanAsync();
+
+                AddLog("相手探索処理を開始しました");
+            });
         }
 
         private void StartListener_Click(object sender, RoutedEventArgs e)
         {
             _manager.Start();
             AddLog("Wi-Fi Direct広告+待ち受け開始ボタンを押しました");
-        }
-
-        private async void SearchButton_Click(object sender, RoutedEventArgs e)
-        {
-            AddLog("AssociationEndpoint探索ボタンを押しました");
-            ClearStaleWiFiDirectPeers();
-            await _manager.StartAssociationEndpointScanAsync();
         }
 
         private async void SearchDefaultButton_Click(object sender, RoutedEventArgs e)
@@ -162,6 +163,9 @@ namespace direct_module
 
             await chatConnection.SendAsync(message);
             AddChatMessage($"自分: {message}");
+
+            MessageTextBox.Text = "";
+            MessageTextBox.Focus(FocusState.Programmatic);
         }
 
         private async void ConnectSelected_Click(object sender, RoutedEventArgs e)
@@ -657,5 +661,28 @@ namespace direct_module
         {
             LogTextBox.Select(LogTextBox.Text.Length, 0);
         }
+        private async System.Threading.Tasks.Task RunWithCooldownAsync(
+    Button button,
+    Func<System.Threading.Tasks.Task> action,
+    int cooldownMilliseconds = 3000)
+        {
+            if (!button.IsEnabled)
+            {
+                return;
+            }
+
+            button.IsEnabled = false;
+
+            try
+            {
+                await action();
+            }
+            finally
+            {
+                await System.Threading.Tasks.Task.Delay(cooldownMilliseconds);
+                button.IsEnabled = true;
+            }
+        }
     }
 }
+
