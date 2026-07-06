@@ -460,7 +460,6 @@ namespace direct_module
                 }
 
                 MergePeer(existing, incoming);
-                PeerList.Items[i] = existing;
                 UpdatePeerCount();
                 UpdateSelectedPeerDetails(PeerList.SelectedItem as PeerInfo);
                 AddLog($"Peer統合: {existing.DisplayText}");
@@ -550,7 +549,6 @@ namespace direct_module
                     }
 
                     MergePeer(item, peer);
-                    PeerList.Items[i] = item;
                     UpdatePeerCount();
                     UpdateSelectedPeerDetails(PeerList.SelectedItem as PeerInfo);
                     AddLog($"Peer表示更新: {item.DisplayText}");
@@ -660,6 +658,18 @@ namespace direct_module
         private void MoveLogCaretToEnd()
         {
             LogTextBox.Select(LogTextBox.Text.Length, 0);
+        }
+        private void MessageTextBox_KeyDown(object sender, Microsoft.UI.Xaml.Input.KeyRoutedEventArgs e)
+        {
+            if (e.Key == Windows.System.VirtualKey.Enter)
+            {
+                SendTcpToSelected_Click(SendMessageButton, new RoutedEventArgs());
+                e.Handled = true;
+            }
+        }
+        private void SelectFile_Click(object sender, RoutedEventArgs e)
+        {
+            // 後でファイル選択機能を実装
         }
         private async System.Threading.Tasks.Task RunWithCooldownAsync(
     Button button,

@@ -373,15 +373,16 @@
                                 <ColumnDefinition Width="Auto" />
                             </Grid.ColumnDefinitions>
                             <Button
-                                Click="StartBleScan_Click"
+                                Click="SelectFile_Click"
                                 Style="{StaticResource IconOnlyButtonStyle}"
-                                ToolTipService.ToolTip="BLEスキャン">
-                                <FontIcon FontSize="16" Glyph="&#xE762;" />
+                                ToolTipService.ToolTip="ファイルをアップロード">
+                                <FontIcon FontSize="20" Glyph="&#xE710;" />
                             </Button>
                             <TextBox
                                 x:Name="MessageTextBox"
                                 Grid.Column="1"
                                 MinHeight="42"
+                                KeyDown="MessageTextBox_KeyDown"
                                 VerticalAlignment="Center"
                                 AcceptsReturn="False"
                                 Background="Transparent"
@@ -389,13 +390,6 @@
                                 FontSize="14"
                                 Foreground="{StaticResource AppInkBrush}"
                                 PlaceholderText="メッセージを入力..." />
-                            <Button
-                                Grid.Column="2"
-                                Click="StartBleAdvertise_Click"
-                                Style="{StaticResource IconOnlyButtonStyle}"
-                                ToolTipService.ToolTip="BLE広告">
-                                <FontIcon FontSize="16" Glyph="&#xE1D6;" />
-                            </Button>
                             <Button
                                 x:Name="SendMessageButton"
                                 Grid.Column="3"
