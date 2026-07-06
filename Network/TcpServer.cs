@@ -32,6 +32,7 @@ namespace direct_module.Network
                 await _listener.BindServiceNameAsync(port.ToString());
 
                 LogReceived?.Invoke($"TCPサーバー待ち受け開始: Port={port}");
+                LogReceived?.Invoke("Chat TCP接続待機中");
                 LogReceived?.Invoke("Chat TCP複数接続待機中");
             }
             catch (Exception ex)

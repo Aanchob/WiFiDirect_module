@@ -127,6 +127,7 @@ namespace direct_module.Network
 
             LogReceived?.Invoke("SendAsync開始");
             LogReceived?.Invoke("Chat TCP送信開始");
+            LogReceived?.Invoke($"接続状態: IsConnected={_isConnected}");
             LogReceived?.Invoke($"SendAsync内でConnectが必要か: {!_isConnected}");
             LogReceived?.Invoke($"MessageId: {message.MessageId}");
             LogReceived?.Invoke($"SenderName: {message.SenderName}");
