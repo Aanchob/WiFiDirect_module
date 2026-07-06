@@ -22,6 +22,14 @@ public class PeerInfo
 
     public bool IsConnected { get; set; }
 
+    public bool IsTcpServerReady { get; set; }
+
+    public bool IsWifiDirectConnected { get; set; }
+
+    public bool IsTcpConnecting { get; set; }
+
+    public bool IsAutoConnectEligible { get; set; }
+
     public bool IsTcpConnected { get; set; }
 
     public bool IsHelloVerified { get; set; }
@@ -33,6 +41,8 @@ public class PeerInfo
     public string IpAddress { get; set; } = "";
 
     public string RemoteIpAddress { get; set; } = "";
+
+    public string LastConnectError { get; set; } = "";
 
     public bool? IsEnabled { get; set; }
 

@@ -14,6 +14,9 @@ namespace direct_module.Network
     public class ChatConnection
     {
         private const uint MaxMessageBytes = 1024 * 1024;
+        private const int ConnectTimeoutMs = 2000;
+        private const int MaxConnectAttempts = 10;
+        private const int ConnectRetryDelayMs = 300;
 
         private readonly IMessageCrypto _messageCrypto;
         private readonly SemaphoreSlim _sendLock = new(1, 1);
@@ -49,6 +52,10 @@ namespace direct_module.Network
 
         public bool IsReceiveLoopStarted => _isReceiveLoopStarted;
 
+        public int ConnectAttemptCount { get; private set; }
+
+        public long LastConnectElapsedMs { get; private set; }
+
         public event Action<ChatMessage, ChatConnection>? MessageReceived;
         public event Action<string>? LogReceived;
         public event Action<ChatConnection>? Disconnected;
@@ -76,10 +83,72 @@ namespace direct_module.Network
                 LogReceived?.Invoke($"接続先IP: {ipAddress}");
                 LogReceived?.Invoke($"接続先Port: {port}");
 
+                StreamSocket? socket = null;
+                Exception? lastException = null;
                 var connectWatch = Stopwatch.StartNew();
-                var socket = new StreamSocket();
-                await socket.ConnectAsync(new HostName(ipAddress), port.ToString());
-                LogReceived?.Invoke($"ConnectAsync: {connectWatch.ElapsedMilliseconds}ms");
+
+                for (int attempt = 1; attempt <= MaxConnectAttempts; attempt++)
+                {
+                    ConnectAttemptCount = attempt;
+                    socket = new StreamSocket();
+                    var attemptWatch = Stopwatch.StartNew();
+
+                    try
+                    {
+                        LogReceived?.Invoke($"Chat TCP ConnectAttempt={attempt}, TimeoutMs={ConnectTimeoutMs}");
+
+                        Task connectTask = socket.ConnectAsync(new HostName(ipAddress), port.ToString()).AsTask();
+                        _ = connectTask.ContinueWith(
+                            task => _ = task.Exception,
+                            TaskContinuationOptions.OnlyOnFaulted);
+                        Task completedTask = await Task.WhenAny(connectTask, Task.Delay(ConnectTimeoutMs));
+
+                        if (completedTask != connectTask)
+                        {
+                            LogReceived?.Invoke($"Chat TCP ConnectAttempt timeout: attempt={attempt}, elapsedMs={attemptWatch.ElapsedMilliseconds}");
+                            socket.Dispose();
+                            socket = null;
+
+                            if (attempt < MaxConnectAttempts)
+                            {
+                                await Task.Delay(ConnectRetryDelayMs);
+                            }
+
+                            continue;
+                        }
+
+                        await connectTask;
+                        LastConnectElapsedMs = connectWatch.ElapsedMilliseconds;
+                        LogReceived?.Invoke($"ConnectAsync: {attemptWatch.ElapsedMilliseconds}ms");
+                        LogReceived?.Invoke($"TCP事前接続成功: elapsedMs={LastConnectElapsedMs}, attempt={attempt}, RemoteIp={ipAddress}, Port={port}");
+                        break;
+                    }
+                    catch (Exception ex)
+                    {
+                        lastException = ex;
+                        LogReceived?.Invoke($"Chat TCP ConnectAttempt failed: attempt={attempt}, elapsedMs={attemptWatch.ElapsedMilliseconds}, Message={ex.Message}");
+                        socket?.Dispose();
+                        socket = null;
+
+                        if (attempt < MaxConnectAttempts)
+                        {
+                            await Task.Delay(ConnectRetryDelayMs);
+                        }
+                    }
+                }
+
+                if (socket == null)
+                {
+                    LastConnectElapsedMs = connectWatch.ElapsedMilliseconds;
+                    LogReceived?.Invoke($"TCP事前接続失敗: elapsedMs={LastConnectElapsedMs}, attempts={ConnectAttemptCount}, RemoteIp={ipAddress}, Port={port}");
+
+                    if (lastException != null)
+                    {
+                        LogException(lastException);
+                    }
+
+                    return;
+                }
 
                 RemoteIpAddress = ipAddress;
                 AttachSocket(socket);
