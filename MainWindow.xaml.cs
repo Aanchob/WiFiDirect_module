@@ -516,13 +516,40 @@ namespace direct_module
 
         private async void OnChatMessageReceived(ChatMessage message, ChatConnection sourceConnection)
         {
-            if (string.Equals(message.Type, "hello", StringComparison.OrdinalIgnoreCase))
+            string messageType = string.IsNullOrWhiteSpace(message.Type)
+                ? "chat"
+                : message.Type;
+
+            switch (messageType.ToLowerInvariant())
             {
-                DispatcherQueue.TryEnqueue(() =>
-                {
-                    HandleHelloMessage(message, sourceConnection);
-                });
-                return;
+                case "hello":
+                    DispatcherQueue.TryEnqueue(() =>
+                    {
+                        HandleHelloMessage(message, sourceConnection);
+                    });
+                    return;
+
+                case "chat":
+                    break;
+
+                case "ping":
+                case "pong":
+                case "system":
+                case "file_start":
+                case "file_chunk":
+                case "file_end":
+                    DispatcherQueue.TryEnqueue(() =>
+                    {
+                        AddLog($"未実装Typeを受信: {messageType}");
+                    });
+                    return;
+
+                default:
+                    DispatcherQueue.TryEnqueue(() =>
+                    {
+                        AddLog($"不明なChatMessage Typeを受信: {messageType}", LogLevel.Error);
+                    });
+                    return;
             }
 
             DispatcherQueue.TryEnqueue(() =>

@@ -17,5 +17,17 @@ namespace direct_module.Network
         public string Body { get; set; } = "";
 
         public DateTime SentAt { get; set; } = DateTime.Now;
+
+        public string? FileId { get; set; }
+
+        public string? FileName { get; set; }
+
+        public long? FileSize { get; set; }
+
+        public int? ChunkIndex { get; set; }
+
+        public int? ChunkCount { get; set; }
+
+        public string? ChunkBase64 { get; set; }
     }
 }

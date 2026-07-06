@@ -121,6 +121,7 @@ namespace direct_module.Network
         {
             var chatMessage = new ChatMessage
             {
+                Type = "chat",
                 Body = message
             };
 
@@ -135,6 +136,7 @@ namespace direct_module.Network
             LogReceived?.Invoke("Chat TCP送信開始");
             LogReceived?.Invoke($"接続状態: IsConnected={_isConnected}");
             LogReceived?.Invoke($"SendAsync内でConnectが必要か: {!_isConnected}");
+            LogReceived?.Invoke($"ChatMessage JSON送信: Type={message.Type}");
             LogReceived?.Invoke($"MessageId: {message.MessageId}");
             LogReceived?.Invoke($"SenderName: {message.SenderName}");
             LogReceived?.Invoke($"送信内容: {message.Body}");
@@ -229,11 +231,22 @@ namespace direct_module.Network
 
                     byte[] plainBytes = _messageCrypto.Decrypt(encryptedBytes);
                     string json = Encoding.UTF8.GetString(plainBytes);
-                    ChatMessage? message = JsonSerializer.Deserialize<ChatMessage>(json);
+                    ChatMessage? message;
+
+                    try
+                    {
+                        message = JsonSerializer.Deserialize<ChatMessage>(json);
+                    }
+                    catch (JsonException ex)
+                    {
+                        LogReceived?.Invoke("ChatMessage復元失敗");
+                        LogReceived?.Invoke($"Message: {ex.Message}");
+                        continue;
+                    }
 
                     if (message == null)
                     {
-                        LogReceived?.Invoke("Chat TCP受信失敗: JSONをChatMessageに変換できません");
+                        LogReceived?.Invoke("ChatMessage復元失敗");
                         continue;
                     }
 
@@ -248,6 +261,7 @@ namespace direct_module.Network
                     }
 
                     LogReceived?.Invoke("Chat TCP受信");
+                    LogReceived?.Invoke($"ChatMessage JSON受信: Type={message.Type}");
                     LogReceived?.Invoke($"MessageId: {message.MessageId}");
                     LogReceived?.Invoke($"SenderName: {message.SenderName}");
                     LogReceived?.Invoke($"TCP受信: {message.Body}");
