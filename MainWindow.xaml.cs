@@ -798,7 +798,7 @@ namespace direct_module
                 return;
             }
 
-            string line = $"[{DateTime.Now:HH:mm:ss.fff}] {message}";
+            string line = $"[{DateTime.Now:HH:mm:ss.fff}] [{effectiveLevel}] {message}";
             _logLines.Add(line);
 
             while (_logLines.Count > MaxLogLines)
@@ -812,34 +812,115 @@ namespace direct_module
 
         private static LogLevel ClassifyLogMessage(string message)
         {
-            if (message.Contains("失敗", StringComparison.OrdinalIgnoreCase) ||
-                message.Contains("エラー", StringComparison.OrdinalIgnoreCase) ||
-                message.Contains("例外", StringComparison.OrdinalIgnoreCase) ||
-                message.Contains("不正", StringComparison.OrdinalIgnoreCase) ||
-                message.Contains("ありません", StringComparison.OrdinalIgnoreCase) ||
-                message.Contains("注意:", StringComparison.OrdinalIgnoreCase))
+            if (IsErrorLogMessage(message))
             {
                 return LogLevel.Error;
             }
 
-            if (message.Contains("成功", StringComparison.OrdinalIgnoreCase) ||
-                message.Contains("完了", StringComparison.OrdinalIgnoreCase) ||
-                message.Contains("受信", StringComparison.OrdinalIgnoreCase) ||
-                message.Contains("Peer統合", StringComparison.OrdinalIgnoreCase))
-            {
-                return LogLevel.Success;
-            }
-
-            if (message.Contains("Status", StringComparison.OrdinalIgnoreCase) ||
-                message.Contains("Selector", StringComparison.OrdinalIgnoreCase) ||
-                message.Contains("Bytes", StringComparison.OrdinalIgnoreCase) ||
-                message.Contains("照合", StringComparison.OrdinalIgnoreCase) ||
-                message.Contains("Debug", StringComparison.OrdinalIgnoreCase))
+            if (IsDebugLogMessage(message))
             {
                 return LogLevel.Debug;
             }
 
+            if (IsSuccessLogMessage(message))
+            {
+                return LogLevel.Success;
+            }
+
             return LogLevel.Info;
+        }
+
+        private static bool IsErrorLogMessage(string message)
+        {
+            string[] errorKeywords =
+            {
+                "失敗",
+                "エラー",
+                "例外",
+                "Exception",
+                "HResult",
+                "Message:",
+                "不正",
+                "切断",
+                "未接続",
+                "送信できません",
+                "接続できません",
+                "ありません",
+                "注意:"
+            };
+
+            return errorKeywords.Any(keyword =>
+                message.Contains(keyword, StringComparison.OrdinalIgnoreCase));
+        }
+
+        private static bool IsSuccessLogMessage(string message)
+        {
+            string[] successKeywords =
+            {
+                "成功",
+                "完了",
+                "接続済み",
+                "送信成功",
+                "受信",
+                "RemoteIpAddress保存",
+                "チャット準備完了",
+                "SendMessageButton有効化",
+                "Peer統合"
+            };
+
+            return successKeywords.Any(keyword =>
+                message.Contains(keyword, StringComparison.OrdinalIgnoreCase));
+        }
+
+        private static bool IsDebugLogMessage(string message)
+        {
+            string[] debugKeywords =
+            {
+                "Selector",
+                "Watcher Status",
+                "Added",
+                "Updated",
+                "Removed",
+                "EnumerationCompleted",
+                "Stopped",
+                "Kind",
+                "IsEnabled",
+                "InformationElements.Count",
+                "LegacySettings.IsEnabled",
+                "ListenStateDiscoverability",
+                "LocalServiceName",
+                "RemoteServiceName",
+                "WriteUInt32",
+                "WriteBytes",
+                "StoreAsync",
+                "FlushAsync",
+                "平文Bytes",
+                "暗号化後Bytes",
+                "送信Bytes",
+                "送信フレームBytes",
+                "length読み取り",
+                "本文読み取り",
+                "ConnectAsync:",
+                "Stopwatch",
+                "Elapsed",
+                "合計:",
+                "ms",
+                "Local IP",
+                "Local SessionId",
+                "Local ShortSessionId",
+                "Local TCP Port",
+                "Peer照合開始",
+                "DeviceIdあり",
+                "接続中Peer数",
+                "SendAsync内でConnectが必要か",
+                "接続状態: IsConnected",
+                "MessageId:",
+                "SenderName:",
+                "MessageCrypto:"
+            };
+
+            return debugKeywords.Any(keyword =>
+                message.Contains(keyword, StringComparison.OrdinalIgnoreCase));
         }
 
         private void MoveLogCaretToEnd()
