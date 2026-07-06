@@ -26,6 +26,8 @@ public class PeerInfo
 
     public bool IsChatReady { get; set; }
 
+    public string StatusText { get; set; } = "";
+
     public string IpAddress { get; set; } = "";
 
     public string RemoteIpAddress { get; set; } = "";
@@ -60,10 +62,14 @@ public class PeerInfo
             string wifiText = !string.IsNullOrWhiteSpace(DeviceId)
                 ? IsConnected ? "Wi-Fi Direct:接続済み" : "Wi-Fi Direct:DeviceIdあり"
                 : "Wi-Fi Direct:DeviceIdなし";
-            string tcpText = IsTcpConnected ? "TCP:接続済み" : IsConnected ? "TCP:準備中" : "TCP:未接続";
-            string statusText = IsChatReady
-                ? "状態:チャット準備完了"
-                : IsConnected ? "状態:チャット準備中" : "状態:接続前";
+            string tcpText = StatusText == "エラー"
+                ? "TCP:エラー"
+                : IsTcpConnected ? "TCP:接続済み" : IsConnected ? "TCP:準備中" : "TCP:未接続";
+            string statusText = !string.IsNullOrWhiteSpace(StatusText)
+                ? $"状態:{StatusText}"
+                : IsChatReady
+                    ? "状態:チャット準備完了"
+                    : IsConnected ? "状態:チャット準備中" : "状態:接続前";
             string remoteIpText = !string.IsNullOrWhiteSpace(RemoteIpAddress)
                 ? $" / RemoteIp:{RemoteIpAddress}"
                 : "";
