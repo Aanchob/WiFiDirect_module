@@ -41,6 +41,8 @@ namespace direct_module.Network
 
         public bool IsConnected => _isConnected;
 
+        public bool IsReceiveLoopStarted => _isReceiveLoopStarted;
+
         public event Action<ChatMessage, ChatConnection>? MessageReceived;
         public event Action<string>? LogReceived;
         public event Action<ChatConnection>? Disconnected;
@@ -64,16 +66,19 @@ namespace direct_module.Network
 
             try
             {
-                LogReceived?.Invoke("Chat TCP接続開始");
+                LogReceived?.Invoke("Chat TCP ConnectAsync開始");
                 LogReceived?.Invoke($"接続先IP: {ipAddress}");
                 LogReceived?.Invoke($"接続先Port: {port}");
 
+                var connectWatch = Stopwatch.StartNew();
                 var socket = new StreamSocket();
                 await socket.ConnectAsync(new HostName(ipAddress), port.ToString());
+                LogReceived?.Invoke($"ConnectAsync: {connectWatch.ElapsedMilliseconds}ms");
 
                 RemoteIpAddress = ipAddress;
                 AttachSocket(socket);
 
+                LogReceived?.Invoke("Chat TCP ConnectAsync完了");
                 LogReceived?.Invoke("Chat TCP接続成功");
                 LogReceived?.Invoke($"MessageCrypto: {_messageCrypto.GetType().Name}");
                 LogReceived?.Invoke($"Chat TCP接続完了 合計: {totalWatch.ElapsedMilliseconds}ms");
@@ -120,7 +125,9 @@ namespace direct_module.Network
         {
             var totalWatch = Stopwatch.StartNew();
 
+            LogReceived?.Invoke("SendAsync開始");
             LogReceived?.Invoke("Chat TCP送信開始");
+            LogReceived?.Invoke($"SendAsync内でConnectが必要か: {!_isConnected}");
             LogReceived?.Invoke($"MessageId: {message.MessageId}");
             LogReceived?.Invoke($"SenderName: {message.SenderName}");
             LogReceived?.Invoke($"送信内容: {message.Body}");
@@ -128,7 +135,7 @@ namespace direct_module.Network
             if (!_isConnected || _writer == null)
             {
                 LogReceived?.Invoke("Chat TCPエラー");
-                LogReceived?.Invoke("Message: Chat TCPが未接続です");
+                LogReceived?.Invoke("Chat TCP未接続のため送信できません。事前接続を確認してください。");
                 return;
             }
 
@@ -142,8 +149,14 @@ namespace direct_module.Network
 
                 _writer.WriteUInt32((uint)encryptedBytes.Length);
                 _writer.WriteBytes(encryptedBytes);
+
+                var storeWatch = Stopwatch.StartNew();
                 await _writer.StoreAsync();
+                LogReceived?.Invoke($"StoreAsync: {storeWatch.ElapsedMilliseconds}ms");
+
+                var flushWatch = Stopwatch.StartNew();
                 await _writer.FlushAsync();
+                LogReceived?.Invoke($"FlushAsync: {flushWatch.ElapsedMilliseconds}ms");
 
                 LogReceived?.Invoke("Chat TCP送信成功");
                 LogReceived?.Invoke($"送信Bytes: {encryptedBytes.Length}");
@@ -274,10 +287,12 @@ namespace direct_module.Network
         {
             _socket = socket;
             _writer = new DataWriter(socket.OutputStream);
+            LogReceived?.Invoke("DataWriter作成完了");
             _reader = new DataReader(socket.InputStream)
             {
                 InputStreamOptions = InputStreamOptions.Partial
             };
+            LogReceived?.Invoke("DataReader作成完了");
             _isConnected = true;
             _isReceiveLoopStarted = false;
         }

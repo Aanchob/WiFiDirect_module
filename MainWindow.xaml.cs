@@ -38,6 +38,7 @@ namespace direct_module
         private readonly Guid _localSessionId = Guid.NewGuid();
 
         private ChatRole _chatRole = ChatRole.Client;
+        private bool _isChatReady;
         private bool _isPreparingChatTcp;
 
         public MainWindow()
@@ -61,6 +62,8 @@ namespace direct_module
             _chatConnectionManager.LogReceived += OnLogReceived;
             _chatConnectionManager.MessageReceived += OnChatMessageReceived;
             _chatConnectionManager.ConnectionsChanged += OnChatConnectionsChanged;
+
+            SetChatReady(false);
         }
 
         private string LocalPeerId => _localSessionId.ToString("N");
@@ -85,12 +88,13 @@ namespace direct_module
             AddLog("相手探索処理を開始しました");
         }
 
-        private void StartListener_Click(object sender, RoutedEventArgs e)
+        private async void StartListener_Click(object sender, RoutedEventArgs e)
         {
             _chatRole = ChatRole.Host;
             _manager.Start(Environment.MachineName, GetLocalShortSessionId());
             AddLog("Wi-Fi Direct広告+待ち受け開始ボタンを押しました");
             AddLog("Chat Role: Host");
+            await EnsureTcpServerStartedAsync("Wi-Fi Direct広告+待ち受け開始");
         }
 
         private async void SearchButton_Click(object sender, RoutedEventArgs e)
@@ -146,10 +150,17 @@ namespace direct_module
 
             try
             {
+                if (!_isChatReady)
+                {
+                    AddLog("チャット準備中です。準備完了後に送信してください。");
+                    return;
+                }
+
                 string body = MessageTextBox.Text.Trim();
                 if (string.IsNullOrWhiteSpace(body))
                 {
-                    body = $"Hello from {Environment.MachineName}";
+                    AddLog("送信内容が空です");
+                    return;
                 }
 
                 var message = new ChatMessage
@@ -169,20 +180,28 @@ namespace direct_module
                     return;
                 }
 
-                ChatConnection? connection = await GetOrCreateSelectedPeerConnectionAsync();
+                ChatConnection? connection = GetSelectedPeerPreparedConnection();
                 if (connection == null || !connection.IsConnected)
                 {
-                    AddLog("Chat TCPが未接続のため送信を中止します", LogLevel.Error);
+                    AddLog("Chat TCP未接続です。先に接続してください。", LogLevel.Error);
                     return;
                 }
 
                 await connection.SendAsync(message);
                 AddChatMessage($"自分: {body}");
+                MessageTextBox.Text = "";
                 AddLog($"SendMessage_Click完了 合計: {totalWatch.ElapsedMilliseconds}ms", LogLevel.Debug);
+            }
+            catch (Exception ex)
+            {
+                AddLog("メッセージ送信エラー", LogLevel.Error);
+                AddLog($"例外名: {ex.GetType().Name}", LogLevel.Error);
+                AddLog($"HResult: 0x{ex.HResult:X8}", LogLevel.Error);
+                AddLog($"Message: {ex.Message}", LogLevel.Error);
             }
             finally
             {
-                SendMessageButton.IsEnabled = true;
+                SendMessageButton.IsEnabled = _isChatReady;
             }
         }
 
@@ -288,9 +307,37 @@ namespace direct_module
                 _chatConnectionManager.AddConnection(connection);
                 connection.AttachAcceptedSocket(socket);
 
+                SetChatReady(connection.IsConnected && connection.IsReceiveLoopStarted);
                 AddLog($"Host: Client TCP接続を追加 Count={_chatConnectionManager.ConnectedCount}");
                 AddConnectedPeerDisplay(connection);
             });
+        }
+
+        private ChatConnection? GetSelectedPeerPreparedConnection()
+        {
+            if (PeerList.SelectedItem is not PeerInfo peer)
+            {
+                AddLog("送信する相手を選択してください", LogLevel.Error);
+                return null;
+            }
+
+            if (string.IsNullOrWhiteSpace(peer.RemoteIpAddress))
+            {
+                AddLog("送信先RemoteIpAddressがありません。先にWi-Fi Direct接続してください。", LogLevel.Error);
+                return null;
+            }
+
+            ChatConnection? connection =
+                _chatConnectionManager.FindByPeerId(GetPeerConnectionId(peer)) ??
+                _chatConnectionManager.FindByRemoteIpAddress(peer.RemoteIpAddress);
+
+            if (connection == null)
+            {
+                AddLog("Chat TCP未接続です。事前接続を確認してください。", LogLevel.Error);
+                return null;
+            }
+
+            return connection;
         }
 
         private async System.Threading.Tasks.Task<ChatConnection?> GetOrCreateSelectedPeerConnectionAsync()
@@ -345,7 +392,55 @@ namespace direct_module
 
             try
             {
-                await GetOrCreatePeerConnectionAsync(peer);
+                SetChatReady(false);
+
+                if (string.IsNullOrWhiteSpace(peer.RemoteIpAddress))
+                {
+                    AddLog("Chat TCP事前接続失敗: RemoteIpAddressがありません", LogLevel.Error);
+                    peer.IsTcpConnected = false;
+                    peer.IsChatReady = false;
+                    RefreshPeerDisplay(peer);
+                    return;
+                }
+
+                var totalWatch = Stopwatch.StartNew();
+                AddLog("Chat TCP事前接続開始");
+                AddLog($"接続先IP: {peer.RemoteIpAddress}");
+                AddLog($"接続先Port: {LocalTcpPort}");
+
+                ChatConnection? connection = await GetOrCreatePeerConnectionAsync(peer);
+
+                if (connection?.IsConnected == true && connection.IsReceiveLoopStarted)
+                {
+                    peer.IsTcpConnected = true;
+                    peer.IsChatReady = true;
+                    RefreshPeerDisplay(peer);
+                    SetChatReady(true);
+                    AddLog("Chat TCP事前接続成功", LogLevel.Success);
+                    AddLog("チャット準備完了", LogLevel.Success);
+                    AddLog("SendMessageButton有効化");
+                    AddLog($"Chat TCP事前接続合計: {totalWatch.ElapsedMilliseconds}ms", LogLevel.Debug);
+                }
+                else
+                {
+                    peer.IsTcpConnected = false;
+                    peer.IsChatReady = false;
+                    RefreshPeerDisplay(peer);
+                    SetChatReady(false);
+                    AddLog("Chat TCP事前接続失敗: TCP接続またはReceiveLoopが未完了です", LogLevel.Error);
+                }
+            }
+            catch (Exception ex)
+            {
+                SetChatReady(false);
+                peer.IsTcpConnected = false;
+                peer.IsChatReady = false;
+                RefreshPeerDisplay(peer);
+
+                AddLog("Chat TCP事前接続エラー", LogLevel.Error);
+                AddLog($"例外名: {ex.GetType().Name}", LogLevel.Error);
+                AddLog($"HResult: 0x{ex.HResult:X8}", LogLevel.Error);
+                AddLog($"Message: {ex.Message}", LogLevel.Error);
             }
             finally
             {
@@ -369,6 +464,7 @@ namespace direct_module
             {
                 AddLog("Chat TCP接続済みなので再利用");
                 peer.IsTcpConnected = true;
+                peer.IsChatReady = existing.IsReceiveLoopStarted;
                 RefreshPeerDisplay(peer);
                 return existing;
             }
@@ -385,6 +481,7 @@ namespace direct_module
             await connection.ConnectAsync(peer.RemoteIpAddress, LocalTcpPort);
 
             peer.IsTcpConnected = connection.IsConnected;
+            peer.IsChatReady = connection.IsConnected && connection.IsReceiveLoopStarted;
             RefreshPeerDisplay(peer);
             return connection;
         }
@@ -424,6 +521,16 @@ namespace direct_module
 
             AddLog($"TCP待ち受け開始: Port={LocalTcpPort}, Reason={reason}");
             await _tcpServer.StartAsync(LocalTcpPort);
+        }
+
+        private void SetChatReady(bool isReady)
+        {
+            _isChatReady = isReady;
+
+            DispatcherQueue.TryEnqueue(() =>
+            {
+                SendMessageButton.IsEnabled = isReady;
+            });
         }
 
         private static string GetPeerConnectionId(PeerInfo peer)
@@ -557,6 +664,7 @@ namespace direct_module
 
             target.IsConnected |= source.IsConnected;
             target.IsTcpConnected |= source.IsTcpConnected;
+            target.IsChatReady |= source.IsChatReady;
         }
 
         private static void CopyIfPresent(string value, Action<string> apply)
@@ -616,6 +724,7 @@ namespace direct_module
                     string.Equals(existing.DisplayName, displayName, StringComparison.OrdinalIgnoreCase))
                 {
                     existing.IsTcpConnected = connection.IsConnected;
+                    existing.IsChatReady = connection.IsConnected && connection.IsReceiveLoopStarted;
                     RefreshPeerDisplay(existing);
                     return;
                 }
@@ -625,7 +734,8 @@ namespace direct_module
             {
                 DisplayName = displayName,
                 RemoteIpAddress = connection.RemoteIpAddress,
-                IsTcpConnected = connection.IsConnected
+                IsTcpConnected = connection.IsConnected,
+                IsChatReady = connection.IsConnected && connection.IsReceiveLoopStarted
             };
 
             PeerList.Items.Add(peer);
