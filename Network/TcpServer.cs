@@ -37,11 +37,31 @@ namespace direct_module.Network
             }
             catch (Exception ex)
             {
+                if (_listener != null)
+                {
+                    _listener.ConnectionReceived -= OnConnectionReceived;
+                    _listener.Dispose();
+                    _listener = null;
+                }
+
                 LogReceived?.Invoke("TCPサーバー待ち受け開始失敗");
                 LogReceived?.Invoke($"例外名: {ex.GetType().Name}");
                 LogReceived?.Invoke($"HResult: 0x{ex.HResult:X8}");
                 LogReceived?.Invoke($"Message: {ex.Message}");
             }
+        }
+
+        public async Task RestartAsync(int port, string reason)
+        {
+            LogReceived?.Invoke($"TCPサーバー再バインド開始: Port={port}, Reason={reason}");
+
+            if (_listener != null)
+            {
+                Stop();
+            }
+
+            await StartAsync(port);
+            LogReceived?.Invoke($"TCPサーバー再バインド完了: Port={port}, Reason={reason}");
         }
 
         public void Stop()

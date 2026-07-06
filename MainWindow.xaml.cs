@@ -288,6 +288,8 @@ namespace direct_module
                 AddOrMergePeer(peer);
                 await EnsureTcpServerStartedAsync("Wi-Fi Direct接続完了");
 
+                await RebindTcpServerAfterWiFiDirectConnectedAsync();
+
                 if (_chatRole == ChatRole.Client)
                 {
                     await PrepareChatTcpConnectionAsync(peer);
@@ -771,6 +773,25 @@ namespace direct_module
             AddLog($"TCP待ち受け開始: Port={LocalTcpPort}, Reason={reason}");
             AddLog($"Chat TCP Server待ち受け開始: Port={LocalTcpPort}, Reason={reason}");
             await _tcpServer.StartAsync(LocalTcpPort);
+            MarkTcpServerReadyForPeers();
+        }
+
+        private async System.Threading.Tasks.Task RebindTcpServerAfterWiFiDirectConnectedAsync()
+        {
+            if (!_tcpServer.IsStarted)
+            {
+                await EnsureTcpServerStartedAsync("Wi-Fi Direct接続後");
+                return;
+            }
+
+            if (_chatConnectionManager.ConnectedCount > 0)
+            {
+                AddLog("TCPサーバー再バインドをスキップ: 既存TCP接続あり", LogLevel.Debug);
+                return;
+            }
+
+            AddLog("Wi-Fi Direct接続後のTCPサーバー再バインドを実行します");
+            await _tcpServer.RestartAsync(LocalTcpPort, "Wi-Fi Direct接続後");
             MarkTcpServerReadyForPeers();
         }
 
