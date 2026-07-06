@@ -172,6 +172,24 @@ namespace direct_module
                 return;
             }
 
+            await ConnectPeerAsync(peer);
+        }
+
+        private async void ConnectPeerItem_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is not FrameworkElement { DataContext: PeerInfo peer })
+            {
+                AddLog("接続する相手を取得できませんでした");
+                return;
+            }
+
+            PeerList.SelectedItem = peer;
+            UpdateSelectedPeerDetails(peer);
+            await ConnectPeerAsync(peer);
+        }
+
+        private async System.Threading.Tasks.Task ConnectPeerAsync(PeerInfo peer)
+        {
             if (peer.DeviceId.Contains("_PendingRequest", StringComparison.OrdinalIgnoreCase))
             {
                 AddLog("_PendingRequest付きDeviceIdのため通常接続を中止します");

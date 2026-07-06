@@ -196,6 +196,7 @@
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="Auto" />
                                             <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
                                         </Grid.ColumnDefinitions>
 
                                         <Grid>
@@ -223,6 +224,18 @@
                                                 Text="{Binding DisplayText}"
                                                 TextWrapping="WrapWholeWords" />
                                         </StackPanel>
+
+                                        <Button
+                                            Grid.Column="2"
+                                            Background="{StaticResource LimeSoftBrush}"
+                                            BorderBrush="#77B8FF6A"
+                                            BorderThickness="1"
+                                            Click="ConnectPeerItem_Click"
+                                            Foreground="{StaticResource LimeBrush}"
+                                            Style="{StaticResource IconOnlyButtonStyle}"
+                                            ToolTipService.ToolTip="接続">
+                                            <FontIcon FontSize="14" Glyph="&#xE8A7;" />
+                                        </Button>
                                     </Grid>
                                 </Border>
                             </DataTemplate>
@@ -315,12 +328,6 @@
                                     Style="{StaticResource IconOnlyButtonStyle}"
                                     ToolTipService.ToolTip="探索">
                                     <FontIcon FontSize="16" Glyph="&#xE721;" />
-                                </Button>
-                                <Button
-                                    Click="ConnectSelected_Click"
-                                    Style="{StaticResource IconOnlyButtonStyle}"
-                                    ToolTipService.ToolTip="接続">
-                                    <FontIcon FontSize="16" Glyph="&#xE8A7;" />
                                 </Button>
                                 <Button
                                     Click="StartTcpServer_Click"
@@ -539,40 +546,6 @@
                             </StackPanel>
                         </Border>
 
-                        <Grid ColumnSpacing="8">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="*" />
-                            </Grid.ColumnDefinitions>
-                            <Button
-                                Height="40"
-                                Background="{StaticResource AccentSoftBrush}"
-                                BorderBrush="#6600D6FF"
-                                BorderThickness="1"
-                                Click="ConnectSelected_Click"
-                                CornerRadius="12"
-                                Foreground="{StaticResource AccentBrush}">
-                                <StackPanel Orientation="Horizontal" Spacing="7">
-                                    <FontIcon FontSize="14" Glyph="&#xE8A7;" />
-                                    <TextBlock Text="接続" />
-                                </StackPanel>
-                            </Button>
-                            <Button
-                                Grid.Column="1"
-                                Height="40"
-                                Background="{StaticResource LimeSoftBrush}"
-                                BorderBrush="#55B8FF6A"
-                                BorderThickness="1"
-                                Click="SendTcpToSelected_Click"
-                                CornerRadius="12"
-                                Foreground="{StaticResource LimeBrush}">
-                                <StackPanel Orientation="Horizontal" Spacing="7">
-                                    <FontIcon FontSize="14" Glyph="&#xE724;" />
-                                    <TextBlock Text="送信" />
-                                </StackPanel>
-                            </Button>
-                        </Grid>
-
                         <StackPanel Spacing="10">
                             <TextBlock Style="{StaticResource TinyLabelStyle}" Text="NETWORK" />
                             <Border
@@ -643,10 +616,8 @@
                                 <Grid ColumnSpacing="8">
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="*" />
                                     </Grid.ColumnDefinitions>
                                     <Button Click="StartTcpServer_Click" Content="TCP待ち受け" Style="{StaticResource GhostButtonStyle}" />
-                                    <Button Grid.Column="1" Click="SendTcpToSelected_Click" Content="IPへ送信" Style="{StaticResource GhostButtonStyle}" />
                                 </Grid>
 
                                 <Grid ColumnSpacing="8">
