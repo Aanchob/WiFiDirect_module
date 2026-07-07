@@ -1,3 +1,4 @@
+using direct_module.Database;
 using direct_module.Discovery;
 using direct_module.Network;
 using direct_module.WiFiDirect;
@@ -11,6 +12,7 @@ using System;
 using Windows.Graphics;
 using Windows.Networking.Sockets;
 using WinRT.Interop;
+using direct_module.Models;
 
 namespace direct_module
 {
@@ -22,8 +24,16 @@ namespace direct_module
         private ChatConnection? _chatConnection;
         private bool _isPreparingChatTcp;
 
+        private readonly DatabaseService _databaseService;
+        private readonly ChatRepository _chatRepository;
+        private readonly UserRepository _userRepository;
+
         private readonly Guid _localSessionId = Guid.NewGuid();
         private const int LocalTcpPort = 50001;
+
+        private string _myDeviceId = "";
+
+
 
         public MainWindow()
         {
@@ -32,6 +42,13 @@ namespace direct_module
             Title = "NOVA Chat";
             ResizeWindow(1440, 920);
             UpdateSelectedPeerDetails(null);
+
+            _databaseService = new DatabaseService();
+            _chatRepository = new ChatRepository(_databaseService);
+
+            _userRepository = new UserRepository(_databaseService);
+            InitializeMyUser();
+
 
             _manager = new WiFiDirectManager();
             _discoveryManager = new DiscoveryManager();
@@ -46,6 +63,28 @@ namespace direct_module
 
             _tcpServer.LogReceived += OnLogReceived;
             _tcpServer.ConnectionAccepted += OnTcpConnectionAccepted;
+        }
+
+        private string CreateConversationId(string myDeviceId, string peerDeviceId)
+        {
+            return string.CompareOrdinal(myDeviceId, peerDeviceId) < 0
+                ? $"{myDeviceId}_{peerDeviceId}"
+                : $"{peerDeviceId}_{myDeviceId}";
+        }
+
+        private void LoadChatHistory(string conversationId)
+        {
+            MessageList.Items.Clear();
+
+            var messages = _chatRepository.GetMessages(conversationId);
+
+            foreach (var message in messages)
+            {
+                if (message.IsMine)
+                    AddChatMessage($"自分: {message.Message}");
+                else
+                    AddChatMessage($"相手: {message.Message}");
+            }
         }
 
         private void ResizeWindow(int width, int height)
@@ -161,6 +200,25 @@ namespace direct_module
             }
 
             await chatConnection.SendAsync(message);
+
+            PeerInfo? peer = PeerList.SelectedItem as PeerInfo;
+
+            _chatRepository.SaveMessage(new ChatMessage
+            {
+                ConversationId = peer != null
+                    ? CreateConversationId(_myDeviceId, peer.DeviceId)
+                    : "",
+
+                SenderId = _myDeviceId,
+                SenderName = Environment.MachineName,
+
+                ReceiverId = peer?.DeviceId ?? "",
+                ReceiverName = peer?.DisplayName ?? ipAddress,
+
+                Message = message,
+                SendTime = DateTime.Now,
+                IsMine = true
+            });
             AddChatMessage($"自分: {message}");
         }
 
@@ -214,9 +272,27 @@ namespace direct_module
 
         private void PeerList_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
-            UpdateSelectedPeerDetails(PeerList.SelectedItem as PeerInfo);
-        }
+            PeerInfo? peer = PeerList.SelectedItem as PeerInfo;
 
+            UpdateSelectedPeerDetails(peer);
+
+            if (peer == null)
+            {
+                return;
+            }
+
+            // DeviceIdが無い場合は履歴を読み込まない
+            if (string.IsNullOrWhiteSpace(peer.DeviceId))
+            {
+                return;
+            }
+
+            // この相手とのConversationIdを作成
+            string conversationId = CreateConversationId(_myDeviceId, peer.DeviceId);
+
+            // この相手との履歴だけ表示
+            LoadChatHistory(conversationId);
+        }
         private void ScrollLogBottom_Click(object sender, RoutedEventArgs e)
         {
             MoveLogCaretToEnd();
@@ -227,6 +303,7 @@ namespace direct_module
             DispatcherQueue.TryEnqueue(() =>
             {
                 AddOrMergePeer(peer);
+                SavePeer(peer); 
             });
 
             if (peer.DiscoveredByBle)
@@ -243,6 +320,7 @@ namespace direct_module
 
         private void OnConnectionRequested(PeerInfo peer)
         {
+            SavePeer(peer);
             AddLog($"接続要求: {peer.DisplayName}");
         }
 
@@ -252,6 +330,10 @@ namespace direct_module
             RefreshPeerDisplay(peer);
             await EnsureTcpServerStartedAsync("Wi-Fi Direct接続完了");
             await PrepareChatTcpConnectionAsync(peer);
+            string conversationId =
+    CreateConversationId(_myDeviceId, peer.DeviceId);
+
+            LoadChatHistory(conversationId);
         }
 
         private void OnTcpConnectionAccepted(StreamSocket socket)
@@ -383,6 +465,25 @@ namespace direct_module
 
         private void OnChatMessageReceived(string message)
         {
+            PeerInfo? peer = PeerList.SelectedItem as PeerInfo;
+
+            _chatRepository.SaveMessage(new ChatMessage
+            {
+                ConversationId = peer != null
+                    ? CreateConversationId(_myDeviceId, peer.DeviceId)
+                    : "",
+
+                SenderId = peer?.DeviceId ?? "",
+                SenderName = peer?.DisplayName ?? "相手",
+
+                ReceiverId = _myDeviceId,
+                ReceiverName = Environment.MachineName,
+
+                Message = message,
+                SendTime = DateTime.Now,
+                IsMine = false
+            });
+
             AddLog($"TCP受信メッセージ: {message}");
             AddChatMessage($"相手: {message}");
         }
@@ -656,6 +757,46 @@ namespace direct_module
         private void MoveLogCaretToEnd()
         {
             LogTextBox.Select(LogTextBox.Text.Length, 0);
+        }
+
+        private void SavePeer(PeerInfo peer)
+        {
+            if (string.IsNullOrWhiteSpace(peer.DeviceId))
+                return;
+
+            User user = new User
+            {
+                DeviceId = peer.DeviceId,
+                MachineName = peer.DisplayName,
+                DisplayName = peer.DisplayName,
+                CreatedAt = DateTime.Now
+            };
+
+            _userRepository.Save(user);
+
+            AddLog($"Usersテーブルへ保存: {peer.DisplayName}");
+        }
+
+        private void InitializeMyUser()
+        {
+            var user = _userRepository.GetByMachineName(Environment.MachineName);
+
+            if (user == null)
+            {
+                user = new User
+                {
+                    DeviceId = Guid.NewGuid().ToString(),
+                    MachineName = Environment.MachineName,
+                    DisplayName = Environment.MachineName,
+                    CreatedAt = DateTime.Now
+                };
+
+                _userRepository.Save(user);
+            }
+
+            _myDeviceId = user.DeviceId;
+
+            AddLog($"自分のDeviceId: {_myDeviceId}");
         }
     }
 }
