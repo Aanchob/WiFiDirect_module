@@ -22,6 +22,8 @@ public class PeerInfo
 
     public bool IsConnected { get; set; }
 
+    public bool IsPreparingChatTcp { get; set; }
+
     public bool IsTcpConnected { get; set; }
 
     public bool IsHelloVerified { get; set; }

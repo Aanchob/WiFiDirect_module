@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
+using direct_module.WiFiDirect.Models;
 
 namespace direct_module.Network
 {
@@ -136,6 +137,24 @@ namespace direct_module.Network
             return FindByRemoteIpAddress(remoteIpAddress);
         }
 
+        public bool HasConnectionForPeer(PeerInfo peer)
+        {
+            return FindForPeer(peer) != null;
+        }
+
+        public bool IsPreparingForPeer(PeerInfo peer)
+        {
+            return FindForPeer(peer)?.IsPreparing == true;
+        }
+
+        public ChatConnection? FindForPeer(PeerInfo peer)
+        {
+            return FindByShortSessionId(peer.ShortSessionId) ??
+                   FindByPeerId(GetPeerConnectionId(peer)) ??
+                   FindByRemoteIpAddress(peer.RemoteIpAddress) ??
+                   FindByPeerId(peer.DeviceId);
+        }
+
         public async Task BroadcastAsync(ChatMessage message)
         {
             await BroadcastExceptAsync(message, null);
@@ -195,6 +214,26 @@ namespace direct_module.Network
         private void OnConnectionDisconnected(ChatConnection connection)
         {
             RemoveConnection(connection);
+        }
+
+        private static string GetPeerConnectionId(PeerInfo peer)
+        {
+            if (!string.IsNullOrWhiteSpace(peer.ShortSessionId))
+            {
+                return peer.ShortSessionId;
+            }
+
+            if (!string.IsNullOrWhiteSpace(peer.DeviceId))
+            {
+                return peer.DeviceId;
+            }
+
+            if (!string.IsNullOrWhiteSpace(peer.RemoteIpAddress))
+            {
+                return peer.RemoteIpAddress;
+            }
+
+            return peer.DisplayName;
         }
     }
 }

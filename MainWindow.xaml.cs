@@ -39,7 +39,6 @@ namespace direct_module
         private readonly Guid _localSessionId = Guid.NewGuid();
 
         private ChatRole _chatRole = ChatRole.Client;
-        private bool _isPreparingChatTcp;
 
         public MainWindow()
         {
@@ -363,10 +362,7 @@ namespace direct_module
                 return null;
             }
 
-            ChatConnection? existing =
-                _chatConnectionManager.FindByShortSessionId(peer.ShortSessionId) ??
-                _chatConnectionManager.FindByPeerId(GetPeerConnectionId(peer)) ??
-                _chatConnectionManager.FindByRemoteIpAddress(peer.RemoteIpAddress);
+            ChatConnection? existing = _chatConnectionManager.FindForPeer(peer);
 
             if (existing?.IsConnected == true)
             {
@@ -383,7 +379,15 @@ namespace direct_module
             };
 
             _chatConnectionManager.AddConnection(connection);
-            await connection.ConnectAsync(peer.RemoteIpAddress, LocalTcpPort);
+            connection.IsPreparing = true;
+            try
+            {
+                await connection.ConnectAsync(peer.RemoteIpAddress, LocalTcpPort);
+            }
+            finally
+            {
+                connection.IsPreparing = false;
+            }
 
             peer.IsTcpConnected = connection.IsConnected;
             RefreshPeerDisplay(peer);
@@ -393,13 +397,24 @@ namespace direct_module
 
         private async System.Threading.Tasks.Task PrepareChatTcpConnectionAsync(PeerInfo peer)
         {
-            if (_isPreparingChatTcp)
+            if (peer.IsPreparingChatTcp || _chatConnectionManager.IsPreparingForPeer(peer))
             {
+                AddLog($"PeerごとのTCP準備中のためスキップ: {peer.DisplayName}", LogLevel.Debug);
                 AddLog("Chat TCP接続準備中のためスキップします", LogLevel.Debug);
                 return;
             }
 
-            _isPreparingChatTcp = true;
+            if (peer.IsChatReady)
+            {
+                AddLog($"PeerごとのTCP準備スキップ: すでにチャット準備完了 {peer.DisplayName}", LogLevel.Debug);
+                return;
+            }
+
+            peer.IsPreparingChatTcp = true;
+            peer.StatusText = "TCP準備中";
+            RefreshPeerDisplay(peer);
+            UpdateSendButtonState();
+            AddLog($"PeerごとのTCP準備開始: {peer.DisplayName}");
 
             try
             {
@@ -434,6 +449,7 @@ namespace direct_module
                     peer.StatusText = "HELLO確認中";
                     RefreshPeerDisplay(peer);
                     SetChatReady(false);
+                    AddLog($"PeerごとのTCP接続成功: {peer.DisplayName}", LogLevel.Success);
                     AddLog("Chat TCP事前接続成功", LogLevel.Success);
                     AddLog("Chat TCP接続済み", LogLevel.Success);
                     AddLog("Chat TCP ReceiveLoop開始済み", LogLevel.Success);
@@ -450,11 +466,13 @@ namespace direct_module
                     SetChatReady(false);
                     AddLog("チャット準備状態をErrorに変更", LogLevel.Error);
                     AddLog("Chat TCP事前接続失敗: TCP接続またはReceiveLoopが未完了です", LogLevel.Error);
+                    AddLog($"PeerごとのTCP準備失敗: {peer.DisplayName}", LogLevel.Error);
                 }
             }
             catch (Exception ex)
             {
                 SetChatReady(false);
+                AddLog($"PeerごとのTCP準備失敗: {peer.DisplayName}", LogLevel.Error);
                 peer.IsTcpConnected = false;
                 peer.IsChatReady = false;
                 peer.StatusText = "エラー";
@@ -468,7 +486,10 @@ namespace direct_module
             }
             finally
             {
-                _isPreparingChatTcp = false;
+                peer.IsPreparingChatTcp = false;
+                RefreshPeerDisplay(peer);
+                UpdateSendButtonState();
+                AddLog($"PeerごとのTCP準備終了: {peer.DisplayName}", LogLevel.Debug);
             }
         }
 
@@ -480,10 +501,7 @@ namespace direct_module
                 return null;
             }
 
-            ChatConnection? existing =
-                _chatConnectionManager.FindByShortSessionId(peer.ShortSessionId) ??
-                _chatConnectionManager.FindByPeerId(GetPeerConnectionId(peer)) ??
-                _chatConnectionManager.FindByRemoteIpAddress(peer.RemoteIpAddress);
+            ChatConnection? existing = _chatConnectionManager.FindForPeer(peer);
 
             if (existing?.IsConnected == true)
             {
@@ -505,7 +523,15 @@ namespace direct_module
 
             _chatConnectionManager.AddConnection(connection);
             AddLog($"Chat TCP自動接続開始: {peer.RemoteIpAddress}:{LocalTcpPort}");
-            await connection.ConnectAsync(peer.RemoteIpAddress, LocalTcpPort);
+            connection.IsPreparing = true;
+            try
+            {
+                await connection.ConnectAsync(peer.RemoteIpAddress, LocalTcpPort);
+            }
+            finally
+            {
+                connection.IsPreparing = false;
+            }
 
             peer.IsTcpConnected = connection.IsConnected;
             peer.IsChatReady = false;
@@ -788,16 +814,15 @@ namespace direct_module
 
         private static bool IsPeerChatReady(PeerInfo peer)
         {
-            return peer.IsTcpConnected &&
+            return !peer.IsPreparingChatTcp &&
+                   peer.IsTcpConnected &&
                    peer.IsHelloVerified &&
                    peer.IsChatReady;
         }
 
         private ChatConnection? GetConnectionForPeer(PeerInfo peer)
         {
-            return _chatConnectionManager.FindByShortSessionId(peer.ShortSessionId) ??
-                   _chatConnectionManager.FindByPeerId(GetPeerConnectionId(peer)) ??
-                   _chatConnectionManager.FindByRemoteIpAddress(peer.RemoteIpAddress);
+            return _chatConnectionManager.FindForPeer(peer);
         }
 
         private static string GetPeerConnectionId(PeerInfo peer)
@@ -930,6 +955,7 @@ namespace direct_module
             }
 
             target.IsConnected |= source.IsConnected;
+            target.IsPreparingChatTcp |= source.IsPreparingChatTcp;
             target.IsTcpConnected |= source.IsTcpConnected;
             target.IsHelloVerified |= source.IsHelloVerified;
             target.IsChatReady |= source.IsChatReady;

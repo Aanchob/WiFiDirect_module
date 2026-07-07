@@ -41,6 +41,8 @@ namespace direct_module.Network
 
         public string ShortSessionId { get; set; } = "";
 
+        public bool IsPreparing { get; set; }
+
         public bool IsHelloVerified { get; set; }
 
         public bool IsReady { get; set; }
@@ -285,6 +287,7 @@ namespace direct_module.Network
 
             _isConnected = false;
             _isReceiveLoopStarted = false;
+            IsPreparing = false;
             IsHelloVerified = false;
             IsReady = false;
 
