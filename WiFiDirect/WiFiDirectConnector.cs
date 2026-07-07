@@ -128,6 +128,7 @@ namespace direct_module.WiFiDirect
             string logPrefix)
         {
             bool completed = false;
+            var operationWatch = System.Diagnostics.Stopwatch.StartNew();
 
             LogReceived?.Invoke($"{operationName}開始");
             _ = Task.Delay(10000).ContinueWith(_ =>
@@ -148,6 +149,7 @@ namespace direct_module.WiFiDirect
                     ? $"{operationName}結果: null"
                     : $"{operationName}成功");
 
+                LogReceived?.Invoke($"{operationName} elapsedMs={operationWatch.ElapsedMilliseconds}");
                 return device;
             }
             finally
@@ -179,6 +181,7 @@ namespace direct_module.WiFiDirect
             }
 
             peer.IsConnected = true;
+            peer.IsWifiDirectConnected = true;
 
             var session = new WiFiDirectSession(peer, device);
             Connected?.Invoke(session);
