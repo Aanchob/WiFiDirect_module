@@ -21,6 +21,7 @@ namespace direct_module
         private readonly TcpServer _tcpServer = new();
         private ChatConnection? _chatConnection;
         private bool _isPreparingChatTcp;
+        private bool _searchedOnStartup = false;
 
         private readonly Guid _localSessionId = Guid.NewGuid();
         private const int LocalTcpPort = 50001;
@@ -28,6 +29,8 @@ namespace direct_module
         public MainWindow()
         {
             InitializeComponent();
+
+            LocalUserNameText.Text = Environment.MachineName;
 
             Title = "NOVA Chat";
             ResizeWindow(1440, 920);
@@ -46,6 +49,8 @@ namespace direct_module
 
             _tcpServer.LogReceived += OnLogReceived;
             _tcpServer.ConnectionAccepted += OnTcpConnectionAccepted;
+
+            this.Activated += MainWindow_Activated;
         }
 
         private void ResizeWindow(int width, int height)
@@ -216,9 +221,25 @@ namespace direct_module
             LogTextBox.Text = string.Empty;
         }
 
-        private void PeerList_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        private async void PeerList_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
-            UpdateSelectedPeerDetails(PeerList.SelectedItem as PeerInfo);
+            if (PeerList.SelectedItem is not PeerInfo peer)
+            {
+                UpdateSelectedPeerDetails(null);
+                return;
+            }
+
+            UpdateSelectedPeerDetails(peer);
+
+            // すでに接続済みなら何もしない
+            if (peer.IsConnected)
+            {
+                return;
+            }
+
+            AddLog($"{peer.DisplayName} に自動接続します");
+
+            await ConnectPeerAsync(peer);
         }
 
         private void ScrollLogBottom_Click(object sender, RoutedEventArgs e)
@@ -671,6 +692,27 @@ namespace direct_module
         {
             // 後でファイル選択機能を実装
         }
+        private async void MainWindow_Activated(object sender, WindowActivatedEventArgs e)
+        {
+            if (_searchedOnStartup)
+            {
+                return;
+            }
+
+            _searchedOnStartup = true;
+
+            AddLog("起動時の相手探索を開始します");
+
+            _manager.Start();
+
+            StartBleAdvertiseCore();
+
+            _discoveryManager.StartScan();
+
+            ClearStaleWiFiDirectPeers();
+
+            await _manager.StartAssociationEndpointScanAsync();
+        }
         private async System.Threading.Tasks.Task RunWithCooldownAsync(
     Button button,
     Func<System.Threading.Tasks.Task> action,
@@ -692,6 +734,10 @@ namespace direct_module
                 await System.Threading.Tasks.Task.Delay(cooldownMilliseconds);
                 button.IsEnabled = true;
             }
+        }
+        private void SettingsButton_Click(object sender, RoutedEventArgs e)
+        {
+            // 後で設定画面を開く
         }
     }
 }
