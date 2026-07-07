@@ -97,34 +97,35 @@ namespace direct_module
 
         private async void SearchPeers_Click(object sender, RoutedEventArgs e)
         {
-            AddLog("相手探索開始");
-            AddLog("Wi-Fi Direct広告+待ち受け開始");
-            _manager.Start();
+            if (sender is not Button button)
+            {
+                return;
+            }
 
-            AddLog("BLE広告開始");
-            StartBleAdvertiseCore();
+            await RunWithCooldownAsync(button, async () =>
+            {
+                AddLog("相手探索開始");
+                AddLog("Wi-Fi Direct広告+待ち受け開始");
+                _manager.Start();
 
-            AddLog("BLEスキャン開始");
-            _discoveryManager.StartScan();
+                AddLog("BLE広告開始");
+                StartBleAdvertiseCore();
 
-            AddLog("AssociationEndpoint探索開始");
-            ClearStaleWiFiDirectPeers();
-            await _manager.StartAssociationEndpointScanAsync();
+                AddLog("BLEスキャン開始");
+                _discoveryManager.StartScan();
 
-            AddLog("相手探索処理を開始しました");
+                AddLog("AssociationEndpoint探索開始");
+                ClearStaleWiFiDirectPeers();
+                await _manager.StartAssociationEndpointScanAsync();
+
+                AddLog("相手探索処理を開始しました");
+            });
         }
 
         private void StartListener_Click(object sender, RoutedEventArgs e)
         {
             _manager.Start();
             AddLog("Wi-Fi Direct広告+待ち受け開始ボタンを押しました");
-        }
-
-        private async void SearchButton_Click(object sender, RoutedEventArgs e)
-        {
-            AddLog("AssociationEndpoint探索ボタンを押しました");
-            ClearStaleWiFiDirectPeers();
-            await _manager.StartAssociationEndpointScanAsync();
         }
 
         private async void SearchDefaultButton_Click(object sender, RoutedEventArgs e)
@@ -220,6 +221,9 @@ namespace direct_module
                 IsMine = true
             });
             AddChatMessage($"自分: {message}");
+
+            MessageTextBox.Text = "";
+            MessageTextBox.Focus(FocusState.Programmatic);
         }
 
         private async void ConnectSelected_Click(object sender, RoutedEventArgs e)
@@ -557,7 +561,6 @@ namespace direct_module
                 }
 
                 MergePeer(existing, incoming);
-                PeerList.Items[i] = existing;
                 UpdatePeerCount();
                 UpdateSelectedPeerDetails(PeerList.SelectedItem as PeerInfo);
                 AddLog($"Peer統合: {existing.DisplayText}");
@@ -647,7 +650,6 @@ namespace direct_module
                     }
 
                     MergePeer(item, peer);
-                    PeerList.Items[i] = item;
                     UpdatePeerCount();
                     UpdateSelectedPeerDetails(PeerList.SelectedItem as PeerInfo);
                     AddLog($"Peer表示更新: {item.DisplayText}");
@@ -758,7 +760,46 @@ namespace direct_module
         {
             LogTextBox.Select(LogTextBox.Text.Length, 0);
         }
+        private void MessageTextBox_KeyDown(object sender, Microsoft.UI.Xaml.Input.KeyRoutedEventArgs e)
+        {
+            if (e.Key == Windows.System.VirtualKey.Enter)
+            {
+                SendTcpToSelected_Click(SendMessageButton, new RoutedEventArgs());
+                e.Handled = true;
+            }
+        }
 
+        private void SelectFile_Click(object sender, RoutedEventArgs e)
+        {
+            // 後でファイル選択機能を実装
+        }
+
+        private async System.Threading.Tasks.Task RunWithCooldownAsync(
+            Button button,
+            Func<System.Threading.Tasks.Task> action,
+            int cooldownMilliseconds = 3000)
+        {
+            if (!button.IsEnabled)
+            {
+                return;
+            }
+
+            button.IsEnabled = false;
+
+            try
+            {
+                await action();
+            }
+            finally
+            {
+                await System.Threading.Tasks.Task.Delay(cooldownMilliseconds);
+                button.IsEnabled = true;
+            }
+        }
+
+        /// <summary>
+        /// 相手情報をUsersテーブルへ保存
+        /// </summary>
         private void SavePeer(PeerInfo peer)
         {
             if (string.IsNullOrWhiteSpace(peer.DeviceId))
@@ -777,6 +818,9 @@ namespace direct_module
             AddLog($"Usersテーブルへ保存: {peer.DisplayName}");
         }
 
+        /// <summary>
+        /// 自分のDeviceIdを取得（なければ新規作成）
+        /// </summary>
         private void InitializeMyUser()
         {
             var user = _userRepository.GetByMachineName(Environment.MachineName);
