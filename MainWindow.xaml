@@ -421,16 +421,199 @@
                 BorderBrush="{StaticResource StrokeBrush}"
                 BorderThickness="1"
                 CornerRadius="22">
-                <ScrollViewer VerticalScrollBarVisibility="Auto">
-                    <StackPanel Padding="18" Spacing="16">
-                        <Grid>
+                <Grid Padding="18" RowSpacing="16">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="220" />
+                    </Grid.RowDefinitions>
+
+                    <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto">
+                        <StackPanel Spacing="16">
+                            <Grid>
+                                <TextBlock FontSize="15" FontWeight="SemiBold" Foreground="{StaticResource AppInkBrush}" Text="詳細" />
+                            </Grid>
+
+                            <StackPanel HorizontalAlignment="Center" Spacing="10">
+                                <Grid>
+                                    <Ellipse Width="96" Height="96" Fill="#FF182732" />
+                                    <TextBlock
+                                        x:Name="SelectedPeerAvatarText"
+                                        HorizontalAlignment="Center"
+                                        VerticalAlignment="Center"
+                                        FontSize="28"
+                                        FontWeight="Bold"
+                                        Foreground="{StaticResource AccentBrush}"
+                                        Text="WD" />
+                                    <Ellipse
+                                        x:Name="SelectedPeerOnlineDot"
+                                        Width="18"
+                                        Height="18"
+                                        Margin="0,0,8,8"
+                                        HorizontalAlignment="Right"
+                                        VerticalAlignment="Bottom"
+                                        Fill="{StaticResource SubtleInkBrush}"
+                                        Stroke="#FF11161C"
+                                        StrokeThickness="3" />
+                                </Grid>
+                                <TextBlock
+                                    x:Name="SelectedPeerNameText"
+                                    HorizontalAlignment="Center"
+                                    FontSize="20"
+                                    FontWeight="SemiBold"
+                                    Foreground="{StaticResource AppInkBrush}"
+                                    Text="未選択"
+                                    TextAlignment="Center"
+                                    TextWrapping="Wrap" />
+                                <Border
+                                    Padding="10,5"
+                                    Background="{StaticResource LimeSoftBrush}"
+                                    BorderBrush="#55B8FF6A"
+                                    BorderThickness="1"
+                                    CornerRadius="12">
+                                    <TextBlock
+                                        x:Name="SelectedPeerStatusText"
+                                        FontSize="12"
+                                        Foreground="{StaticResource LimeBrush}"
+                                        Text="相手を選択してください" />
+                                </Border>
+                            </StackPanel>
+
+                            <Button
+                                x:Name="ReconnectButton"
+                                Content="再接続"
+                                Click="ReconnectButton_Click"
+                                IsEnabled="False"
+                                Style="{StaticResource GhostButtonStyle}" />
+
+                            <Border
+                                Padding="14"
+                                Background="{StaticResource PanelSoftBrush}"
+                                BorderBrush="{StaticResource StrokeBrush}"
+                                BorderThickness="1"
+                                CornerRadius="16">
+                                <StackPanel Spacing="10">
+                                    <TextBlock FontSize="13" FontWeight="SemiBold" Foreground="{StaticResource AppInkBrush}" Text="接続状態" />
+                                    <TextBlock
+                                        x:Name="SelectedPeerSourceText"
+                                        FontSize="13"
+                                        Foreground="{StaticResource MutedInkBrush}"
+                                        Text="BLE / Wi-Fi Direct の検出状況がここに表示されます。"
+                                        TextWrapping="Wrap" />
+                                    <ProgressBar
+                                        x:Name="SelectedPeerProgress"
+                                        Height="6"
+                                        Maximum="100"
+                                        Value="10"
+                                        Background="#22313B45"
+                                        Foreground="{StaticResource AccentBrush}" />
+                                </StackPanel>
+                            </Border>
+
+                            <StackPanel Spacing="10">
+                                <TextBlock Style="{StaticResource TinyLabelStyle}" Text="NETWORK" />
+                                <Border
+                                    Padding="12"
+                                    Background="{StaticResource PanelSoftBrush}"
+                                    BorderBrush="{StaticResource StrokeBrush}"
+                                    BorderThickness="1"
+                                    CornerRadius="14">
+                                    <StackPanel Spacing="8">
+                                        <TextBlock
+                                            x:Name="SelectedPeerIpText"
+                                            FontSize="13"
+                                            Foreground="{StaticResource AppInkBrush}"
+                                            Text="Remote IP: -" />
+                                        <TextBlock
+                                            x:Name="SelectedPeerSessionText"
+                                            FontSize="12"
+                                            Foreground="{StaticResource MutedInkBrush}"
+                                            Text="Session: -" />
+                                        <TextBlock
+                                            x:Name="SelectedPeerDeviceText"
+                                            FontSize="12"
+                                            Foreground="{StaticResource MutedInkBrush}"
+                                            Text="DeviceId: -"
+                                            TextWrapping="WrapWholeWords" />
+                                    </StackPanel>
+                                </Border>
+                            </StackPanel>
+
+                            <Expander Header="診断操作" IsExpanded="False">
+                                <StackPanel Padding="0,12,0,0" Spacing="10">
+                                    <Grid ColumnSpacing="8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <Button Click="SearchPeers_Click" Content="相手を探す" Style="{StaticResource GhostButtonStyle}" />
+                                        <Button Grid.Column="1" Click="StartListener_Click" Content="待ち受け" Style="{StaticResource GhostButtonStyle}" />
+                                    </Grid>
+
+                                    <Grid ColumnSpacing="8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <Button Grid.Column="1" Click="SearchDefaultButton_Click" Content="通常探索" Style="{StaticResource GhostButtonStyle}" />
+                                    </Grid>
+
+                                    <Grid ColumnSpacing="8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <Button Click="StartBleAdvertise_Click" Content="BLE広告" Style="{StaticResource GhostButtonStyle}" />
+                                        <Button Grid.Column="1" Click="StartBleScan_Click" Content="BLEスキャン" Style="{StaticResource GhostButtonStyle}" />
+                                    </Grid>
+
+                                    <TextBox
+                                        x:Name="TargetIpTextBox"
+                                        MinHeight="38"
+                                        Background="{StaticResource InputBrush}"
+                                        BorderBrush="{StaticResource StrokeBrush}"
+                                        BorderThickness="1"
+                                        Foreground="{StaticResource AppInkBrush}"
+                                        PlaceholderText="手入力IP 例: 192.168.1.23" />
+
+                                    <Grid ColumnSpacing="8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <Button Click="StartTcpServer_Click" Content="TCP待ち受け" Style="{StaticResource GhostButtonStyle}" />
+                                    </Grid>
+                                </StackPanel>
+                            </Expander>
+                        </StackPanel>
+                    </ScrollViewer>
+
+                    <Grid Grid.Row="1" RowSpacing="10">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
+
+                        <Grid ColumnSpacing="8">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*" />
                                 <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="Auto" />
                             </Grid.ColumnDefinitions>
-                            <TextBlock FontSize="15" FontWeight="SemiBold" Foreground="{StaticResource AppInkBrush}" Text="詳細" />
-                            <Button
+                            <TextBlock VerticalAlignment="Center" Style="{StaticResource TinyLabelStyle}" Text="LOG" />
+                            <CheckBox
+                                x:Name="ShowDebugLogCheckBox"
                                 Grid.Column="1"
+                                VerticalAlignment="Center"
+                                Content="詳細ログ"
+                                Foreground="{StaticResource MutedInkBrush}"
+                                IsChecked="False" />
+                            <Button
+                                Grid.Column="2"
+                                Click="ClearLog_Click"
+                                Content="ログ消去"
+                                Style="{StaticResource GhostButtonStyle}" />
+                            <Button
+                                Grid.Column="3"
                                 Click="ScrollLogBottom_Click"
                                 Style="{StaticResource IconOnlyButtonStyle}"
                                 ToolTipService.ToolTip="ログ末尾へ">
@@ -438,197 +621,22 @@
                             </Button>
                         </Grid>
 
-                        <StackPanel HorizontalAlignment="Center" Spacing="10">
-                            <Grid>
-                                <Ellipse Width="96" Height="96" Fill="#FF182732" />
-                                <TextBlock
-                                    x:Name="SelectedPeerAvatarText"
-                                    HorizontalAlignment="Center"
-                                    VerticalAlignment="Center"
-                                    FontSize="28"
-                                    FontWeight="Bold"
-                                    Foreground="{StaticResource AccentBrush}"
-                                    Text="WD" />
-                                <Ellipse
-                                    x:Name="SelectedPeerOnlineDot"
-                                    Width="18"
-                                    Height="18"
-                                    Margin="0,0,8,8"
-                                    HorizontalAlignment="Right"
-                                    VerticalAlignment="Bottom"
-                                    Fill="{StaticResource SubtleInkBrush}"
-                                    Stroke="#FF11161C"
-                                    StrokeThickness="3" />
-                            </Grid>
-                            <TextBlock
-                                x:Name="SelectedPeerNameText"
-                                HorizontalAlignment="Center"
-                                FontSize="20"
-                                FontWeight="SemiBold"
-                                Foreground="{StaticResource AppInkBrush}"
-                                Text="未選択"
-                                TextAlignment="Center"
-                                TextWrapping="Wrap" />
-                            <Border
-                                Padding="10,5"
-                                Background="{StaticResource LimeSoftBrush}"
-                                BorderBrush="#55B8FF6A"
-                                BorderThickness="1"
-                                CornerRadius="12">
-                                <TextBlock
-                                    x:Name="SelectedPeerStatusText"
-                                    FontSize="12"
-                                    Foreground="{StaticResource LimeBrush}"
-                                    Text="相手を選択してください" />
-                            </Border>
-                        </StackPanel>
-
-                        <Button
-                            x:Name="ReconnectButton"
-                            Content="再接続"
-                            Click="ReconnectButton_Click"
-                            IsEnabled="False"
-                            Style="{StaticResource GhostButtonStyle}" />
-
-                        <Border
-                            Padding="14"
-                            Background="{StaticResource PanelSoftBrush}"
+                        <TextBox
+                            x:Name="LogTextBox"
+                            Grid.Row="1"
+                            AcceptsReturn="True"
+                            Background="{StaticResource InputBrush}"
                             BorderBrush="{StaticResource StrokeBrush}"
                             BorderThickness="1"
-                            CornerRadius="16">
-                            <StackPanel Spacing="10">
-                                <TextBlock FontSize="13" FontWeight="SemiBold" Foreground="{StaticResource AppInkBrush}" Text="接続状態" />
-                                <TextBlock
-                                    x:Name="SelectedPeerSourceText"
-                                    FontSize="13"
-                                    Foreground="{StaticResource MutedInkBrush}"
-                                    Text="BLE / Wi-Fi Direct の検出状況がここに表示されます。"
-                                    TextWrapping="Wrap" />
-                                <ProgressBar
-                                    x:Name="SelectedPeerProgress"
-                                    Height="6"
-                                    Maximum="100"
-                                    Value="10"
-                                    Background="#22313B45"
-                                    Foreground="{StaticResource AccentBrush}" />
-                            </StackPanel>
-                        </Border>
-
-                        <StackPanel Spacing="10">
-                            <TextBlock Style="{StaticResource TinyLabelStyle}" Text="NETWORK" />
-                            <Border
-                                Padding="12"
-                                Background="{StaticResource PanelSoftBrush}"
-                                BorderBrush="{StaticResource StrokeBrush}"
-                                BorderThickness="1"
-                                CornerRadius="14">
-                                <StackPanel Spacing="8">
-                                    <TextBlock
-                                        x:Name="SelectedPeerIpText"
-                                        FontSize="13"
-                                        Foreground="{StaticResource AppInkBrush}"
-                                        Text="Remote IP: -" />
-                                    <TextBlock
-                                        x:Name="SelectedPeerSessionText"
-                                        FontSize="12"
-                                        Foreground="{StaticResource MutedInkBrush}"
-                                        Text="Session: -" />
-                                    <TextBlock
-                                        x:Name="SelectedPeerDeviceText"
-                                        FontSize="12"
-                                        Foreground="{StaticResource MutedInkBrush}"
-                                        Text="DeviceId: -"
-                                        TextWrapping="WrapWholeWords" />
-                                </StackPanel>
-                            </Border>
-                        </StackPanel>
-
-                        <Expander Header="診断操作" IsExpanded="False">
-                            <StackPanel Padding="0,12,0,0" Spacing="10">
-                                <Grid ColumnSpacing="8">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="*" />
-                                    </Grid.ColumnDefinitions>
-                                    <Button Click="SearchPeers_Click" Content="相手を探す" Style="{StaticResource GhostButtonStyle}" />
-                                    <Button Grid.Column="1" Click="StartListener_Click" Content="待ち受け" Style="{StaticResource GhostButtonStyle}" />
-                                </Grid>
-
-                                <Grid ColumnSpacing="8">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="*" />
-                                    </Grid.ColumnDefinitions>
-                                    <Button Grid.Column="1" Click="SearchDefaultButton_Click" Content="通常探索" Style="{StaticResource GhostButtonStyle}" />
-                                </Grid>
-
-                                <Grid ColumnSpacing="8">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="*" />
-                                    </Grid.ColumnDefinitions>
-                                    <Button Click="StartBleAdvertise_Click" Content="BLE広告" Style="{StaticResource GhostButtonStyle}" />
-                                    <Button Grid.Column="1" Click="StartBleScan_Click" Content="BLEスキャン" Style="{StaticResource GhostButtonStyle}" />
-                                </Grid>
-
-                                <TextBox
-                                    x:Name="TargetIpTextBox"
-                                    MinHeight="38"
-                                    Background="{StaticResource InputBrush}"
-                                    BorderBrush="{StaticResource StrokeBrush}"
-                                    BorderThickness="1"
-                                    Foreground="{StaticResource AppInkBrush}"
-                                    PlaceholderText="手入力IP 例: 192.168.1.23" />
-
-                                <Grid ColumnSpacing="8">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="*" />
-                                    </Grid.ColumnDefinitions>
-                                    <Button Click="StartTcpServer_Click" Content="TCP待ち受け" Style="{StaticResource GhostButtonStyle}" />
-                                </Grid>
-
-                                <Grid ColumnSpacing="8">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="*" />
-                                    </Grid.ColumnDefinitions>
-                                    <Button Click="ClearLog_Click" Content="ログ消去" Style="{StaticResource GhostButtonStyle}" />
-                                    <Button Grid.Column="1" Click="ScrollLogBottom_Click" Content="末尾へ" Style="{StaticResource GhostButtonStyle}" />
-                                </Grid>
-                            </StackPanel>
-                        </Expander>
-
-                        <StackPanel Spacing="10">
-                            <Grid>
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*" />
-                                    <ColumnDefinition Width="Auto" />
-                                </Grid.ColumnDefinitions>
-                                <TextBlock Style="{StaticResource TinyLabelStyle}" Text="LOG" />
-                                <CheckBox
-                                    x:Name="ShowDebugLogCheckBox"
-                                    Grid.Column="1"
-                                    Content="詳細ログ"
-                                    Foreground="{StaticResource MutedInkBrush}"
-                                    IsChecked="False" />
-                            </Grid>
-                            <TextBox
-                                x:Name="LogTextBox"
-                                MinHeight="260"
-                                AcceptsReturn="True"
-                                Background="{StaticResource InputBrush}"
-                                BorderBrush="{StaticResource StrokeBrush}"
-                                BorderThickness="1"
-                                FontFamily="Consolas"
-                                FontSize="12"
-                                Foreground="{StaticResource MutedInkBrush}"
-                                IsReadOnly="True"
-                                ScrollViewer.HorizontalScrollBarVisibility="Auto"
-                                ScrollViewer.VerticalScrollBarVisibility="Auto"
-                                TextWrapping="NoWrap" />
-                        </StackPanel>
-                    </StackPanel>
-                </ScrollViewer>
+                            FontFamily="Consolas"
+                            FontSize="12"
+                            Foreground="{StaticResource MutedInkBrush}"
+                            IsReadOnly="True"
+                            ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                            ScrollViewer.VerticalScrollBarVisibility="Auto"
+                            TextWrapping="NoWrap" />
+                    </Grid>
+                </Grid>
             </Border>
         </Grid>
     </Grid>

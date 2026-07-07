@@ -1522,12 +1522,24 @@ namespace direct_module
             string line = $"[{DateTime.Now:HH:mm:ss.fff}] [{effectiveLevel}] {message}";
             _logLines.Add(line);
 
+            bool trimmed = false;
             while (_logLines.Count > MaxLogLines)
             {
                 _logLines.RemoveAt(0);
+                trimmed = true;
             }
 
-            LogTextBox.Text = string.Join(Environment.NewLine, _logLines);
+            if (trimmed)
+            {
+                LogTextBox.Text = string.Join(Environment.NewLine, _logLines);
+            }
+            else
+            {
+                LogTextBox.Text = string.IsNullOrEmpty(LogTextBox.Text)
+                    ? line
+                    : $"{LogTextBox.Text}{Environment.NewLine}{line}";
+            }
+
             MoveLogCaretToEnd();
         }
 
@@ -1648,7 +1660,6 @@ namespace direct_module
         {
             LogTextBox.SelectionStart = LogTextBox.Text.Length;
             LogTextBox.SelectionLength = 0;
-            LogTextBox.Focus(FocusState.Programmatic);
         }
     }
 }
