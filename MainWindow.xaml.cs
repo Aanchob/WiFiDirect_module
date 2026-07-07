@@ -549,9 +549,9 @@ namespace direct_module
             switch (messageType.ToLowerInvariant())
             {
                 case "hello":
-                    DispatcherQueue.TryEnqueue(() =>
+                    DispatcherQueue.TryEnqueue(async () =>
                     {
-                        HandleHelloMessage(message, sourceConnection);
+                        await HandleHelloMessageAsync(message, sourceConnection);
                     });
                     return;
 
@@ -559,7 +559,19 @@ namespace direct_module
                     break;
 
                 case "ping":
+                    DispatcherQueue.TryEnqueue(async () =>
+                    {
+                        await HandlePingMessageAsync(message, sourceConnection);
+                    });
+                    return;
+
                 case "pong":
+                    DispatcherQueue.TryEnqueue(() =>
+                    {
+                        HandlePongMessage(message, sourceConnection);
+                    });
+                    return;
+
                 case "system":
                 case "file_start":
                 case "file_chunk":
@@ -618,7 +630,76 @@ namespace direct_module
             }
         }
 
-        private void HandleHelloMessage(ChatMessage message, ChatConnection sourceConnection)
+        private async System.Threading.Tasks.Task HandlePingMessageAsync(ChatMessage message, ChatConnection sourceConnection)
+        {
+            try
+            {
+                AddLog($"PING受信: Peer={GetConnectionPeerName(sourceConnection)}", LogLevel.Debug);
+
+                var pong = new ChatMessage
+                {
+                    Type = "pong",
+                    SenderId = LocalPeerId,
+                    SenderName = Environment.MachineName,
+                    ShortSessionId = GetLocalShortSessionId(),
+                    Body = ""
+                };
+
+                await sourceConnection.SendAsync(pong);
+                AddLog($"PONG送信: Peer={GetConnectionPeerName(sourceConnection)}", LogLevel.Debug);
+            }
+            catch (Exception ex)
+            {
+                AddLog($"PONG送信失敗: Peer={GetConnectionPeerName(sourceConnection)}", LogLevel.Error);
+                AddLog($"例外名: {ex.GetType().Name}", LogLevel.Error);
+                AddLog($"HResult: 0x{ex.HResult:X8}", LogLevel.Error);
+                AddLog($"Message: {ex.Message}", LogLevel.Error);
+            }
+        }
+
+        private void HandlePongMessage(ChatMessage message, ChatConnection sourceConnection)
+        {
+            sourceConnection.LastPongAt = DateTime.Now;
+            sourceConnection.LastResponseAt = sourceConnection.LastPongAt;
+            sourceConnection.IsPingWaiting = false;
+
+            AddLog($"PONG受信: Peer={GetConnectionPeerName(sourceConnection)}", LogLevel.Debug);
+            AddLog($"接続確認成功: Peer={GetConnectionPeerName(sourceConnection)}", LogLevel.Success);
+        }
+
+        private async System.Threading.Tasks.Task SendPingAfterHelloAsync(ChatConnection connection)
+        {
+            try
+            {
+                AddLog($"PING送信: Peer={GetConnectionPeerName(connection)}", LogLevel.Debug);
+                await connection.SendPingAsync(LocalPeerId, Environment.MachineName, GetLocalShortSessionId());
+            }
+            catch (Exception ex)
+            {
+                connection.IsPingWaiting = false;
+                AddLog($"PING送信失敗: Peer={GetConnectionPeerName(connection)}", LogLevel.Error);
+                AddLog($"例外名: {ex.GetType().Name}", LogLevel.Error);
+                AddLog($"HResult: 0x{ex.HResult:X8}", LogLevel.Error);
+                AddLog($"Message: {ex.Message}", LogLevel.Error);
+            }
+        }
+
+        private static string GetConnectionPeerName(ChatConnection connection)
+        {
+            if (!string.IsNullOrWhiteSpace(connection.PeerName))
+            {
+                return connection.PeerName;
+            }
+
+            if (!string.IsNullOrWhiteSpace(connection.RemoteIpAddress))
+            {
+                return connection.RemoteIpAddress;
+            }
+
+            return connection.PeerId;
+        }
+
+        private async System.Threading.Tasks.Task HandleHelloMessageAsync(ChatMessage message, ChatConnection sourceConnection)
         {
             string shortSessionId = message.ShortSessionId ?? "";
             AddLog("SelectedItemには依存せずHELLO判定します", LogLevel.Debug);
@@ -678,6 +759,7 @@ namespace direct_module
             AddLog("HELLO確認成功: BLE Peerと接続先が一致", LogLevel.Success);
             AddLog("HELLO確認後、チャット準備完了", LogLevel.Success);
             UpdateSendButtonState();
+            await SendPingAfterHelloAsync(sourceConnection);
         }
 
         private PeerInfo? FindPeerByShortSessionId(string shortSessionId)

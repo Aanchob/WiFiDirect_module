@@ -43,6 +43,14 @@ namespace direct_module.Network
 
         public bool IsPreparing { get; set; }
 
+        public DateTime? LastPingAt { get; set; }
+
+        public DateTime? LastPongAt { get; set; }
+
+        public DateTime? LastResponseAt { get; set; }
+
+        public bool IsPingWaiting { get; set; }
+
         public bool IsHelloVerified { get; set; }
 
         public bool IsReady { get; set; }
@@ -128,6 +136,23 @@ namespace direct_module.Network
             };
 
             await SendAsync(chatMessage);
+        }
+
+        public async Task SendPingAsync(string senderId, string senderName, string shortSessionId)
+        {
+            var ping = new ChatMessage
+            {
+                Type = "ping",
+                SenderId = senderId,
+                SenderName = senderName,
+                ShortSessionId = shortSessionId,
+                Body = ""
+            };
+
+            LastPingAt = DateTime.Now;
+            IsPingWaiting = true;
+
+            await SendAsync(ping);
         }
 
         public async Task SendAsync(ChatMessage message)
@@ -288,6 +313,7 @@ namespace direct_module.Network
             _isConnected = false;
             _isReceiveLoopStarted = false;
             IsPreparing = false;
+            IsPingWaiting = false;
             IsHelloVerified = false;
             IsReady = false;
 
