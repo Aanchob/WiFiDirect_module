@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using direct_module.WiFiDirect.Models;
 
@@ -8,9 +9,17 @@ namespace direct_module.Network
 {
     public class ChatConnectionManager
     {
+        private static readonly TimeSpan PingInterval = TimeSpan.FromSeconds(10);
+        private static readonly TimeSpan PongTimeout = TimeSpan.FromSeconds(30);
+
         private readonly List<ChatConnection> _connections = new();
         private readonly HashSet<string> _receivedMessageIds = new(StringComparer.OrdinalIgnoreCase);
         private readonly object _lock = new();
+        private CancellationTokenSource? _keepAliveCancellation;
+        private Task? _keepAliveTask;
+        private string _keepAliveSenderId = "";
+        private string _keepAliveSenderName = "";
+        private string _keepAliveShortSessionId = "";
 
         public event Action<string>? LogReceived;
         public event Action<ChatMessage, ChatConnection>? MessageReceived;
@@ -156,6 +165,47 @@ namespace direct_module.Network
                    FindByPeerId(peer.DeviceId);
         }
 
+        public void StartKeepAlive(string senderId, string senderName, string shortSessionId)
+        {
+            lock (_lock)
+            {
+                _keepAliveSenderId = senderId;
+                _keepAliveSenderName = senderName;
+                _keepAliveShortSessionId = shortSessionId;
+
+                if (_keepAliveCancellation != null)
+                {
+                    return;
+                }
+
+                _keepAliveCancellation = new CancellationTokenSource();
+                _keepAliveTask = RunKeepAliveAsync(_keepAliveCancellation.Token);
+            }
+
+            LogReceived?.Invoke("定期ping開始");
+        }
+
+        public void StopKeepAlive()
+        {
+            CancellationTokenSource? cancellation;
+
+            lock (_lock)
+            {
+                cancellation = _keepAliveCancellation;
+                _keepAliveCancellation = null;
+                _keepAliveTask = null;
+            }
+
+            if (cancellation == null)
+            {
+                return;
+            }
+
+            cancellation.Cancel();
+            cancellation.Dispose();
+            LogReceived?.Invoke("定期ping停止");
+        }
+
         public async Task BroadcastAsync(ChatMessage message)
         {
             await BroadcastExceptAsync(message, null);
@@ -196,6 +246,77 @@ namespace direct_module.Network
             }
         }
 
+        private async Task RunKeepAliveAsync(CancellationToken cancellationToken)
+        {
+            using var timer = new PeriodicTimer(PingInterval);
+
+            try
+            {
+                while (await timer.WaitForNextTickAsync(cancellationToken))
+                {
+                    await SendKeepAlivePingAsync();
+                }
+            }
+            catch (OperationCanceledException)
+            {
+            }
+        }
+
+        private async Task SendKeepAlivePingAsync()
+        {
+            List<ChatConnection> targets;
+            string senderId;
+            string senderName;
+            string shortSessionId;
+
+            lock (_lock)
+            {
+                targets = _connections
+                    .Where(IsKeepAliveTarget)
+                    .ToList();
+                senderId = _keepAliveSenderId;
+                senderName = _keepAliveSenderName;
+                shortSessionId = _keepAliveShortSessionId;
+            }
+
+            DateTime now = DateTime.Now;
+
+            foreach (ChatConnection connection in targets)
+            {
+                if (IsPongTimedOut(connection, now))
+                {
+                    LogReceived?.Invoke($"PONGタイムアウト: Peer={GetConnectionPeerName(connection)}");
+                    LogReceived?.Invoke($"PONGタイムアウトにより切断扱い: Peer={GetConnectionPeerName(connection)}");
+                    connection.Close();
+                    continue;
+                }
+
+                if (connection.IsPingWaiting)
+                {
+                    continue;
+                }
+
+                LogReceived?.Invoke($"定期PING送信: Peer={GetConnectionPeerName(connection)}");
+                await connection.SendPingAsync(senderId, senderName, shortSessionId);
+            }
+        }
+
+        private static bool IsKeepAliveTarget(ChatConnection connection)
+        {
+            return connection.IsReady &&
+                   connection.IsHelloVerified &&
+                   connection.IsConnected &&
+                   !connection.IsPreparing;
+        }
+
+        private static bool IsPongTimedOut(ChatConnection connection, DateTime now)
+        {
+            return connection.LastPingAt.HasValue &&
+                   connection.IsPingWaiting &&
+                   (!connection.LastPongAt.HasValue || connection.LastPongAt.Value < connection.LastPingAt.Value) &&
+                   now - connection.LastPingAt.Value > PongTimeout;
+        }
+
         private void OnConnectionLogReceived(string message)
         {
             LogReceived?.Invoke(message);
@@ -217,6 +338,21 @@ namespace direct_module.Network
             LogReceived?.Invoke($"ChatConnectionManagerから切断Connectionを削除: Peer={connection.PeerName}");
             ConnectionDisconnected?.Invoke(connection);
             RemoveConnection(connection);
+        }
+
+        private static string GetConnectionPeerName(ChatConnection connection)
+        {
+            if (!string.IsNullOrWhiteSpace(connection.PeerName))
+            {
+                return connection.PeerName;
+            }
+
+            if (!string.IsNullOrWhiteSpace(connection.RemoteIpAddress))
+            {
+                return connection.RemoteIpAddress;
+            }
+
+            return connection.PeerId;
         }
 
         private static string GetPeerConnectionId(PeerInfo peer)

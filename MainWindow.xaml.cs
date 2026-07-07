@@ -62,6 +62,8 @@ namespace direct_module
             _chatConnectionManager.MessageReceived += OnChatMessageReceived;
             _chatConnectionManager.ConnectionDisconnected += OnChatConnectionDisconnected;
             _chatConnectionManager.ConnectionsChanged += OnChatConnectionsChanged;
+            _chatConnectionManager.StartKeepAlive(LocalPeerId, Environment.MachineName, GetLocalShortSessionId());
+            Closed += MainWindow_Closed;
 
             SetChatReady(false);
         }
@@ -71,6 +73,11 @@ namespace direct_module
         private string GetLocalShortSessionId()
         {
             return _localSessionId.ToString("N")[..4];
+        }
+
+        private void MainWindow_Closed(object sender, WindowEventArgs args)
+        {
+            _chatConnectionManager.StopKeepAlive();
         }
 
         private async void SearchPeers_Click(object sender, RoutedEventArgs e)
