@@ -21,15 +21,18 @@ namespace direct_module.Network
                 return;
             }
 
+            StreamSocketListener? listener = null;
+
             try
             {
                 LogReceived?.Invoke("Chat TCP Server待ち受け開始");
                 LogReceived?.Invoke($"Listen Port: {port}");
 
-                _listener = new StreamSocketListener();
-                _listener.ConnectionReceived += OnConnectionReceived;
+                listener = new StreamSocketListener();
+                listener.ConnectionReceived += OnConnectionReceived;
 
-                await _listener.BindServiceNameAsync(port.ToString());
+                await listener.BindServiceNameAsync(port.ToString());
+                _listener = listener;
 
                 LogReceived?.Invoke($"TCPサーバー待ち受け開始: Port={port}");
                 LogReceived?.Invoke("Chat TCP接続待機中");
@@ -37,6 +40,14 @@ namespace direct_module.Network
             }
             catch (Exception ex)
             {
+                if (listener != null)
+                {
+                    listener.ConnectionReceived -= OnConnectionReceived;
+                    listener.Dispose();
+                }
+
+                _listener = null;
+
                 LogReceived?.Invoke("TCPサーバー待ち受け開始失敗");
                 LogReceived?.Invoke($"例外名: {ex.GetType().Name}");
                 LogReceived?.Invoke($"HResult: 0x{ex.HResult:X8}");
