@@ -36,7 +36,6 @@ namespace direct_module
         private readonly TcpServer _tcpServer = new();
         private readonly ChatConnectionManager _chatConnectionManager = new();
         private readonly List<string> _logLines = new();
-        private readonly HashSet<string> _autoWiFiDirectConnectInProgress = new(StringComparer.OrdinalIgnoreCase);
         private readonly Guid _localSessionId = Guid.NewGuid();
 
         private ChatRole _chatRole = ChatRole.Client;
@@ -80,7 +79,6 @@ namespace direct_module
             AddLog($"Local ShortSessionId: {GetLocalShortSessionId()}");
 
             _manager.Start(Environment.MachineName, GetLocalShortSessionId());
-            await EnsureTcpServerStartedAsync("相手探索開始");
             StartBleAdvertiseCore();
             _discoveryManager.StartScan();
 
@@ -249,11 +247,9 @@ namespace direct_module
 
         private async void OnPeerFound(PeerInfo peer)
         {
-            DispatcherQueue.TryEnqueue(async () =>
+            DispatcherQueue.TryEnqueue(() =>
             {
                 AddOrMergePeer(peer);
-                PeerInfo mergedPeer = FindMergedPeer(peer);
-                await TryAutoConnectWiFiDirectAsync(mergedPeer);
             });
 
             if (peer.DiscoveredByBle)
@@ -287,8 +283,6 @@ namespace direct_module
                 AddLog($"Wi-Fi Direct接続完了通知: {peer.DisplayText}", LogLevel.Success);
                 AddOrMergePeer(peer);
                 await EnsureTcpServerStartedAsync("Wi-Fi Direct接続完了");
-
-                await RebindTcpServerAfterWiFiDirectConnectedAsync();
 
                 if (_chatRole == ChatRole.Client)
                 {
@@ -389,14 +383,9 @@ namespace direct_module
             };
 
             _chatConnectionManager.AddConnection(connection);
-            peer.IsTcpConnecting = true;
-            peer.LastConnectError = "";
-            RefreshPeerDisplay(peer);
             await connection.ConnectAsync(peer.RemoteIpAddress, LocalTcpPort);
 
-            peer.IsTcpConnecting = false;
             peer.IsTcpConnected = connection.IsConnected;
-            peer.LastConnectError = connection.IsConnected ? "" : "TCP preconnect failed";
             RefreshPeerDisplay(peer);
 
             return connection;
@@ -427,8 +416,6 @@ namespace direct_module
                 }
 
                 var totalWatch = Stopwatch.StartNew();
-                peer.IsTcpConnecting = true;
-                peer.LastConnectError = "";
                 peer.IsTcpConnected = false;
                 peer.IsChatReady = false;
                 peer.StatusText = "TCP準備中";
@@ -442,7 +429,6 @@ namespace direct_module
 
                 if (connection?.IsConnected == true && connection.IsReceiveLoopStarted)
                 {
-                    peer.IsTcpConnecting = false;
                     peer.IsTcpConnected = true;
                     peer.IsChatReady = false;
                     peer.StatusText = "HELLO確認中";
@@ -457,10 +443,8 @@ namespace direct_module
                 }
                 else
                 {
-                    peer.IsTcpConnecting = false;
                     peer.IsTcpConnected = false;
                     peer.IsChatReady = false;
-                    peer.LastConnectError = "TCP preconnect failed";
                     peer.StatusText = "エラー";
                     RefreshPeerDisplay(peer);
                     SetChatReady(false);
@@ -471,10 +455,8 @@ namespace direct_module
             catch (Exception ex)
             {
                 SetChatReady(false);
-                peer.IsTcpConnecting = false;
                 peer.IsTcpConnected = false;
                 peer.IsChatReady = false;
-                peer.LastConnectError = ex.Message;
                 peer.StatusText = "エラー";
                 RefreshPeerDisplay(peer);
 
@@ -486,7 +468,6 @@ namespace direct_module
             }
             finally
             {
-                peer.IsTcpConnecting = false;
                 _isPreparingChatTcp = false;
             }
         }
@@ -600,9 +581,7 @@ namespace direct_module
                 };
 
                 AddLog("TCP HELLO送信");
-                var helloWatch = Stopwatch.StartNew();
                 await connection.SendAsync(hello);
-                AddLog($"HELLO送信完了: elapsedMs={helloWatch.ElapsedMilliseconds}", LogLevel.Debug);
             }
             catch (Exception ex)
             {
@@ -764,43 +743,12 @@ namespace direct_module
         {
             if (_tcpServer.IsStarted)
             {
-                MarkTcpServerReadyForPeers();
-                AddLog($"TCPサーバー待ち受け済み: Reason={reason}");
                 AddLog($"TCP待ち受けは開始済みです: Reason={reason}", LogLevel.Debug);
                 return;
             }
 
             AddLog($"TCP待ち受け開始: Port={LocalTcpPort}, Reason={reason}");
-            AddLog($"Chat TCP Server待ち受け開始: Port={LocalTcpPort}, Reason={reason}");
             await _tcpServer.StartAsync(LocalTcpPort);
-            MarkTcpServerReadyForPeers();
-        }
-
-        private async System.Threading.Tasks.Task RebindTcpServerAfterWiFiDirectConnectedAsync()
-        {
-            if (!_tcpServer.IsStarted)
-            {
-                await EnsureTcpServerStartedAsync("Wi-Fi Direct接続後");
-                return;
-            }
-
-            if (_chatConnectionManager.ConnectedCount > 0)
-            {
-                AddLog("TCPサーバー再バインドをスキップ: 既存TCP接続あり", LogLevel.Debug);
-                return;
-            }
-
-            AddLog("Wi-Fi Direct接続後のTCPサーバー再バインドを実行します");
-            await _tcpServer.RestartAsync(LocalTcpPort, "Wi-Fi Direct接続後");
-            MarkTcpServerReadyForPeers();
-        }
-
-        private void MarkTcpServerReadyForPeers()
-        {
-            foreach (PeerInfo peer in PeerList.Items.Cast<PeerInfo>())
-            {
-                peer.IsTcpServerReady = true;
-            }
         }
 
         private void SetChatReady(bool isReady)
@@ -893,7 +841,6 @@ namespace direct_module
                 }
 
                 MergePeer(existing, incoming);
-                existing.IsAutoConnectEligible |= IsSafeAutoConnectMatchReason(matchReason);
                 RefreshPeerDisplay(existing);
 
                 LogLevel level = matchReason.StartsWith("注意:", StringComparison.Ordinal)
@@ -906,75 +853,6 @@ namespace direct_module
 
             PeerList.Items.Add(incoming);
             AddLog($"Peer追加: {incoming.DisplayText}");
-        }
-
-        private PeerInfo FindMergedPeer(PeerInfo incoming)
-        {
-            return PeerList.Items
-                .Cast<PeerInfo>()
-                .FirstOrDefault(peer =>
-                    HasSameValue(peer.ShortSessionId, incoming.ShortSessionId) ||
-                    HasSameValue(peer.DeviceId, incoming.DeviceId) ||
-                    HasSameValue(peer.DisplayName, incoming.DisplayName) ||
-                    HasSameValue(peer.BleName, incoming.BleName) ||
-                    HasSameValue(peer.WiFiDirectName, incoming.WiFiDirectName))
-                ?? incoming;
-        }
-
-        private async System.Threading.Tasks.Task TryAutoConnectWiFiDirectAsync(PeerInfo peer)
-        {
-            if (!ShouldAutoConnectWiFiDirect(peer))
-            {
-                return;
-            }
-
-            string key = GetPeerConnectionId(peer);
-            if (!_autoWiFiDirectConnectInProgress.Add(key))
-            {
-                AddLog($"Auto Wi-Fi Direct connect skipped: already running, Peer={peer.DisplayName}", LogLevel.Debug);
-                return;
-            }
-
-            try
-            {
-                AddLog($"Auto Wi-Fi Direct connect start: Peer={peer.DisplayName}, Reason=safe match");
-                AddLog($"Peer merge -> Wi-Fi Direct connect start elapsed marker: Peer={peer.DisplayName}", LogLevel.Debug);
-                await _manager.ConnectAsync(peer);
-                RefreshPeerDisplay(peer);
-            }
-            finally
-            {
-                _autoWiFiDirectConnectInProgress.Remove(key);
-            }
-        }
-
-        private static bool ShouldAutoConnectWiFiDirect(PeerInfo peer)
-        {
-            if (peer.IsConnected || peer.IsWifiDirectConnected)
-            {
-                return false;
-            }
-
-            if (!peer.DiscoveredByBle || !peer.DiscoveredByWiFiDirect)
-            {
-                return false;
-            }
-
-            if (string.IsNullOrWhiteSpace(peer.DeviceId) ||
-                peer.DeviceId.Contains("_PendingRequest", StringComparison.OrdinalIgnoreCase))
-            {
-                return false;
-            }
-
-            return peer.IsAutoConnectEligible &&
-                   (!string.IsNullOrWhiteSpace(peer.ShortSessionId) ||
-                    HasSameValue(peer.BleName, peer.WiFiDirectName));
-        }
-
-        private static bool IsSafeAutoConnectMatchReason(string matchReason)
-        {
-            return matchReason.StartsWith("ShortSessionId", StringComparison.OrdinalIgnoreCase) ||
-                   matchReason.StartsWith("DisplayName", StringComparison.OrdinalIgnoreCase);
         }
 
         private static string GetPeerMatchReason(PeerInfo existing, PeerInfo incoming)
@@ -1259,9 +1137,6 @@ namespace direct_module
                 "Kind",
                 "IsEnabled",
                 "InformationElements.Count",
-                "InformationElement",
-                "ConnectAttempt",
-                "elapsedMs",
                 "LegacySettings.IsEnabled",
                 "ListenStateDiscoverability",
                 "LocalServiceName",
