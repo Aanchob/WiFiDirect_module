@@ -171,7 +171,7 @@ namespace direct_module.WiFiDirect
                 LogReceived?.Invoke($"RemoteHostName: {endpoint.RemoteHostName.DisplayName}");
                 LogReceived?.Invoke($"RemoteServiceName: {endpoint.RemoteServiceName}");
 
-                if (string.IsNullOrWhiteSpace(peer.RemoteIpAddress))
+                if (!string.Equals(peer.RemoteIpAddress, endpoint.RemoteHostName.DisplayName, StringComparison.OrdinalIgnoreCase))
                 {
                     peer.RemoteIpAddress = endpoint.RemoteHostName.DisplayName;
                     LogReceived?.Invoke($"Wi-Fi Direct RemoteIpAddress保存: {peer.RemoteIpAddress}");

@@ -925,20 +925,25 @@ namespace direct_module
             {
                 await EnsureTcpServerStartedAsync("手動再接続");
 
+                if (!string.IsNullOrWhiteSpace(peer.DeviceId) &&
+                    !peer.DeviceId.Contains("_PendingRequest", StringComparison.OrdinalIgnoreCase))
+                {
+                    AddLog($"再接続中: Peer={peer.DisplayName}");
+                    AddLog($"再接続処理を開始しました: Peer={peer.DisplayName}");
+                    peer.IsConnected = false;
+                    peer.IsTcpConnected = false;
+                    peer.IsHelloVerified = false;
+                    peer.IsChatReady = false;
+                    await _manager.ConnectAsync(peer);
+                    RefreshPeerDisplay(peer);
+                    return;
+                }
+
                 if (!string.IsNullOrWhiteSpace(peer.RemoteIpAddress))
                 {
                     AddLog($"再接続中: Peer={peer.DisplayName}");
                     AddLog($"再接続処理を開始しました: Peer={peer.DisplayName}");
                     await PrepareChatTcpConnectionAsync(peer, "再接続中");
-                    return;
-                }
-
-                if (!string.IsNullOrWhiteSpace(peer.DeviceId) &&
-                    !peer.DeviceId.Contains("_PendingRequest", StringComparison.OrdinalIgnoreCase))
-                {
-                    AddLog($"再接続処理を開始しました: Peer={peer.DisplayName}");
-                    await _manager.ConnectAsync(peer);
-                    RefreshPeerDisplay(peer);
                     return;
                 }
 
