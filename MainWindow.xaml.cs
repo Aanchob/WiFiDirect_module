@@ -672,6 +672,7 @@ namespace direct_module
             }
 
             ApplyHelloToPeer(matchedPeer, message, sourceConnection);
+            AddLog($"HELLO確認後にPeerを確定紐付け: {matchedPeer.DisplayName}", LogLevel.Success);
             AddLog($"ChatConnectionとPeerInfoを紐付けました: {matchedPeer.DisplayName}");
             AddLog($"PeerごとのHELLO確認成功: {matchedPeer.DisplayName}", LogLevel.Success);
             AddLog("HELLO確認成功: BLE Peerと接続先が一致", LogLevel.Success);
@@ -862,6 +863,11 @@ namespace direct_module
                 string matchReason = GetPeerMatchReason(existing, incoming);
                 if (string.IsNullOrEmpty(matchReason))
                 {
+                    if (IsPartialNameMatchCandidate(existing, incoming))
+                    {
+                        AddLog($"Peer名の部分一致候補を検出しましたが、自動統合しません: {existing.DisplayName} / {incoming.DisplayName}", LogLevel.Debug);
+                    }
+
                     continue;
                 }
 
@@ -877,6 +883,7 @@ namespace direct_module
             }
 
             PeerList.Items.Add(incoming);
+            AddLog($"確実な照合キーがないため新規Peerとして追加: {incoming.DisplayName}", LogLevel.Debug);
             AddLog($"Peer追加: {incoming.DisplayText}");
         }
 
@@ -887,14 +894,19 @@ namespace direct_module
                 return $"ShortSessionId一致 ({incoming.ShortSessionId})";
             }
 
-            if (HasSameValue(existing.MatchKey, incoming.MatchKey))
-            {
-                return $"MatchKey一致 ({incoming.MatchKey})";
-            }
-
             if (HasSameValue(existing.DeviceId, incoming.DeviceId))
             {
                 return "DeviceId一致";
+            }
+
+            if (HasSameValue(existing.RemoteIpAddress, incoming.RemoteIpAddress))
+            {
+                return $"RemoteIpAddress一致 ({incoming.RemoteIpAddress})";
+            }
+
+            if (HasSameValue(existing.MatchKey, incoming.MatchKey))
+            {
+                return $"MatchKey一致 ({incoming.MatchKey})";
             }
 
             if (HasSameValue(existing.DisplayName, incoming.DisplayName))
@@ -902,18 +914,19 @@ namespace direct_module
                 return $"DisplayName完全一致 ({incoming.DisplayName})";
             }
 
+            return "";
+        }
+
+        private static bool IsPartialNameMatchCandidate(PeerInfo existing, PeerInfo incoming)
+        {
             string existingName = existing.DisplayName ?? "";
             string incomingName = incoming.DisplayName ?? "";
 
-            if (existingName.Length >= 4 &&
-                incomingName.Length >= 4 &&
-                (existingName.Contains(incomingName, StringComparison.OrdinalIgnoreCase) ||
-                 incomingName.Contains(existingName, StringComparison.OrdinalIgnoreCase)))
-            {
-                return $"注意: 名前の部分一致 ({existingName} / {incomingName})";
-            }
-
-            return "";
+            return existingName.Length >= 4 &&
+                   incomingName.Length >= 4 &&
+                   !string.Equals(existingName, incomingName, StringComparison.OrdinalIgnoreCase) &&
+                   (existingName.Contains(incomingName, StringComparison.OrdinalIgnoreCase) ||
+                    incomingName.Contains(existingName, StringComparison.OrdinalIgnoreCase));
         }
 
         private static bool HasSameValue(string left, string right)
