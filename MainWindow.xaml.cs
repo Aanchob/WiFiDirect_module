@@ -2,13 +2,20 @@ using direct_module.Discovery;
 using direct_module.Network;
 using direct_module.WiFiDirect;
 using direct_module.WiFiDirect.Models;
+using Microsoft.UI;
+using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Input;
+using Microsoft.UI.Xaml.Media;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
+using Windows.Graphics;
 using Windows.Networking.Sockets;
+using Windows.System;
+using WinRT.Interop;
 
 namespace direct_module
 {
@@ -43,6 +50,8 @@ namespace direct_module
         public MainWindow()
         {
             InitializeComponent();
+            Title = "NOVA Chat";
+            ResizeWindow(1440, 920);
 
             _manager = new WiFiDirectManager();
             _discoveryManager = new DiscoveryManager();
@@ -66,6 +75,8 @@ namespace direct_module
             Closed += MainWindow_Closed;
 
             SetChatReady(false);
+            UpdatePeerCount();
+            UpdateSelectedPeerDetails(null);
         }
 
         private string LocalPeerId => _localSessionId.ToString("N");
@@ -78,6 +89,14 @@ namespace direct_module
         private void MainWindow_Closed(object sender, WindowEventArgs args)
         {
             _chatConnectionManager.StopKeepAlive();
+        }
+
+        private void ResizeWindow(int width, int height)
+        {
+            IntPtr windowHandle = WindowNative.GetWindowHandle(this);
+            WindowId windowId = Win32Interop.GetWindowIdFromWindow(windowHandle);
+            AppWindow appWindow = AppWindow.GetFromWindowId(windowId);
+            appWindow.Resize(new SizeInt32(width, height));
         }
 
         private async void SearchPeers_Click(object sender, RoutedEventArgs e)
@@ -224,6 +243,23 @@ namespace direct_module
                 return;
             }
 
+            await ConnectPeerAsync(peer);
+        }
+
+        private async void ConnectPeerItem_Click(object sender, RoutedEventArgs e)
+        {
+            if ((sender as FrameworkElement)?.DataContext is not PeerInfo peer)
+            {
+                AddLog("接続対象Peerを取得できませんでした", LogLevel.Error);
+                return;
+            }
+
+            PeerList.SelectedItem = peer;
+            await ConnectPeerAsync(peer);
+        }
+
+        private async System.Threading.Tasks.Task ConnectPeerAsync(PeerInfo peer)
+        {
             if (peer.DeviceId.Contains("_PendingRequest", StringComparison.OrdinalIgnoreCase))
             {
                 AddLog("_PendingRequest付きDeviceIdのため通常接続を中止します", LogLevel.Error);
@@ -239,6 +275,21 @@ namespace direct_module
             AddLog($"Wi-Fi Direct接続開始: {peer.DisplayText}");
             await _manager.ConnectAsync(peer);
             RefreshPeerDisplay(peer);
+        }
+
+        private void MessageTextBox_KeyDown(object sender, KeyRoutedEventArgs e)
+        {
+            if (e.Key != VirtualKey.Enter)
+            {
+                return;
+            }
+
+            e.Handled = true;
+
+            if (SendMessageButton.IsEnabled)
+            {
+                SendMessage_Click(SendMessageButton, new RoutedEventArgs());
+            }
         }
 
         private void ClearLog_Click(object sender, RoutedEventArgs e)
@@ -1002,7 +1053,142 @@ namespace direct_module
 
         private void PeerList_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
+            UpdateSelectedPeerDetails(PeerList.SelectedItem as PeerInfo);
             UpdateSendButtonState();
+        }
+
+        private void UpdatePeerCount()
+        {
+            PeerCountText.Text = $"検出済み {PeerList.Items.Count}";
+        }
+
+        private void UpdateSelectedPeerDetails(PeerInfo? peer)
+        {
+            if (peer is null)
+            {
+                ChatHeaderAvatarText.Text = "--";
+                ChatHeaderTitleText.Text = "相手未選択";
+                ChatHeaderStatusText.Text = "Peerを選択すると状態が表示されます";
+                SelectedPeerAvatarText.Text = "--";
+                SelectedPeerNameText.Text = "未選択";
+                SelectedPeerStatusText.Text = "相手を選択してください";
+                SelectedPeerSourceText.Text = "BLE / Wi-Fi Direct の検出状況がここに表示されます。";
+                SelectedPeerProgress.Value = 10;
+                SelectedPeerIpText.Text = "Remote IP: -";
+                SelectedPeerSessionText.Text = "Session: -";
+                SelectedPeerDeviceText.Text = "DeviceId: -";
+                SelectedPeerOnlineDot.Fill = new SolidColorBrush(Colors.Gray);
+                return;
+            }
+
+            string displayName = string.IsNullOrWhiteSpace(peer.DisplayName)
+                ? "Unknown Peer"
+                : peer.DisplayName;
+            string status = GetPeerStatusText(peer);
+
+            ChatHeaderAvatarText.Text = CreateInitials(displayName);
+            ChatHeaderTitleText.Text = displayName;
+            ChatHeaderStatusText.Text = status;
+            SelectedPeerAvatarText.Text = CreateInitials(displayName);
+            SelectedPeerNameText.Text = displayName;
+            SelectedPeerStatusText.Text = status;
+            SelectedPeerSourceText.Text = $"{peer.SourceText} / TCP:{(peer.IsTcpConnected ? "接続済み" : peer.IsPreparingChatTcp ? "準備中" : "未接続")} / HELLO:{(peer.IsHelloVerified ? "確認済み" : "未確認")}";
+            SelectedPeerProgress.Value = GetPeerProgressValue(peer);
+            SelectedPeerIpText.Text = $"Remote IP: {GetDisplayValue(peer.RemoteIpAddress)}";
+            SelectedPeerSessionText.Text = $"Session: {GetDisplayValue(peer.ShortSessionId)}";
+            SelectedPeerDeviceText.Text = $"DeviceId: {GetDisplayValue(peer.DeviceId)}";
+            SelectedPeerOnlineDot.Fill = new SolidColorBrush(peer.IsChatReady ? Colors.LimeGreen : peer.IsTcpConnected ? Colors.DeepSkyBlue : Colors.Gray);
+        }
+
+        private static string GetPeerStatusText(PeerInfo peer)
+        {
+            if (!string.IsNullOrWhiteSpace(peer.StatusText))
+            {
+                return peer.StatusText;
+            }
+
+            if (peer.IsChatReady)
+            {
+                return "チャット準備完了";
+            }
+
+            if (peer.IsHelloVerified)
+            {
+                return "HELLO確認済み";
+            }
+
+            if (peer.IsTcpConnected)
+            {
+                return "TCP接続済み";
+            }
+
+            if (peer.IsPreparingChatTcp)
+            {
+                return "TCP準備中";
+            }
+
+            if (peer.IsConnected)
+            {
+                return "Wi-Fi Direct接続済み";
+            }
+
+            return "接続前";
+        }
+
+        private static double GetPeerProgressValue(PeerInfo peer)
+        {
+            if (peer.IsChatReady)
+            {
+                return 100;
+            }
+
+            if (peer.IsHelloVerified)
+            {
+                return 84;
+            }
+
+            if (peer.IsTcpConnected)
+            {
+                return 68;
+            }
+
+            if (peer.IsPreparingChatTcp || peer.IsConnected)
+            {
+                return 48;
+            }
+
+            if (peer.DiscoveredByBle || peer.DiscoveredByWiFiDirect)
+            {
+                return 24;
+            }
+
+            return 10;
+        }
+
+        private static string GetDisplayValue(string value)
+        {
+            return string.IsNullOrWhiteSpace(value) ? "-" : value;
+        }
+
+        private static string CreateInitials(string displayName)
+        {
+            string normalized = displayName.Trim();
+            if (string.IsNullOrWhiteSpace(normalized))
+            {
+                return "--";
+            }
+
+            string[] parts = normalized
+                .Split(new[] { ' ', '-', '_' }, StringSplitOptions.RemoveEmptyEntries);
+
+            if (parts.Length >= 2)
+            {
+                return string.Concat(parts.Take(2).Select(part => char.ToUpperInvariant(part[0])));
+            }
+
+            return normalized.Length <= 2
+                ? normalized.ToUpperInvariant()
+                : normalized[..2].ToUpperInvariant();
         }
 
         private void UpdateSendButtonState()
@@ -1120,6 +1306,8 @@ namespace direct_module
             }
 
             PeerList.Items.Add(incoming);
+            UpdatePeerCount();
+            UpdateSelectedPeerDetails(PeerList.SelectedItem as PeerInfo);
             AddLog($"確実な照合キーがないため新規Peerとして追加: {incoming.DisplayName}", LogLevel.Debug);
             AddLog($"Peer追加: {incoming.DisplayText}");
         }
@@ -1250,6 +1438,8 @@ namespace direct_module
             }
 
             AddLog($"古いWi-Fi Direct候補を削除: {removed}件");
+            UpdatePeerCount();
+            UpdateSelectedPeerDetails(PeerList.SelectedItem as PeerInfo);
         }
 
         private void AddConnectedPeerDisplay(ChatConnection connection)
@@ -1286,6 +1476,8 @@ namespace direct_module
             };
 
             PeerList.Items.Add(peer);
+            UpdatePeerCount();
+            UpdateSelectedPeerDetails(PeerList.SelectedItem as PeerInfo);
         }
 
         private void RefreshPeerDisplay(PeerInfo peer)
@@ -1305,6 +1497,8 @@ namespace direct_module
                 PeerList.SelectedIndex = selectedIndex;
             }
 
+            UpdatePeerCount();
+            UpdateSelectedPeerDetails(PeerList.SelectedItem as PeerInfo);
             UpdateSendButtonState();
         }
 
