@@ -23,6 +23,7 @@
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="*" />
                 </Grid.ColumnDefinitions>
 
                 <Button
@@ -37,11 +38,18 @@
 
                 <Button
                     Grid.Column="2"
+                    x:Name="ReconnectButton"
+                    Content="再接続"
+                    Click="ReconnectButton_Click"
+                    IsEnabled="False" />
+
+                <Button
+                    Grid.Column="3"
                     Content="TCP待ち受け開始"
                     Click="StartTcpServer_Click" />
 
                 <Button
-                    Grid.Column="3"
+                    Grid.Column="4"
                     Content="ログ消去"
                     Click="ClearLog_Click" />
             </Grid>

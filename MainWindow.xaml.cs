@@ -240,6 +240,17 @@ namespace direct_module
             LogTextBox.Text = string.Empty;
         }
 
+        private async void ReconnectButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (PeerList.SelectedItem is not PeerInfo peer)
+            {
+                AddLog("再接続対象Peerが選択されていません", LogLevel.Error);
+                return;
+            }
+
+            await ReconnectPeerAsync(peer);
+        }
+
         private void ScrollLogBottom_Click(object sender, RoutedEventArgs e)
         {
             MoveLogCaretToEnd();
@@ -396,7 +407,7 @@ namespace direct_module
             return connection;
         }
 
-        private async System.Threading.Tasks.Task PrepareChatTcpConnectionAsync(PeerInfo peer)
+        private async System.Threading.Tasks.Task PrepareChatTcpConnectionAsync(PeerInfo peer, string preparingStatusText = "TCP準備中")
         {
             if (peer.IsPreparingChatTcp || _chatConnectionManager.IsPreparingForPeer(peer))
             {
@@ -412,7 +423,7 @@ namespace direct_module
             }
 
             peer.IsPreparingChatTcp = true;
-            peer.StatusText = "TCP準備中";
+            peer.StatusText = preparingStatusText;
             RefreshPeerDisplay(peer);
             UpdateSendButtonState();
             AddLog($"PeerごとのTCP準備開始: {peer.DisplayName}");
@@ -434,7 +445,7 @@ namespace direct_module
                 var totalWatch = Stopwatch.StartNew();
                 peer.IsTcpConnected = false;
                 peer.IsChatReady = false;
-                peer.StatusText = "TCP準備中";
+                peer.StatusText = preparingStatusText;
                 RefreshPeerDisplay(peer);
                 AddLog("チャット準備中: TCP事前接続を開始します");
                 AddLog("Chat TCP事前接続開始");
@@ -883,10 +894,81 @@ namespace direct_module
                 ?? FindPeerByRemoteIpOrName("", connection.PeerName);
         }
 
-        private System.Threading.Tasks.Task ReconnectPeerAsync(PeerInfo peer)
+        private async System.Threading.Tasks.Task ReconnectPeerAsync(PeerInfo peer)
         {
-            AddLog($"再接続はまだ簡易土台のみです: {peer.DisplayName}", LogLevel.Debug);
-            return System.Threading.Tasks.Task.CompletedTask;
+            if (peer == null)
+            {
+                return;
+            }
+
+            if (peer.IsChatReady)
+            {
+                AddLog($"すでにチャット準備完了のため再接続不要: Peer={peer.DisplayName}", LogLevel.Debug);
+                UpdateReconnectButtonState();
+                return;
+            }
+
+            if (peer.IsPreparingChatTcp || string.Equals(peer.StatusText, "再接続中", StringComparison.OrdinalIgnoreCase))
+            {
+                AddLog($"すでに再接続処理中のためスキップ: Peer={peer.DisplayName}", LogLevel.Debug);
+                UpdateReconnectButtonState();
+                return;
+            }
+
+            AddLog($"再接続開始: Peer={peer.DisplayName}");
+            peer.StatusText = "再接続中";
+            RefreshPeerDisplay(peer);
+            UpdateSendButtonState();
+            UpdateReconnectButtonState();
+
+            try
+            {
+                await EnsureTcpServerStartedAsync("手動再接続");
+
+                if (!string.IsNullOrWhiteSpace(peer.RemoteIpAddress))
+                {
+                    AddLog($"再接続中: Peer={peer.DisplayName}");
+                    AddLog($"再接続処理を開始しました: Peer={peer.DisplayName}");
+                    await PrepareChatTcpConnectionAsync(peer, "再接続中");
+                    return;
+                }
+
+                if (!string.IsNullOrWhiteSpace(peer.DeviceId) &&
+                    !peer.DeviceId.Contains("_PendingRequest", StringComparison.OrdinalIgnoreCase))
+                {
+                    AddLog($"再接続処理を開始しました: Peer={peer.DisplayName}");
+                    await _manager.ConnectAsync(peer);
+                    RefreshPeerDisplay(peer);
+                    return;
+                }
+
+                peer.IsTcpConnected = false;
+                peer.IsHelloVerified = false;
+                peer.IsChatReady = false;
+                peer.StatusText = "再接続失敗";
+                RefreshPeerDisplay(peer);
+                AddLog($"再接続失敗: Peer={peer.DisplayName}", LogLevel.Error);
+                AddLog("再接続に必要なRemoteIpAddressまたはWi-Fi Direct DeviceIdがありません", LogLevel.Error);
+            }
+            catch (Exception ex)
+            {
+                peer.IsTcpConnected = false;
+                peer.IsHelloVerified = false;
+                peer.IsChatReady = false;
+                peer.IsPreparingChatTcp = false;
+                peer.StatusText = "再接続失敗";
+                RefreshPeerDisplay(peer);
+
+                AddLog($"再接続失敗: Peer={peer.DisplayName}", LogLevel.Error);
+                AddLog($"例外名: {ex.GetType().Name}", LogLevel.Error);
+                AddLog($"HResult: 0x{ex.HResult:X8}", LogLevel.Error);
+                AddLog($"Message: {ex.Message}", LogLevel.Error);
+            }
+            finally
+            {
+                UpdateSendButtonState();
+                UpdateReconnectButtonState();
+            }
         }
 
         private async System.Threading.Tasks.Task EnsureTcpServerStartedAsync(string reason)
@@ -934,6 +1016,26 @@ namespace direct_module
                     ? "選択中Peerの状態によりSendMessageButtonを有効化"
                     : "選択中Peerの状態によりSendMessageButtonを無効化",
                 LogLevel.Debug);
+
+            UpdateReconnectButtonState();
+        }
+
+        private void UpdateReconnectButtonState()
+        {
+            bool canReconnect = false;
+
+            if (PeerList.SelectedItem is PeerInfo peer)
+            {
+                canReconnect =
+                    !peer.IsChatReady &&
+                    !peer.IsPreparingChatTcp &&
+                    !string.Equals(peer.StatusText, "再接続中", StringComparison.OrdinalIgnoreCase);
+            }
+
+            DispatcherQueue.TryEnqueue(() =>
+            {
+                ReconnectButton.IsEnabled = canReconnect;
+            });
         }
 
         private static bool IsPeerChatReady(PeerInfo peer)
