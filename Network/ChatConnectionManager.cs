@@ -14,6 +14,7 @@ namespace direct_module.Network
 
         public event Action<string>? LogReceived;
         public event Action<ChatMessage, ChatConnection>? MessageReceived;
+        public event Action<ChatConnection>? ConnectionDisconnected;
         public event Action? ConnectionsChanged;
 
         public IReadOnlyList<ChatConnection> Connections
@@ -213,6 +214,8 @@ namespace direct_module.Network
 
         private void OnConnectionDisconnected(ChatConnection connection)
         {
+            LogReceived?.Invoke($"ChatConnectionManagerから切断Connectionを削除: Peer={connection.PeerName}");
+            ConnectionDisconnected?.Invoke(connection);
             RemoveConnection(connection);
         }
 

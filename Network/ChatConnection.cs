@@ -22,6 +22,7 @@ namespace direct_module.Network
         private DataReader? _reader;
         private bool _isConnected;
         private bool _isReceiveLoopStarted;
+        private bool _disconnectNotified;
 
         public ChatConnection()
             : this(new NoOpMessageCrypto())
@@ -201,6 +202,7 @@ namespace direct_module.Network
             catch (Exception ex)
             {
                 LogException(ex);
+                LogReceived?.Invoke($"SendAsync失敗により切断扱い: Peer={PeerName}");
                 Close();
             }
             finally
@@ -302,13 +304,14 @@ namespace direct_module.Network
             finally
             {
                 LogReceived?.Invoke("Chat TCP ReceiveLoop終了");
+                LogReceived?.Invoke($"ReceiveLoop終了: Peer={PeerName}");
                 Close();
             }
         }
 
         public void Close()
         {
-            bool wasConnected = _isConnected;
+            bool shouldNotify = _isConnected || IsReady || IsHelloVerified || IsPingWaiting;
 
             _isConnected = false;
             _isReceiveLoopStarted = false;
@@ -328,11 +331,7 @@ namespace direct_module.Network
             _writer = null;
             _socket = null;
 
-            if (wasConnected)
-            {
-                LogReceived?.Invoke("Chat TCP切断");
-                Disconnected?.Invoke(this);
-            }
+            MarkDisconnected(shouldNotify);
         }
 
         private void AttachSocket(StreamSocket socket)
@@ -347,6 +346,27 @@ namespace direct_module.Network
             LogReceived?.Invoke("DataReader作成完了");
             _isConnected = true;
             _isReceiveLoopStarted = false;
+            _disconnectNotified = false;
+        }
+
+        private void MarkDisconnected(bool shouldNotify)
+        {
+            if (!shouldNotify || _disconnectNotified)
+            {
+                return;
+            }
+
+            _disconnectNotified = true;
+            _isConnected = false;
+            _isReceiveLoopStarted = false;
+            IsReady = false;
+            IsHelloVerified = false;
+            IsPreparing = false;
+            IsPingWaiting = false;
+
+            LogReceived?.Invoke($"Chat TCP切断: Peer={PeerName}");
+            LogReceived?.Invoke("Chat TCP切断");
+            Disconnected?.Invoke(this);
         }
 
         private async Task<bool> LoadExactAsync(uint bytesToRead, string label)

@@ -60,6 +60,7 @@ namespace direct_module
 
             _chatConnectionManager.LogReceived += OnLogReceived;
             _chatConnectionManager.MessageReceived += OnChatMessageReceived;
+            _chatConnectionManager.ConnectionDisconnected += OnChatConnectionDisconnected;
             _chatConnectionManager.ConnectionsChanged += OnChatConnectionsChanged;
 
             SetChatReady(false);
@@ -846,6 +847,46 @@ namespace direct_module
                 AddLog($"接続中Peer数: {_chatConnectionManager.ConnectedCount}");
                 UpdateSendButtonState();
             });
+        }
+
+        private void OnChatConnectionDisconnected(ChatConnection connection)
+        {
+            DispatcherQueue.TryEnqueue(() =>
+            {
+                PeerInfo? peer = FindPeerForConnection(connection);
+                if (peer != null)
+                {
+                    peer.IsTcpConnected = false;
+                    peer.IsHelloVerified = false;
+                    peer.IsChatReady = false;
+                    peer.IsPreparingChatTcp = false;
+                    peer.StatusText = "切断";
+                    RefreshPeerDisplay(peer);
+                    AddLog($"Peer状態を切断に変更: {peer.DisplayName}", LogLevel.Error);
+                }
+
+                connection.IsReady = false;
+                connection.IsHelloVerified = false;
+                connection.IsPreparing = false;
+                connection.IsPingWaiting = false;
+
+                UpdateSendButtonState();
+                AddLog($"Peer切断: {GetConnectionPeerName(connection)}", LogLevel.Error);
+            });
+        }
+
+        private PeerInfo? FindPeerForConnection(ChatConnection connection)
+        {
+            return FindPeerByPeerId(connection.PeerId)
+                ?? FindPeerByShortSessionId(connection.ShortSessionId)
+                ?? FindPeerByRemoteIpOrName(connection.RemoteIpAddress, "")
+                ?? FindPeerByRemoteIpOrName("", connection.PeerName);
+        }
+
+        private System.Threading.Tasks.Task ReconnectPeerAsync(PeerInfo peer)
+        {
+            AddLog($"再接続はまだ簡易土台のみです: {peer.DisplayName}", LogLevel.Debug);
+            return System.Threading.Tasks.Task.CompletedTask;
         }
 
         private async System.Threading.Tasks.Task EnsureTcpServerStartedAsync(string reason)
