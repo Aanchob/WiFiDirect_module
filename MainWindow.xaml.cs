@@ -749,6 +749,15 @@ namespace direct_module
 
             AddLog($"TCP待ち受け開始: Port={LocalTcpPort}, Reason={reason}");
             await _tcpServer.StartAsync(LocalTcpPort);
+            MarkTcpServerReadyForPeers();
+        }
+
+        private void MarkTcpServerReadyForPeers()
+        {
+            foreach (PeerInfo peer in PeerList.Items.Cast<PeerInfo>())
+            {
+                peer.IsTcpServerReady = true;
+            }
         }
 
         private void SetChatReady(bool isReady)
