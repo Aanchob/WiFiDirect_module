@@ -135,7 +135,7 @@ namespace direct_module
             _discoveryManager.StartScan();
 
             ClearStaleWiFiDirectPeers();
-            await _manager.StartAssociationEndpointScanAsync();
+            AddLog("BLE RoleKey判定後にClient側だけWi-Fi Direct探索を開始します");
 
             AddLog("相手探索処理を開始しました");
         }
@@ -390,8 +390,7 @@ namespace direct_module
 
             if (string.IsNullOrWhiteSpace(remoteRoleKey))
             {
-                AddLog($"BLE RoleKeyなし: 従来のWi-Fi Direct探索にフォールバック Peer={peer.DisplayName}", LogLevel.Debug);
-                await _manager.StartAssociationEndpointScanAsync();
+                AddLog($"BLE RoleKeyなしのため、自動Wi-Fi Direct探索を開始しません Peer={peer.DisplayName}", LogLevel.Debug);
                 return;
             }
 
@@ -405,8 +404,7 @@ namespace direct_module
             int compare = CompareRoleKey(localRoleKey, remoteRoleKey);
             if (compare == 0)
             {
-                AddLog($"BLE RoleKey衝突: 従来のWi-Fi Direct探索にフォールバック Local={localRoleKey}, Remote={remoteRoleKey}", LogLevel.Error);
-                await _manager.StartAssociationEndpointScanAsync();
+                AddLog($"BLE RoleKey衝突のため、自動Wi-Fi Direct探索を開始しません Local={localRoleKey}, Remote={remoteRoleKey}", LogLevel.Error);
                 return;
             }
 
@@ -441,7 +439,9 @@ namespace direct_module
             }
 
             await System.Threading.Tasks.Task.Delay(1500);
+            ClearStaleWiFiDirectPeers();
             await _manager.StartAssociationEndpointScanAsync();
+            AddLog("BLE RoleKey判定後にClient側だけWi-Fi Direct探索を開始します");
         }
 
         private static bool HasRoleKey(PeerInfo peer)
