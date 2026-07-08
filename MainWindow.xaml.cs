@@ -422,6 +422,7 @@ namespace direct_module
                         GetLocalShortSessionId(),
                         autonomousGroupOwner: true);
                     _isAutonomousGoAdvertisementEnabled = true;
+                    await EnsureTcpServerStartedAsync("Autonomous GO開始");
                 }
 
                 AddLog("Autonomous GO広告を開始しました。ClientからのJoinを待ちます");
@@ -483,6 +484,7 @@ namespace direct_module
                 _chatRole = ChatRole.Host;
                 AddLog($"接続要求: {peer.DisplayName}");
                 AddLog("Chat Role: Host");
+                _ = EnsureTcpServerStartedAsync("Wi-Fi Direct接続要求受信");
             });
         }
 
