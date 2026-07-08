@@ -290,6 +290,8 @@ namespace direct_module
                 return;
             }
 
+            _chatRole = ChatRole.Client;
+            AddLog("Chat Role: Client");
             AddLog($"Wi-Fi Direct接続開始: {peer.DisplayText}");
             await _manager.ConnectAsync(peer);
             RefreshPeerDisplay(peer);
@@ -371,12 +373,17 @@ namespace direct_module
                 AddOrMergePeer(peer);
                 await EnsureTcpServerStartedAsync("Wi-Fi Direct接続完了");
 
-                if (_chatRole == ChatRole.Client)
+                PeerInfo effectivePeer = FindPeerForTcpRoleDecision(peer) ?? peer;
+                if (ShouldStartTcpConnection(effectivePeer))
                 {
-                    await PrepareChatTcpConnectionAsync(peer);
+                    _chatRole = ChatRole.Client;
+                    AddLog($"ShortSessionId判定によりTCP接続側になります: Local={GetLocalShortSessionId()}, Remote={effectivePeer.ShortSessionId}");
+                    await PrepareChatTcpConnectionAsync(effectivePeer);
                 }
                 else
                 {
+                    _chatRole = ChatRole.Host;
+                    AddLog($"ShortSessionId判定によりTCP待ち受け側になります: Local={GetLocalShortSessionId()}, Remote={effectivePeer.ShortSessionId}");
                     AddLog("Hostモードのため、ClientからのTCP接続を待ち受けます");
                 }
             });
@@ -971,6 +978,44 @@ namespace direct_module
                 ?? FindPeerByRemoteIpOrName("", connection.PeerName);
         }
 
+        private PeerInfo? FindPeerForTcpRoleDecision(PeerInfo connectedPeer)
+        {
+            if (!string.IsNullOrWhiteSpace(connectedPeer.ShortSessionId))
+            {
+                return connectedPeer;
+            }
+
+            return FindPeerByRemoteIpOrName(connectedPeer.RemoteIpAddress, "")
+                ?? FindPeerByRemoteIpOrName("", connectedPeer.DisplayName)
+                ?? FindPeerByPeerId(GetPeerConnectionId(connectedPeer));
+        }
+
+        private bool ShouldStartTcpConnection(PeerInfo peer)
+        {
+            string localShortSessionId = GetLocalShortSessionId();
+            string remoteShortSessionId = peer.ShortSessionId;
+
+            if (!string.IsNullOrWhiteSpace(localShortSessionId) &&
+                !string.IsNullOrWhiteSpace(remoteShortSessionId))
+            {
+                int compare = string.Compare(
+                    localShortSessionId,
+                    remoteShortSessionId,
+                    StringComparison.OrdinalIgnoreCase);
+
+                if (compare == 0)
+                {
+                    AddLog("ShortSessionIdが同一のため現在のChatRoleにフォールバックします", LogLevel.Error);
+                    return _chatRole == ChatRole.Client;
+                }
+
+                return compare < 0;
+            }
+
+            AddLog("ShortSessionId不足のため現在のChatRoleにフォールバックします", LogLevel.Debug);
+            return _chatRole == ChatRole.Client;
+        }
+
         private async System.Threading.Tasks.Task ReconnectPeerAsync(PeerInfo peer)
         {
             if (peer == null)
@@ -1007,6 +1052,8 @@ namespace direct_module
                 {
                     AddLog($"再接続中: Peer={peer.DisplayName}");
                     AddLog($"再接続処理を開始しました: Peer={peer.DisplayName}");
+                    _chatRole = ChatRole.Client;
+                    AddLog("Chat Role: Client");
                     peer.IsConnected = false;
                     peer.IsTcpConnected = false;
                     peer.IsHelloVerified = false;
