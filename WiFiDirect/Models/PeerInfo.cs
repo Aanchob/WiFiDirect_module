@@ -18,6 +18,8 @@ public class PeerInfo
 
     public string ShortSessionId { get; set; } = "";
 
+    public string RoleKey { get; set; } = "";
+
     public int TcpPort { get; set; }
 
     public bool IsConnected { get; set; }
@@ -81,6 +83,9 @@ public class PeerInfo
             string sessionText = !string.IsNullOrWhiteSpace(ShortSessionId)
                 ? $" / ShortSessionId:{ShortSessionId}"
                 : "";
+            string roleKeyText = !string.IsNullOrWhiteSpace(RoleKey)
+                ? $" / RoleKey:{RoleKey}"
+                : "";
             string bleNameText = !string.IsNullOrWhiteSpace(BleName)
                 ? $" / BLE名:{BleName}"
                 : "";
@@ -91,7 +96,7 @@ public class PeerInfo
                 ? $" / Kind:{DeviceKind}"
                 : "";
 
-            return $"{DisplayName} / {SourceText} / {bleText} / {wifiText} / {tcpText} / {helloText} / {statusText}{remoteIpText}{sessionText}{bleNameText}{wifiNameText}{kindText}";
+            return $"{DisplayName} / {SourceText} / {bleText} / {wifiText} / {tcpText} / {helloText} / {statusText}{remoteIpText}{sessionText}{roleKeyText}{bleNameText}{wifiNameText}{kindText}";
         }
     }
 }

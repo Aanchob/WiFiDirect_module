@@ -12,7 +12,11 @@ namespace direct_module.WiFiDirect
 
         public event Action<string>? LogReceived;
 
-        public void Start(bool listenerRegistered, string displayName = "", string shortSessionId = "")
+        public void Start(
+            bool listenerRegistered,
+            string displayName = "",
+            string shortSessionId = "",
+            bool autonomousGroupOwner = false)
         {
             if (_isStarted)
             {
@@ -33,7 +37,7 @@ namespace direct_module.WiFiDirect
 
                 _publisher.Advertisement.ListenStateDiscoverability =
                     WiFiDirectAdvertisementListenStateDiscoverability.Normal;
-                _publisher.Advertisement.IsAutonomousGroupOwnerEnabled = false;
+                _publisher.Advertisement.IsAutonomousGroupOwnerEnabled = autonomousGroupOwner;
 
                 TryAddAppInformationElement(
                     _publisher.Advertisement,

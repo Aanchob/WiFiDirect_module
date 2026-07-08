@@ -44,22 +44,35 @@ namespace direct_module.WiFiDirect
 
         public void Start(string displayName, string shortSessionId)
         {
+            Start(displayName, shortSessionId, autonomousGroupOwner: false);
+        }
+
+        public void Start(string displayName, string shortSessionId, bool autonomousGroupOwner)
+        {
             LogReceived?.Invoke("Manager: Wi-Fi Direct Listener + Advertisement 起動開始");
             _listener.Start();
             _advertiser.Start(
                 listenerRegistered: _listener.IsStarted,
                 displayName: displayName,
-                shortSessionId: shortSessionId);
+                shortSessionId: shortSessionId,
+                autonomousGroupOwner: autonomousGroupOwner);
         }
 
         public void RestartAdvertisement(string displayName, string shortSessionId)
         {
+            RestartAdvertisement(displayName, shortSessionId, autonomousGroupOwner: false);
+        }
+
+        public void RestartAdvertisement(string displayName, string shortSessionId, bool autonomousGroupOwner)
+        {
             LogReceived?.Invoke("Manager: Wi-Fi Direct Advertisement 再起動開始");
+            _listener.Start();
             _advertiser.Stop();
             _advertiser.Start(
                 listenerRegistered: _listener.IsStarted,
                 displayName: displayName,
-                shortSessionId: shortSessionId);
+                shortSessionId: shortSessionId,
+                autonomousGroupOwner: autonomousGroupOwner);
         }
 
         public void Stop()

@@ -125,6 +125,7 @@ namespace direct_module.Discovery
 
                 string displayName = parts[1];
                 string shortSessionId = parts[2];
+                string roleKey = parts.Length >= 5 ? parts[4] : "";
 
                 if (!int.TryParse(parts[3], out int tcpPort))
                 {
@@ -150,6 +151,7 @@ namespace direct_module.Discovery
                     DeviceId = "",
                     DiscoveredByBle = true,
                     ShortSessionId = shortSessionId,
+                    RoleKey = roleKey,
                     MatchKey = shortSessionId,
                     TcpPort = tcpPort,
                     IpAddress = "",
@@ -157,7 +159,7 @@ namespace direct_module.Discovery
                 };
 
                 LogReceived?.Invoke(
-                    $"BLE Peer発見: Name={peer.DisplayName}, ShortSessionId={peer.ShortSessionId}, Port={peer.TcpPort}"
+                    $"BLE Peer発見: Name={peer.DisplayName}, ShortSessionId={peer.ShortSessionId}, Port={peer.TcpPort}, RoleKey={peer.RoleKey}"
                 );
 
                 PeerFound?.Invoke(peer);

@@ -48,6 +48,7 @@ namespace direct_module
         private readonly Guid _localSessionId = Guid.NewGuid();
         private readonly DatabaseService? _databaseService = null;
         private readonly ChatRepository? _chatRepository = null;
+        private bool _isAutonomousGoAdvertisementEnabled;
 
         private ChatRole _chatRole = ChatRole.Client;
 
@@ -102,6 +103,11 @@ namespace direct_module
             return _localSessionId.ToString("N")[..4];
         }
 
+        private string GetLocalRoleKey()
+        {
+            return _localSessionId.ToString("N")[..8];
+        }
+
         private void MainWindow_Closed(object sender, WindowEventArgs args)
         {
             _chatConnectionManager.StopKeepAlive();
@@ -120,6 +126,7 @@ namespace direct_module
         {
             AddLog("相手探索開始");
             AddLog($"Local ShortSessionId: {GetLocalShortSessionId()}");
+            AddLog($"Local RoleKey: {GetLocalRoleKey()}");
 
             _manager.Start(Environment.MachineName, GetLocalShortSessionId());
             StartBleAdvertiseCore();
@@ -344,7 +351,7 @@ namespace direct_module
 
             if (peer.DiscoveredByBle)
             {
-                await _manager.StartAssociationEndpointScanAsync();
+                await HandleBleRoleNegotiationAsync(peer);
             }
         }
 
@@ -354,6 +361,49 @@ namespace direct_module
             {
                 AddLog(message, ClassifyLogMessage(message));
             });
+        }
+
+        private async System.Threading.Tasks.Task HandleBleRoleNegotiationAsync(PeerInfo peer)
+        {
+            string localRoleKey = GetLocalRoleKey();
+            string remoteRoleKey = peer.RoleKey;
+
+            if (string.IsNullOrWhiteSpace(remoteRoleKey))
+            {
+                AddLog($"BLE RoleKeyなし: 従来のWi-Fi Direct探索にフォールバック Peer={peer.DisplayName}", LogLevel.Debug);
+                await _manager.StartAssociationEndpointScanAsync();
+                return;
+            }
+
+            int compare = string.Compare(localRoleKey, remoteRoleKey, StringComparison.OrdinalIgnoreCase);
+            if (compare == 0)
+            {
+                AddLog($"BLE RoleKey衝突: 従来のWi-Fi Direct探索にフォールバック Local={localRoleKey}, Remote={remoteRoleKey}", LogLevel.Error);
+                await _manager.StartAssociationEndpointScanAsync();
+                return;
+            }
+
+            bool localIsGo = compare > 0;
+            AddLog($"BLE Role Negotiation: LocalRoleKey={localRoleKey}, RemoteRoleKey={remoteRoleKey}, LocalRole={(localIsGo ? "GO" : "Client")}");
+
+            if (localIsGo)
+            {
+                if (!_isAutonomousGoAdvertisementEnabled)
+                {
+                    _manager.RestartAdvertisement(
+                        Environment.MachineName,
+                        GetLocalShortSessionId(),
+                        autonomousGroupOwner: true);
+                    _isAutonomousGoAdvertisementEnabled = true;
+                }
+
+                AddLog("Autonomous GO広告を開始しました。ClientからのJoinを待ちます");
+                return;
+            }
+
+            AddLog("Clientロールのため、GOのAutonomous起動を待ってから探索します");
+            await System.Threading.Tasks.Task.Delay(1500);
+            await _manager.StartAssociationEndpointScanAsync();
         }
 
         private void OnConnectionRequested(PeerInfo peer)
@@ -1458,6 +1508,7 @@ namespace direct_module
             CopyIfPresent(source.WiFiDirectName, value => target.WiFiDirectName = value);
             CopyIfPresent(source.MatchKey, value => target.MatchKey = value);
             CopyIfPresent(source.ShortSessionId, value => target.ShortSessionId = value);
+            CopyIfPresent(source.RoleKey, value => target.RoleKey = value);
             CopyIfPresent(source.DeviceId, value => target.DeviceId = value);
             CopyIfPresent(source.DeviceKind, value => target.DeviceKind = value);
             CopyIfPresent(source.IpAddress, value => target.IpAddress = value);
