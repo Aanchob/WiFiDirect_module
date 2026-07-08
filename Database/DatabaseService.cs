@@ -9,12 +9,12 @@ namespace direct_module.Database
     {
         private readonly string _connectionString;
 
+        public string DatabasePath { get; }
+
         public DatabaseService()
         {
-            string dbPath = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "direct_module",
-                "chat.db");
+            string dbPath = ResolveDatabasePath();
+            MigrateLegacyDatabaseIfNeeded(dbPath);
 
             // データベースの保存先を出力
             Debug.WriteLine("==================================");
@@ -25,6 +25,7 @@ namespace direct_module.Database
 
             Debug.WriteLine($"Folder Exists = {Directory.Exists(Path.GetDirectoryName(dbPath)!)}");
 
+            DatabasePath = dbPath;
             _connectionString = $"Data Source={dbPath}";
 
             Initialize();
@@ -76,6 +77,40 @@ CREATE TABLE IF NOT EXISTS ChatMessages
             command.ExecuteNonQuery();
 
             Debug.WriteLine("SQLite初期化完了");
+        }
+
+        private static string ResolveDatabasePath()
+        {
+            string localAppData = Environment.GetEnvironmentVariable("LOCALAPPDATA") ?? "";
+
+            if (string.IsNullOrWhiteSpace(localAppData))
+            {
+                localAppData = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                    "AppData",
+                    "Local");
+            }
+
+            return Path.Combine(localAppData, "direct_module", "chat.db");
+        }
+
+        private static void MigrateLegacyDatabaseIfNeeded(string newDbPath)
+        {
+            string legacyDbPath = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "direct_module",
+                "chat.db");
+
+            if (string.Equals(legacyDbPath, newDbPath, StringComparison.OrdinalIgnoreCase) ||
+                File.Exists(newDbPath) ||
+                !File.Exists(legacyDbPath))
+            {
+                return;
+            }
+
+            Directory.CreateDirectory(Path.GetDirectoryName(newDbPath)!);
+            File.Copy(legacyDbPath, newDbPath);
+            Debug.WriteLine($"SQLite DB migrated: {legacyDbPath} -> {newDbPath}");
         }
     }
 }

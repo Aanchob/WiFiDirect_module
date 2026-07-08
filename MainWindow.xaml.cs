@@ -62,6 +62,7 @@ namespace direct_module
                 _databaseService = new DatabaseService();
                 _chatRepository = new ChatRepository(_databaseService);
                 AddLog("履歴DB初期化成功", LogLevel.Success);
+                AddLog($"履歴DBパス: {_databaseService.DatabasePath}");
             }
             catch (Exception ex)
             {
