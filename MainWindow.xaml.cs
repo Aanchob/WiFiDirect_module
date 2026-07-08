@@ -49,6 +49,7 @@ namespace direct_module
         private readonly DatabaseService? _databaseService = null;
         private readonly ChatRepository? _chatRepository = null;
         private bool _isAutonomousGoAdvertisementEnabled;
+        private string _negotiatedBlePeerKey = "";
 
         private ChatRole _chatRole = ChatRole.Client;
 
@@ -127,6 +128,7 @@ namespace direct_module
             AddLog("相手探索開始");
             AddLog($"Local ShortSessionId: {GetLocalShortSessionId()}");
             AddLog($"Local RoleKey: {GetLocalRoleKey()}");
+            _negotiatedBlePeerKey = "";
 
             _manager.Start(Environment.MachineName, GetLocalShortSessionId());
             StartBleAdvertiseCore();
@@ -298,6 +300,13 @@ namespace direct_module
                 return;
             }
 
+            if (HasRoleKey(peer) && !IsLocalClientForWifiDirect(peer))
+            {
+                AddLog($"BLE RoleKey判定では自分がGOのため、手動Wi-Fi Direct接続を開始しません: Peer={peer.DisplayName}");
+                AddLog("相手ClientからのJoinを待ち受けます");
+                return;
+            }
+
             _chatRole = ChatRole.Client;
             AddLog("Chat Role: Client");
             AddLog($"Wi-Fi Direct接続開始: {peer.DisplayText}");
@@ -367,6 +376,7 @@ namespace direct_module
         {
             string localRoleKey = GetLocalRoleKey();
             string remoteRoleKey = peer.RoleKey;
+            string peerKey = GetPeerConnectionId(peer);
 
             if (string.IsNullOrWhiteSpace(remoteRoleKey))
             {
@@ -375,13 +385,22 @@ namespace direct_module
                 return;
             }
 
-            int compare = string.Compare(localRoleKey, remoteRoleKey, StringComparison.OrdinalIgnoreCase);
+            if (!string.IsNullOrWhiteSpace(_negotiatedBlePeerKey) &&
+                !string.Equals(_negotiatedBlePeerKey, peerKey, StringComparison.OrdinalIgnoreCase))
+            {
+                AddLog($"BLE Role Negotiationは既に別Peerで確定済みのためスキップ: Current={_negotiatedBlePeerKey}, Ignored={peerKey}", LogLevel.Debug);
+                return;
+            }
+
+            int compare = CompareRoleKey(localRoleKey, remoteRoleKey);
             if (compare == 0)
             {
                 AddLog($"BLE RoleKey衝突: 従来のWi-Fi Direct探索にフォールバック Local={localRoleKey}, Remote={remoteRoleKey}", LogLevel.Error);
                 await _manager.StartAssociationEndpointScanAsync();
                 return;
             }
+
+            _negotiatedBlePeerKey = peerKey;
 
             bool localIsGo = compare > 0;
             AddLog($"BLE Role Negotiation: LocalRoleKey={localRoleKey}, RemoteRoleKey={remoteRoleKey}, LocalRole={(localIsGo ? "GO" : "Client")}");
@@ -402,8 +421,33 @@ namespace direct_module
             }
 
             AddLog("Clientロールのため、GOのAutonomous起動を待ってから探索します");
+            if (_isAutonomousGoAdvertisementEnabled)
+            {
+                _manager.RestartAdvertisement(
+                    Environment.MachineName,
+                    GetLocalShortSessionId(),
+                    autonomousGroupOwner: false);
+                _isAutonomousGoAdvertisementEnabled = false;
+            }
+
             await System.Threading.Tasks.Task.Delay(1500);
             await _manager.StartAssociationEndpointScanAsync();
+        }
+
+        private static bool HasRoleKey(PeerInfo peer)
+        {
+            return !string.IsNullOrWhiteSpace(peer.RoleKey);
+        }
+
+        private bool IsLocalClientForWifiDirect(PeerInfo peer)
+        {
+            return HasRoleKey(peer) &&
+                   CompareRoleKey(GetLocalRoleKey(), peer.RoleKey) < 0;
+        }
+
+        private static int CompareRoleKey(string localRoleKey, string remoteRoleKey)
+        {
+            return string.Compare(localRoleKey, remoteRoleKey, StringComparison.OrdinalIgnoreCase);
         }
 
         private void OnConnectionRequested(PeerInfo peer)
@@ -683,6 +727,12 @@ namespace direct_module
             peer.IsChatReady = false;
             peer.StatusText = connection.IsConnected ? "HELLO確認中" : "送信不可";
             RefreshPeerDisplay(peer);
+
+            if (!connection.IsConnected)
+            {
+                _chatConnectionManager.RemoveConnection(connection);
+            }
+
             return connection;
         }
 
@@ -1043,6 +1093,13 @@ namespace direct_module
 
         private bool ShouldStartTcpConnection(PeerInfo peer)
         {
+            if (HasRoleKey(peer))
+            {
+                bool localIsClient = IsLocalClientForWifiDirect(peer);
+                AddLog($"RoleKey判定によりTCPロール決定: LocalRole={(localIsClient ? "Client" : "GO")}, RemoteRoleKey={peer.RoleKey}", LogLevel.Debug);
+                return localIsClient;
+            }
+
             string localShortSessionId = GetLocalShortSessionId();
             string remoteShortSessionId = peer.ShortSessionId;
 
