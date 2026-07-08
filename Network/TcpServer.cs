@@ -21,17 +21,33 @@ namespace direct_module.Network
                 return;
             }
 
+            StreamSocketListener? listener = null;
+
             try
             {
-                _listener = new StreamSocketListener();
-                _listener.ConnectionReceived += OnConnectionReceived;
+                LogReceived?.Invoke("Chat TCP Server待ち受け開始");
+                LogReceived?.Invoke($"Listen Port: {port}");
 
-                await _listener.BindServiceNameAsync(port.ToString());
+                listener = new StreamSocketListener();
+                listener.ConnectionReceived += OnConnectionReceived;
+
+                await listener.BindServiceNameAsync(port.ToString());
+                _listener = listener;
 
                 LogReceived?.Invoke($"TCPサーバー待ち受け開始: Port={port}");
+                LogReceived?.Invoke("Chat TCP接続待機中");
+                LogReceived?.Invoke("Chat TCP複数接続待機中");
             }
             catch (Exception ex)
             {
+                if (listener != null)
+                {
+                    listener.ConnectionReceived -= OnConnectionReceived;
+                    listener.Dispose();
+                }
+
+                _listener = null;
+
                 LogReceived?.Invoke("TCPサーバー待ち受け開始失敗");
                 LogReceived?.Invoke($"例外名: {ex.GetType().Name}");
                 LogReceived?.Invoke($"HResult: 0x{ex.HResult:X8}");
@@ -58,9 +74,10 @@ namespace direct_module.Network
             StreamSocketListener sender,
             StreamSocketListenerConnectionReceivedEventArgs args)
         {
-            LogReceived?.Invoke("TCP接続を受信");
+            LogReceived?.Invoke("Chat TCP接続を受信");
             LogReceived?.Invoke($"RemoteAddress: {args.Socket.Information.RemoteAddress?.DisplayName}");
             LogReceived?.Invoke($"RemotePort: {args.Socket.Information.RemotePort}");
+            LogReceived?.Invoke("Chat TCP受信側Connection作成");
 
             ConnectionAccepted?.Invoke(args.Socket);
         }

@@ -26,8 +26,9 @@ namespace direct_module.Discovery
 
             string shortName = Shorten(displayName, 4);
             string shortSessionId = sessionId.ToString("N")[..4];
+            string roleKey = sessionId.ToString("N")[..8];
 
-            string payloadText = $"DC|{shortName}|{shortSessionId}|{tcpPort}";
+            string payloadText = $"DC|{shortName}|{shortSessionId}|{tcpPort}|{roleKey}";
             byte[] payloadBytes = Encoding.UTF8.GetBytes(payloadText);
 
             LogReceived?.Invoke($"BLE payload bytes: {payloadBytes.Length}");

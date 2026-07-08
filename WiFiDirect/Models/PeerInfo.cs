@@ -10,13 +10,29 @@ public class PeerInfo
 
     public bool DiscoveredByWiFiDirect { get; set; }
 
+    public string BleName { get; set; } = "";
+
+    public string WiFiDirectName { get; set; } = "";
+
+    public string MatchKey { get; set; } = "";
+
     public string ShortSessionId { get; set; } = "";
+
+    public string RoleKey { get; set; } = "";
 
     public int TcpPort { get; set; }
 
     public bool IsConnected { get; set; }
 
+    public bool IsPreparingChatTcp { get; set; }
+
     public bool IsTcpConnected { get; set; }
+
+    public bool IsHelloVerified { get; set; }
+
+    public bool IsChatReady { get; set; }
+
+    public string StatusText { get; set; } = "";
 
     public string IpAddress { get; set; } = "";
 
@@ -25,6 +41,10 @@ public class PeerInfo
     public bool? IsEnabled { get; set; }
 
     public string DeviceKind { get; set; } = "";
+
+    public bool CanConnect { get; set; }
+
+    public double ConnectButtonOpacity => CanConnect ? 1.0 : 0.25;
 
     public string SourceText
     {
@@ -52,24 +72,35 @@ public class PeerInfo
             string wifiText = !string.IsNullOrWhiteSpace(DeviceId)
                 ? IsConnected ? "Wi-Fi Direct:接続済み" : "Wi-Fi Direct:DeviceIdあり"
                 : "Wi-Fi Direct:DeviceIdなし";
-            string tcpText = IsTcpConnected ? "TCP:接続済み" : "TCP:未接続";
-            string statusText = IsTcpConnected
-                ? "状態:チャット可能"
-                : IsConnected ? "状態:TCP準備中" : "状態:接続前";
+            string tcpText = StatusText == "エラー"
+                ? "TCP:エラー"
+                : IsTcpConnected ? "TCP:接続済み" : IsConnected ? "TCP:準備中" : "TCP:未接続";
+            string helloText = IsHelloVerified ? "HELLO:確認済み" : "HELLO:未確認";
+            string statusText = !string.IsNullOrWhiteSpace(StatusText)
+                ? $"状態:{StatusText}"
+                : IsChatReady
+                    ? "状態:チャット準備完了"
+                    : IsConnected ? "状態:チャット準備中" : "状態:接続前";
             string remoteIpText = !string.IsNullOrWhiteSpace(RemoteIpAddress)
                 ? $" / RemoteIp:{RemoteIpAddress}"
                 : "";
-            string ipText = string.IsNullOrWhiteSpace(RemoteIpAddress) && !string.IsNullOrWhiteSpace(IpAddress)
-                ? $" / IP:{IpAddress}"
-                : "";
-            string portText = TcpPort > 0 ? $" / Port:{TcpPort}" : "";
             string sessionText = !string.IsNullOrWhiteSpace(ShortSessionId)
-                ? $" / ID:{ShortSessionId}"
+                ? $" / ShortSessionId:{ShortSessionId}"
                 : "";
-            string enabledText = IsEnabled.HasValue ? $" / IsEnabled:{IsEnabled.Value}" : "";
-            string kindText = !string.IsNullOrWhiteSpace(DeviceKind) ? $" / Kind:{DeviceKind}" : "";
+            string roleKeyText = !string.IsNullOrWhiteSpace(RoleKey)
+                ? $" / RoleKey:{RoleKey}"
+                : "";
+            string bleNameText = !string.IsNullOrWhiteSpace(BleName)
+                ? $" / BLE名:{BleName}"
+                : "";
+            string wifiNameText = !string.IsNullOrWhiteSpace(WiFiDirectName)
+                ? $" / Wi-Fi名:{WiFiDirectName}"
+                : "";
+            string kindText = !string.IsNullOrWhiteSpace(DeviceKind)
+                ? $" / Kind:{DeviceKind}"
+                : "";
 
-            return $"{DisplayName} / {SourceText} / {bleText} / {wifiText} / {tcpText} / {statusText}{remoteIpText}{ipText}{portText}{sessionText}{enabledText}{kindText}";
+            return $"{DisplayName} / {SourceText} / {bleText} / {wifiText} / {tcpText} / {helloText} / {statusText}{remoteIpText}{sessionText}{roleKeyText}{bleNameText}{wifiNameText}{kindText}";
         }
     }
 }

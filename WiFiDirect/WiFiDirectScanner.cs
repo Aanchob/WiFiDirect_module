@@ -1,10 +1,12 @@
 using direct_module.WiFiDirect.Models;
 using System;
 using System.Collections.Generic;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Windows.Devices.Enumeration;
 using Windows.Devices.WiFiDirect;
+using Windows.Storage.Streams;
 
 namespace direct_module.WiFiDirect
 {
@@ -34,7 +36,7 @@ namespace direct_module.WiFiDirect
             return StartAsync(WiFiDirectScanSelectorType.Default, scanSeconds);
         }
 
-        public Task StartAssociationEndpointAsync(int scanSeconds = 30)
+        public Task StartAssociationEndpointAsync(int scanSeconds = 0)
         {
             return StartAsync(WiFiDirectScanSelectorType.AssociationEndpoint, scanSeconds);
         }
@@ -80,6 +82,12 @@ namespace direct_module.WiFiDirect
                 _watcher.Start();
 
                 LogReceived?.Invoke($"Watcher Status after Start: {_watcher.Status}");
+
+                if (scanSeconds <= 0)
+                {
+                    LogReceived?.Invoke("Wi-Fi Direct探索は自動停止せず継続します");
+                    return Task.CompletedTask;
+                }
 
                 _scanTimeoutCts = new CancellationTokenSource();
                 _ = StopAfterDelayAsync(scanSeconds, _scanTimeoutCts.Token);
@@ -159,6 +167,11 @@ namespace direct_module.WiFiDirect
         {
             _devices[device.Id] = device;
 
+            string shortSessionId = TryExtractShortSessionId(device);
+            string displayName = string.IsNullOrWhiteSpace(device.Name)
+                ? "Unknown Wi-Fi Direct device"
+                : device.Name;
+
             LogReceived?.Invoke("Added");
             LogReceived?.Invoke("---- Wi-Fi Direct Candidate ----");
             LogReceived?.Invoke($"Selector Type: {_currentSelectorType}");
@@ -166,20 +179,28 @@ namespace direct_module.WiFiDirect
             LogReceived?.Invoke($"Id: {device.Id}");
             LogReceived?.Invoke($"Kind: {device.Kind}");
             LogReceived?.Invoke($"IsEnabled: {device.IsEnabled}");
+            LogReceived?.Invoke(string.IsNullOrWhiteSpace(shortSessionId)
+                ? "Wi-Fi Direct InformationElement読み取り不可: ShortSessionIdなし"
+                : $"Wi-Fi Direct InformationElement取得: ShortSessionId={shortSessionId}");
+            if (string.IsNullOrWhiteSpace(shortSessionId))
+            {
+                LogReceived?.Invoke("ShortSessionId取得不可のため名前照合にフォールバック");
+            }
             LogReceived?.Invoke("IsEnabledで除外せずPeerFoundへ流します");
+            LogReceived?.Invoke($"Wi-Fi Direct Candidate発見: Name={displayName}, DeviceId={device.Id}");
 
             PeerInfo peer = new PeerInfo
             {
-                DisplayName = string.IsNullOrWhiteSpace(device.Name)
-                    ? "Unknown Wi-Fi Direct device"
-                    : device.Name,
+                DisplayName = displayName,
+                WiFiDirectName = displayName,
                 DeviceId = device.Id,
                 DeviceKind = device.Kind.ToString(),
                 IsEnabled = device.IsEnabled,
                 DiscoveredByBle = false,
                 DiscoveredByWiFiDirect = true,
                 TcpPort = 0,
-                ShortSessionId = "",
+                ShortSessionId = shortSessionId,
+                MatchKey = shortSessionId,
                 IsConnected = false
             };
 
@@ -247,6 +268,75 @@ namespace direct_module.WiFiDirect
             _scanTimeoutCts.Cancel();
             _scanTimeoutCts.Dispose();
             _scanTimeoutCts = null;
+        }
+
+        private string TryExtractShortSessionId(DeviceInformation device)
+        {
+            try
+            {
+                foreach (var property in device.Properties)
+                {
+                    if (property.Value is string text && TryParseDchatPayload(text, out string sessionId))
+                    {
+                        return sessionId;
+                    }
+
+                    if (property.Value is IBuffer buffer)
+                    {
+                        string textFromBuffer = ReadBufferAsString(buffer);
+                        if (TryParseDchatPayload(textFromBuffer, out string sessionIdFromBuffer))
+                        {
+                            return sessionIdFromBuffer;
+                        }
+                    }
+                }
+
+                LogReceived?.Invoke("Wi-Fi Direct InformationElement読み取り不可: DeviceInformation.PropertiesにDCHATなし");
+                return "";
+            }
+            catch (Exception ex)
+            {
+                LogReceived?.Invoke("Wi-Fi Direct InformationElement読み取り失敗");
+                LogReceived?.Invoke($"例外名: {ex.GetType().Name}");
+                LogReceived?.Invoke($"Message: {ex.Message}");
+                return "";
+            }
+        }
+
+        private static bool TryParseDchatPayload(string text, out string shortSessionId)
+        {
+            shortSessionId = "";
+
+            if (string.IsNullOrWhiteSpace(text) || !text.Contains("DCHAT", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            string[] parts = text.Split('|');
+
+            if (parts.Length >= 3 && parts[0] == "DCHAT")
+            {
+                shortSessionId = parts[2];
+                return !string.IsNullOrWhiteSpace(shortSessionId);
+            }
+
+            if (parts.Length >= 2 && parts[0] == "DCHAT")
+            {
+                shortSessionId = parts[1];
+                return !string.IsNullOrWhiteSpace(shortSessionId);
+            }
+
+            return false;
+        }
+
+        private static string ReadBufferAsString(IBuffer buffer)
+        {
+            byte[] bytes = new byte[buffer.Length];
+
+            using var reader = DataReader.FromBuffer(buffer);
+            reader.ReadBytes(bytes);
+
+            return Encoding.UTF8.GetString(bytes);
         }
 
         private static string FormatName(string name)

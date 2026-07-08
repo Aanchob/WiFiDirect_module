@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Windows.Networking;
@@ -14,7 +15,7 @@ namespace direct_module.Network
 {
     public class ChatConnection
     {
-        private const int MaxMessageFrameLength = 1024 * 1024;
+        private const uint MaxMessageBytes = 1024 * 1024;
         private const int MaxHandshakeFrameLength = 4096;
         private static readonly byte[] HandshakeMagic = Encoding.ASCII.GetBytes("NOVA-ECDH-1|");
 
@@ -27,6 +28,7 @@ namespace direct_module.Network
         private DataReader? _reader;
         private bool _isConnected;
         private bool _isReceiveLoopStarted;
+        private bool _disconnectNotified;
 
         public ChatConnection()
             : this(new NoOpMessageCrypto(), useEcdhHandshake: true, ownsMessageCrypto: true)
@@ -48,11 +50,36 @@ namespace direct_module.Network
             _ownsMessageCrypto = ownsMessageCrypto;
         }
 
-        public event Action<string>? LogReceived;
-        public event Action<string>? MessageReceived;
-        public event Action? Closed;
+        public string PeerId { get; set; } = "";
+
+        public string PeerName { get; set; } = "";
+
+        public string RemoteIpAddress { get; set; } = "";
+
+        public string ShortSessionId { get; set; } = "";
+
+        public bool IsPreparing { get; set; }
+
+        public DateTime? LastPingAt { get; set; }
+
+        public DateTime? LastPongAt { get; set; }
+
+        public DateTime? LastResponseAt { get; set; }
+
+        public bool IsPingWaiting { get; set; }
+
+        public bool IsHelloVerified { get; set; }
+
+        public bool IsReady { get; set; }
 
         public bool IsConnected => _isConnected;
+
+        public bool IsReceiveLoopStarted => _isReceiveLoopStarted;
+
+        public event Action<ChatMessage, ChatConnection>? MessageReceived;
+        public event Action<string>? LogReceived;
+        public event Action<ChatConnection>? Disconnected;
+        public event Action? Closed;
 
         public async Task ConnectAsync(string ipAddress, int port)
         {
@@ -76,22 +103,27 @@ namespace direct_module.Network
                 return;
             }
 
+            var totalWatch = Stopwatch.StartNew();
+
             try
             {
-                long startedAt = Stopwatch.GetTimestamp();
-
-                LogReceived?.Invoke("Chat TCP接続開始");
+                LogReceived?.Invoke("Chat TCP ConnectAsync開始");
                 LogReceived?.Invoke($"接続先IP: {ipAddress}");
                 LogReceived?.Invoke($"接続先Port: {port}");
 
+                var connectWatch = Stopwatch.StartNew();
                 var socket = new StreamSocket();
                 await socket.ConnectAsync(new HostName(ipAddress), port.ToString());
+                LogReceived?.Invoke($"ConnectAsync: {connectWatch.ElapsedMilliseconds}ms");
 
+                RemoteIpAddress = ipAddress;
                 AttachSocket(socket);
                 await InitializeCryptoAsync(isInitiator: true);
 
+                LogReceived?.Invoke("Chat TCP ConnectAsync完了");
                 LogReceived?.Invoke("Chat TCP接続成功");
-                LogReceived?.Invoke($"Chat TCP接続時間: {GetElapsedMilliseconds(startedAt)}ms");
+                LogReceived?.Invoke($"MessageCrypto: {_messageCrypto.GetType().Name}");
+                LogReceived?.Invoke($"Chat TCP接続完了 合計: {totalWatch.ElapsedMilliseconds}ms");
                 StartReceiveLoop();
             }
             catch (Exception ex)
@@ -108,11 +140,21 @@ namespace direct_module.Network
                 long startedAt = Stopwatch.GetTimestamp();
 
                 Close();
+
+                RemoteIpAddress = socket.Information.RemoteAddress?.DisplayName ?? "";
+                PeerId = string.IsNullOrWhiteSpace(PeerId)
+                    ? $"{RemoteIpAddress}:{socket.Information.RemotePort}"
+                    : PeerId;
+                PeerName = string.IsNullOrWhiteSpace(PeerName)
+                    ? RemoteIpAddress
+                    : PeerName;
+
                 AttachSocket(socket);
                 await InitializeCryptoAsync(isInitiator: false);
 
                 LogReceived?.Invoke("Chat TCP接続成功");
                 LogReceived?.Invoke("Chat TCP受信側socketを保持しました");
+                LogReceived?.Invoke($"RemoteAddress: {RemoteIpAddress}");
                 LogReceived?.Invoke($"Chat TCP受信側準備時間: {GetElapsedMilliseconds(startedAt)}ms");
                 StartReceiveLoop();
             }
@@ -123,12 +165,56 @@ namespace direct_module.Network
             }
         }
 
+        public void AttachAcceptedSocket(StreamSocket socket)
+        {
+            _ = AttachAcceptedSocketAsync(socket);
+        }
+
         public async Task SendAsync(string message)
         {
+            var chatMessage = new ChatMessage
+            {
+                Type = "chat",
+                Body = message
+            };
+
+            await SendAsync(chatMessage);
+        }
+
+        public async Task SendPingAsync(string senderId, string senderName, string shortSessionId)
+        {
+            var ping = new ChatMessage
+            {
+                Type = "ping",
+                SenderId = senderId,
+                SenderName = senderName,
+                ShortSessionId = shortSessionId,
+                Body = ""
+            };
+
+            LastPingAt = DateTime.Now;
+            IsPingWaiting = true;
+
+            await SendAsync(ping);
+        }
+
+        public async Task SendAsync(ChatMessage message)
+        {
+            var totalWatch = Stopwatch.StartNew();
+
+            LogReceived?.Invoke("SendAsync開始");
+            LogReceived?.Invoke("Chat TCP送信開始");
+            LogReceived?.Invoke($"接続状態: IsConnected={_isConnected}");
+            LogReceived?.Invoke($"SendAsync内でConnectが必要か: {!_isConnected}");
+            LogReceived?.Invoke($"ChatMessage JSON送信: Type={message.Type}");
+            LogReceived?.Invoke($"MessageId: {message.MessageId}");
+            LogReceived?.Invoke($"SenderName: {message.SenderName}");
+            LogReceived?.Invoke($"送信内容: {message.Body}");
+
             if (!_isConnected || _writer == null)
             {
                 LogReceived?.Invoke("Chat TCPエラー");
-                LogReceived?.Invoke("Message: Chat TCPが未接続です");
+                LogReceived?.Invoke("Chat TCP未接続のため送信できません。事前接続を確認してください。");
                 return;
             }
 
@@ -136,25 +222,30 @@ namespace direct_module.Network
 
             try
             {
-                long startedAt = Stopwatch.GetTimestamp();
-
-                LogReceived?.Invoke("Chat TCP送信開始");
-
-                byte[] plainBytes = Encoding.UTF8.GetBytes(message);
+                string json = JsonSerializer.Serialize(message);
+                byte[] plainBytes = Encoding.UTF8.GetBytes(json);
                 byte[] encryptedBytes = _messageCrypto.Encrypt(plainBytes);
 
-                _writer.WriteInt32(encryptedBytes.Length);
+                _writer.WriteUInt32((uint)encryptedBytes.Length);
                 _writer.WriteBytes(encryptedBytes);
+
+                var storeWatch = Stopwatch.StartNew();
                 await _writer.StoreAsync();
+                LogReceived?.Invoke($"StoreAsync: {storeWatch.ElapsedMilliseconds}ms");
+
+                var flushWatch = Stopwatch.StartNew();
+                await _writer.FlushAsync();
+                LogReceived?.Invoke($"FlushAsync: {flushWatch.ElapsedMilliseconds}ms");
 
                 LogReceived?.Invoke("Chat TCP送信成功");
                 LogReceived?.Invoke($"平文Bytes: {plainBytes.Length}");
                 LogReceived?.Invoke($"送信Bytes: {encryptedBytes.Length}");
-                LogReceived?.Invoke($"Chat TCP送信時間: {GetElapsedMilliseconds(startedAt)}ms");
+                LogReceived?.Invoke($"Chat TCP送信完了 合計: {totalWatch.ElapsedMilliseconds}ms");
             }
             catch (Exception ex)
             {
                 LogException(ex);
+                LogReceived?.Invoke($"SendAsync失敗により切断扱い: Peer={PeerName}");
                 Close();
             }
             finally
@@ -165,18 +256,13 @@ namespace direct_module.Network
 
         public void StartReceiveLoop()
         {
-            if (!_isConnected || _reader == null)
-            {
-                return;
-            }
-
-            if (_isReceiveLoopStarted)
+            if (!_isConnected || _reader == null || _isReceiveLoopStarted)
             {
                 return;
             }
 
             _isReceiveLoopStarted = true;
-            LogReceived?.Invoke("Chat TCP受信ループ開始");
+            LogReceived?.Invoke("Chat TCP ReceiveLoop開始");
             _ = ReceiveLoopAsync();
         }
 
@@ -191,39 +277,71 @@ namespace direct_module.Network
             {
                 while (_isConnected)
                 {
-                    uint headerLoaded = await _reader.LoadAsync(sizeof(int));
-
-                    if (headerLoaded < sizeof(int))
+                    bool lengthRead = await LoadExactAsync(sizeof(uint), "length");
+                    if (!lengthRead)
                     {
+                        LogReceived?.Invoke("Chat TCP切断: lengthを読み取れませんでした");
                         break;
                     }
 
-                    int length = _reader.ReadInt32();
-
-                    if (length <= 0 || length > MaxMessageFrameLength)
+                    uint messageLength = _reader.ReadUInt32();
+                    if (messageLength == 0 || messageLength > MaxMessageBytes)
                     {
-                        LogReceived?.Invoke("Chat TCPエラー");
-                        LogReceived?.Invoke($"Message: 不正なメッセージ長です Length={length}");
+                        LogReceived?.Invoke($"不正なメッセージ長: {messageLength}");
                         break;
                     }
 
-                    uint bodyLoaded = await _reader.LoadAsync((uint)length);
-
-                    if (bodyLoaded < length)
+                    bool bodyRead = await LoadExactAsync(messageLength, "body");
+                    if (!bodyRead)
                     {
+                        LogReceived?.Invoke($"本文不足: {_reader.UnconsumedBufferLength}/{messageLength}");
                         break;
                     }
 
-                    byte[] encryptedBytes = new byte[length];
+                    byte[] encryptedBytes = new byte[messageLength];
                     _reader.ReadBytes(encryptedBytes);
 
                     byte[] plainBytes = _messageCrypto.Decrypt(encryptedBytes);
-                    string message = Encoding.UTF8.GetString(plainBytes);
+                    string json = Encoding.UTF8.GetString(plainBytes);
+                    ChatMessage? message;
+
+                    try
+                    {
+                        message = JsonSerializer.Deserialize<ChatMessage>(json);
+                    }
+                    catch (JsonException ex)
+                    {
+                        LogReceived?.Invoke("ChatMessage復元失敗");
+                        LogReceived?.Invoke($"Message: {ex.Message}");
+                        continue;
+                    }
+
+                    if (message == null)
+                    {
+                        LogReceived?.Invoke("ChatMessage復元失敗");
+                        continue;
+                    }
+
+                    LastResponseAt = DateTime.Now;
+
+                    if (string.IsNullOrWhiteSpace(PeerName) && !string.IsNullOrWhiteSpace(message.SenderName))
+                    {
+                        PeerName = message.SenderName;
+                    }
+
+                    if (string.IsNullOrWhiteSpace(PeerId) && !string.IsNullOrWhiteSpace(message.SenderId))
+                    {
+                        PeerId = message.SenderId;
+                    }
 
                     LogReceived?.Invoke("Chat TCP受信");
                     LogReceived?.Invoke($"受信Bytes: {encryptedBytes.Length}");
                     LogReceived?.Invoke($"復号後Bytes: {plainBytes.Length}");
-                    MessageReceived?.Invoke(message);
+                    LogReceived?.Invoke($"ChatMessage JSON受信: Type={message.Type}");
+                    LogReceived?.Invoke($"MessageId: {message.MessageId}");
+                    LogReceived?.Invoke($"SenderName: {message.SenderName}");
+                    LogReceived?.Invoke($"TCP受信: {message.Body}");
+                    MessageReceived?.Invoke(message, this);
                 }
             }
             catch (Exception ex)
@@ -232,24 +350,32 @@ namespace direct_module.Network
             }
             finally
             {
+                LogReceived?.Invoke("Chat TCP ReceiveLoop終了");
+                LogReceived?.Invoke($"ReceiveLoop終了: Peer={PeerName}");
                 Close();
             }
         }
 
         public void Close()
         {
-            bool wasConnected = _isConnected;
+            bool shouldNotify = _isConnected || IsReady || IsHelloVerified || IsPingWaiting;
+
             _isConnected = false;
             _isReceiveLoopStarted = false;
+            IsPreparing = false;
+            IsPingWaiting = false;
+            IsHelloVerified = false;
+            IsReady = false;
 
-            _writer?.DetachStream();
             _reader?.DetachStream();
-            _writer?.Dispose();
+            _writer?.DetachStream();
+
             _reader?.Dispose();
+            _writer?.Dispose();
             _socket?.Dispose();
 
-            _writer = null;
             _reader = null;
+            _writer = null;
             _socket = null;
 
             if (_useEcdhHandshake && _messageCrypto is not NoOpMessageCrypto)
@@ -257,11 +383,7 @@ namespace direct_module.Network
                 SetMessageCrypto(new NoOpMessageCrypto(), ownsMessageCrypto: true);
             }
 
-            if (wasConnected)
-            {
-                LogReceived?.Invoke("Chat TCP切断");
-                Closed?.Invoke();
-            }
+            MarkDisconnected(shouldNotify);
         }
 
         private void AttachSocket(StreamSocket socket)
@@ -271,13 +393,37 @@ namespace direct_module.Network
             {
                 ByteOrder = ByteOrder.LittleEndian
             };
+            LogReceived?.Invoke("DataWriter作成完了");
             _reader = new DataReader(socket.InputStream)
             {
                 ByteOrder = ByteOrder.LittleEndian,
-                InputStreamOptions = InputStreamOptions.None
+                InputStreamOptions = InputStreamOptions.Partial
             };
+            LogReceived?.Invoke("DataReader作成完了");
             _isConnected = true;
             _isReceiveLoopStarted = false;
+            _disconnectNotified = false;
+        }
+
+        private void MarkDisconnected(bool shouldNotify)
+        {
+            if (!shouldNotify || _disconnectNotified)
+            {
+                return;
+            }
+
+            _disconnectNotified = true;
+            _isConnected = false;
+            _isReceiveLoopStarted = false;
+            IsReady = false;
+            IsHelloVerified = false;
+            IsPreparing = false;
+            IsPingWaiting = false;
+
+            LogReceived?.Invoke($"Chat TCP切断: Peer={PeerName}");
+            LogReceived?.Invoke("Chat TCP切断");
+            Disconnected?.Invoke(this);
+            Closed?.Invoke();
         }
 
         private async Task InitializeCryptoAsync(bool isInitiator)
@@ -352,6 +498,7 @@ namespace direct_module.Network
             _writer.WriteInt32(payload.Length);
             _writer.WriteBytes(payload);
             await _writer.StoreAsync();
+            await _writer.FlushAsync();
         }
 
         private async Task<byte[]> ReadHandshakePublicKeyAsync()
@@ -361,9 +508,7 @@ namespace direct_module.Network
                 throw new InvalidOperationException("Chat TCP reader is not ready.");
             }
 
-            uint headerLoaded = await _reader.LoadAsync(sizeof(int));
-
-            if (headerLoaded < sizeof(int))
+            if (!await LoadExactAsync(sizeof(int), "handshake length"))
             {
                 throw new EndOfStreamException("Chat暗号ハンドシェイクを読み込めませんでした。");
             }
@@ -375,9 +520,7 @@ namespace direct_module.Network
                 throw new InvalidDataException($"Chat暗号ハンドシェイク長が不正です Length={length}");
             }
 
-            uint bodyLoaded = await _reader.LoadAsync((uint)length);
-
-            if (bodyLoaded < length)
+            if (!await LoadExactAsync((uint)length, "handshake body"))
             {
                 throw new EndOfStreamException("Chat暗号ハンドシェイク本文を読み込めませんでした。");
             }
@@ -386,6 +529,28 @@ namespace direct_module.Network
             _reader.ReadBytes(payload);
 
             return ReadPublicKeyFromHandshakePayload(payload);
+        }
+
+        private async Task<bool> LoadExactAsync(uint bytesToRead, string label)
+        {
+            if (_reader == null)
+            {
+                return false;
+            }
+
+            while (_reader.UnconsumedBufferLength < bytesToRead)
+            {
+                uint need = bytesToRead - _reader.UnconsumedBufferLength;
+                uint loaded = await _reader.LoadAsync(need);
+
+                if (loaded == 0)
+                {
+                    LogReceived?.Invoke($"Chat TCP切断: {label}読み取り中に0 bytes");
+                    return false;
+                }
+            }
+
+            return true;
         }
 
         private static byte[] CreateHandshakePayload(byte[] publicKey)
