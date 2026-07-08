@@ -1052,8 +1052,6 @@ namespace direct_module
                 {
                     AddLog($"再接続中: Peer={peer.DisplayName}");
                     AddLog($"再接続処理を開始しました: Peer={peer.DisplayName}");
-                    _chatRole = ChatRole.Client;
-                    AddLog("Chat Role: Client");
                     peer.IsConnected = false;
                     peer.IsTcpConnected = false;
                     peer.IsHelloVerified = false;
@@ -1067,7 +1065,23 @@ namespace direct_module
                 {
                     AddLog($"再接続中: Peer={peer.DisplayName}");
                     AddLog($"再接続処理を開始しました: Peer={peer.DisplayName}");
-                    await PrepareChatTcpConnectionAsync(peer, "再接続中");
+
+                    PeerInfo effectivePeer = FindPeerForTcpRoleDecision(peer) ?? peer;
+                    if (ShouldStartTcpConnection(effectivePeer))
+                    {
+                        AddLog($"再接続TCPロール判定: 接続側 Local={GetLocalShortSessionId()}, Remote={effectivePeer.ShortSessionId}");
+                        await PrepareChatTcpConnectionAsync(effectivePeer, "再接続中");
+                    }
+                    else
+                    {
+                        AddLog($"再接続TCPロール判定: 待ち受け側 Local={GetLocalShortSessionId()}, Remote={effectivePeer.ShortSessionId}");
+                        peer.IsTcpConnected = false;
+                        peer.IsHelloVerified = false;
+                        peer.IsChatReady = false;
+                        peer.StatusText = "TCP待ち受け中";
+                        RefreshPeerDisplay(peer);
+                    }
+
                     return;
                 }
 
