@@ -81,14 +81,14 @@ CREATE TABLE IF NOT EXISTS ChatMessages
 
         private static string ResolveDatabasePath()
         {
-            string localAppData = Environment.GetEnvironmentVariable("LOCALAPPDATA") ?? "";
+            string userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            string localAppData = string.IsNullOrWhiteSpace(userProfile)
+                ? ""
+                : Path.Combine(userProfile, "AppData", "Local");
 
             if (string.IsNullOrWhiteSpace(localAppData))
             {
-                localAppData = Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-                    "AppData",
-                    "Local");
+                localAppData = Environment.GetEnvironmentVariable("LOCALAPPDATA") ?? "";
             }
 
             return Path.Combine(localAppData, "direct_module", "chat.db");
