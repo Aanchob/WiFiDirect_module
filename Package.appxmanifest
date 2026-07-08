@@ -47,7 +47,9 @@
   </Applications>
 
   <Capabilities>
+    <Capability Name="internetClientServer" />
     <rescap:Capability Name="runFullTrust" />
     <systemai:Capability Name="systemAIModels"/>
+    <DeviceCapability Name="proximity" />
   </Capabilities>
 </Package>

@@ -43,8 +43,15 @@ namespace direct_module.WiFiDirect
         {
             if (_watcher != null)
             {
-                LogReceived?.Invoke($"Wi-Fi Direct探索はすでに起動中です: Status={_watcher.Status}");
-                return Task.CompletedTask;
+                if (_watcher.Status == DeviceWatcherStatus.Started ||
+                    _watcher.Status == DeviceWatcherStatus.Created)
+                {
+                    LogReceived?.Invoke($"Wi-Fi Direct探索はすでに起動中です: Status={_watcher.Status}");
+                    return Task.CompletedTask;
+                }
+
+                LogReceived?.Invoke($"前回のWi-Fi Direct探索を整理します: Status={_watcher.Status}");
+                CleanupWatcher();
             }
 
             _currentSelectorType = selectorType;
@@ -106,6 +113,13 @@ namespace direct_module.WiFiDirect
                     _watcher.Status == DeviceWatcherStatus.EnumerationCompleted)
                 {
                     _watcher.Stop();
+                }
+
+                if (_watcher.Status == DeviceWatcherStatus.Stopped ||
+                    _watcher.Status == DeviceWatcherStatus.Aborted ||
+                    _watcher.Status == DeviceWatcherStatus.EnumerationCompleted)
+                {
+                    CleanupWatcher();
                 }
             }
             catch (Exception ex)

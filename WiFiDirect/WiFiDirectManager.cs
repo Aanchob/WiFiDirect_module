@@ -101,11 +101,11 @@ namespace direct_module.WiFiDirect
             _advertiser.Start(listenerRegistered: _listener.IsStarted);
         }
 
-        public async Task StartScanAsync() => await _scanner.StartAssociationEndpointAsync();
+        public async Task StartScanAsync(int scanSeconds = 60) => await _scanner.StartAssociationEndpointAsync(scanSeconds);
 
-        public async Task StartDefaultScanAsync() => await _scanner.StartDefaultAsync();
+        public async Task StartDefaultScanAsync(int scanSeconds = 60) => await _scanner.StartDefaultAsync(scanSeconds);
 
-        public async Task StartAssociationEndpointScanAsync() => await _scanner.StartAssociationEndpointAsync();
+        public async Task StartAssociationEndpointScanAsync(int scanSeconds = 60) => await _scanner.StartAssociationEndpointAsync(scanSeconds);
 
         public void StopScan()
         {

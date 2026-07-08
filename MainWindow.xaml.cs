@@ -125,7 +125,7 @@ namespace direct_module
             _searchedOnStartup = true;
             this.Activated -= MainWindow_Activated;
 
-            AddLog("起動時の相手探索開始");
+            AddLog("起動時の待ち受け開始");
             AddLog("Wi-Fi Direct広告+待ち受け開始");
             _manager.Start();
 
@@ -135,11 +135,7 @@ namespace direct_module
             AddLog("BLEスキャン開始");
             _discoveryManager.StartScan();
 
-            AddLog("AssociationEndpoint探索開始");
-            ClearStaleWiFiDirectPeers();
-            await _manager.StartAssociationEndpointScanAsync();
-
-            AddLog("起動時の相手探索処理を開始しました");
+            AddLog("起動時の待ち受け処理を開始しました");
         }
 
         private async void SearchPeers_Click(object sender, RoutedEventArgs e)
@@ -161,9 +157,12 @@ namespace direct_module
                 AddLog("BLEスキャン開始");
                 _discoveryManager.StartScan();
 
+                AddLog("既存Wi-Fi Direct探索停止");
+                _manager.StopScan();
+
                 AddLog("AssociationEndpoint探索開始");
                 ClearStaleWiFiDirectPeers();
-                await _manager.StartAssociationEndpointScanAsync();
+                await _manager.StartAssociationEndpointScanAsync(60);
 
                 AddLog("相手探索処理を開始しました");
             });
@@ -360,7 +359,7 @@ namespace direct_module
             if (peer.DiscoveredByBle)
             {
                 AddLog("BLEで相手を発見したため、AssociationEndpoint探索を開始します");
-                await _manager.StartAssociationEndpointScanAsync();
+                await _manager.StartAssociationEndpointScanAsync(60);
             }
         }
 
