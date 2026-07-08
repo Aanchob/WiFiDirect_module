@@ -45,7 +45,6 @@ namespace direct_module.Network
                 LogReceived?.Invoke("TCP送信開始");
                 LogReceived?.Invoke($"送信先IP: {ipAddress}");
                 LogReceived?.Invoke($"送信先Port: {port}");
-                LogReceived?.Invoke($"送信内容: {message}");
                 LogReceived?.Invoke($"MessageCrypto: {_messageCrypto.GetType().Name}");
 
                 byte[] plainBytes = Encoding.UTF8.GetBytes(message);
@@ -66,7 +65,6 @@ namespace direct_module.Network
                 writer.WriteInt32(sendBytes.Length);
                 writer.WriteBytes(sendBytes);
                 await writer.StoreAsync();
-                await writer.FlushAsync();
 
                 LogReceived?.Invoke($"TCP送信成功: {ipAddress}:{port}");
                 LogReceived?.Invoke($"平文Bytes: {plainBytes.Length}");

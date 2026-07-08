@@ -1,6 +1,7 @@
 using direct_module.WiFiDirect.Models;
 using System;
 using System.Collections.Generic;
+using System.Threading;
 using System.Threading.Tasks;
 using Windows.Devices.Enumeration;
 using Windows.Devices.WiFiDirect;
@@ -17,6 +18,7 @@ namespace direct_module.WiFiDirect
     {
         private readonly Dictionary<string, DeviceInformation> _devices = new();
         private DeviceWatcher? _watcher;
+        private CancellationTokenSource? _scanTimeoutCts;
         private WiFiDirectScanSelectorType _currentSelectorType;
 
         public event Action<string>? LogReceived;
@@ -37,27 +39,27 @@ namespace direct_module.WiFiDirect
             return StartAsync(WiFiDirectScanSelectorType.AssociationEndpoint, scanSeconds);
         }
 
-        public async Task StartAsync(WiFiDirectScanSelectorType selectorType, int scanSeconds = 30)
+        public Task StartAsync(WiFiDirectScanSelectorType selectorType, int scanSeconds = 30)
         {
             if (_watcher != null)
             {
                 LogReceived?.Invoke($"Wi-Fi Direct探索はすでに起動中です: Status={_watcher.Status}");
-                return;
+                return Task.CompletedTask;
             }
 
             _currentSelectorType = selectorType;
             _devices.Clear();
 
-            string selector = selectorType == WiFiDirectScanSelectorType.AssociationEndpoint
-                ? WiFiDirectDevice.GetDeviceSelector(WiFiDirectDeviceSelectorType.AssociationEndpoint)
-                : WiFiDirectDevice.GetDeviceSelector();
-
-            LogReceived?.Invoke("Wi-Fi Direct探索開始");
-            LogReceived?.Invoke($"Selector Type: {selectorType}");
-            LogReceived?.Invoke($"Selector: {selector}");
-
             try
             {
+                string selector = selectorType == WiFiDirectScanSelectorType.AssociationEndpoint
+                    ? WiFiDirectDevice.GetDeviceSelector(WiFiDirectDeviceSelectorType.AssociationEndpoint)
+                    : WiFiDirectDevice.GetDeviceSelector();
+
+                LogReceived?.Invoke("Wi-Fi Direct探索開始");
+                LogReceived?.Invoke($"Selector Type: {selectorType}");
+                LogReceived?.Invoke($"Selector: {selector}");
+
                 _watcher = DeviceInformation.CreateWatcher(selector);
                 _watcher.Added += OnDeviceAdded;
                 _watcher.Updated += OnDeviceUpdated;
@@ -72,10 +74,8 @@ namespace direct_module.WiFiDirect
 
                 LogReceived?.Invoke($"Watcher Status after Start: {_watcher.Status}");
 
-                await Task.Delay(scanSeconds * 1000);
-
-                LogReceived?.Invoke($"{scanSeconds}秒経過したのでWi-Fi Direct探索を停止します");
-                Stop();
+                _scanTimeoutCts = new CancellationTokenSource();
+                _ = StopAfterDelayAsync(scanSeconds, _scanTimeoutCts.Token);
             }
             catch (Exception ex)
             {
@@ -83,6 +83,8 @@ namespace direct_module.WiFiDirect
                 LogReceived?.Invoke($"Message: {ex.Message}");
                 CleanupWatcher();
             }
+
+            return Task.CompletedTask;
         }
 
         public void Stop()
@@ -97,6 +99,8 @@ namespace direct_module.WiFiDirect
 
             try
             {
+                CancelScanTimeout();
+
                 if (_watcher.Status == DeviceWatcherStatus.Created ||
                     _watcher.Status == DeviceWatcherStatus.Started ||
                     _watcher.Status == DeviceWatcherStatus.EnumerationCompleted)
@@ -110,6 +114,31 @@ namespace direct_module.WiFiDirect
                 LogReceived?.Invoke($"Message: {ex.Message}");
                 CleanupWatcher();
             }
+        }
+
+        private async Task StopAfterDelayAsync(int scanSeconds, CancellationToken cancellationToken)
+        {
+            if (scanSeconds <= 0)
+            {
+                return;
+            }
+
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(scanSeconds), cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+
+            if (cancellationToken.IsCancellationRequested)
+            {
+                return;
+            }
+
+            LogReceived?.Invoke($"{scanSeconds}秒経過したのでWi-Fi Direct探索を停止します");
+            Stop();
         }
 
         private void OnDeviceAdded(DeviceWatcher sender, DeviceInformation device)
@@ -179,6 +208,8 @@ namespace direct_module.WiFiDirect
 
         private void CleanupWatcher()
         {
+            CancelScanTimeout();
+
             if (_watcher == null)
             {
                 return;
@@ -190,6 +221,18 @@ namespace direct_module.WiFiDirect
             _watcher.EnumerationCompleted -= OnEnumerationCompleted;
             _watcher.Stopped -= OnStopped;
             _watcher = null;
+        }
+
+        private void CancelScanTimeout()
+        {
+            if (_scanTimeoutCts == null)
+            {
+                return;
+            }
+
+            _scanTimeoutCts.Cancel();
+            _scanTimeoutCts.Dispose();
+            _scanTimeoutCts = null;
         }
 
         private static string FormatName(string name)

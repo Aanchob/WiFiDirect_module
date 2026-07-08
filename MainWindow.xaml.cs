@@ -79,17 +79,32 @@ namespace direct_module
 
         private void LoadChatHistory(string conversationId)
         {
-            MessageList.Items.Clear();
-
             var messages = _chatRepository.GetMessages(conversationId);
 
-            foreach (var message in messages)
+            void RenderHistory()
             {
-                if (message.IsMine)
-                    AddChatMessage($"自分: {message.Message}");
-                else
-                    AddChatMessage($"相手: {message.Message}");
+                MessageList.Items.Clear();
+
+                foreach (var message in messages)
+                {
+                    string time = message.SendTime.ToString("HH:mm:ss");
+                    string sender = message.IsMine ? "自分" : "相手";
+                    MessageList.Items.Add($"[{time}] {sender}: {message.Message}");
+                }
+
+                if (MessageList.Items.Count > 0)
+                {
+                    MessageList.ScrollIntoView(MessageList.Items[MessageList.Items.Count - 1]);
+                }
             }
+
+            if (DispatcherQueue.HasThreadAccess)
+            {
+                RenderHistory();
+                return;
+            }
+
+            DispatcherQueue.TryEnqueue(RenderHistory);
         }
 
         private void ResizeWindow(int width, int height)
@@ -98,6 +113,33 @@ namespace direct_module
             WindowId windowId = Win32Interop.GetWindowIdFromWindow(windowHandle);
             AppWindow appWindow = AppWindow.GetFromWindowId(windowId);
             appWindow.Resize(new SizeInt32(width, height));
+        }
+
+        private async void MainWindow_Activated(object sender, WindowActivatedEventArgs args)
+        {
+            if (_searchedOnStartup)
+            {
+                return;
+            }
+
+            _searchedOnStartup = true;
+            this.Activated -= MainWindow_Activated;
+
+            AddLog("起動時の相手探索開始");
+            AddLog("Wi-Fi Direct広告+待ち受け開始");
+            _manager.Start();
+
+            AddLog("BLE広告開始");
+            StartBleAdvertiseCore();
+
+            AddLog("BLEスキャン開始");
+            _discoveryManager.StartScan();
+
+            AddLog("AssociationEndpoint探索開始");
+            ClearStaleWiFiDirectPeers();
+            await _manager.StartAssociationEndpointScanAsync();
+
+            AddLog("起動時の相手探索処理を開始しました");
         }
 
         private async void SearchPeers_Click(object sender, RoutedEventArgs e)
@@ -281,8 +323,14 @@ namespace direct_module
 
         private void PeerList_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
-            UpdateSelectedPeerDetails(PeerList.SelectedItem as PeerInfo);
-        }
+            PeerInfo? peer = PeerList.SelectedItem as PeerInfo;
+
+            UpdateSelectedPeerDetails(peer);
+
+            if (peer == null)
+            {
+                return;
+            }
 
             // DeviceIdが無い場合は履歴を読み込まない
             if (string.IsNullOrWhiteSpace(peer.DeviceId))
@@ -341,7 +389,7 @@ namespace direct_module
 
         private void OnTcpConnectionAccepted(StreamSocket socket)
         {
-            DispatcherQueue.TryEnqueue(() =>
+            DispatcherQueue.TryEnqueue(async () =>
             {
                 if (_chatConnection?.IsConnected == true)
                 {
@@ -352,8 +400,15 @@ namespace direct_module
 
                 AddLog("Chat TCP受信側接続を保持します");
                 ReplaceChatConnection(new ChatConnection());
-                _chatConnection?.AttachAcceptedSocket(socket);
-                MarkSelectedPeerTcpState(true);
+
+                if (_chatConnection == null)
+                {
+                    socket.Dispose();
+                    return;
+                }
+
+                await _chatConnection.AttachAcceptedSocketAsync(socket);
+                MarkSelectedPeerTcpState(_chatConnection.IsConnected);
             });
         }
 
@@ -487,7 +542,8 @@ namespace direct_module
                 IsMine = false
             });
 
-            AddLog($"TCP受信メッセージ: {message}");
+            AddLog("TCP受信メッセージを復号しました");
+            AddLog($"受信文字数: {message.Length}");
             AddChatMessage($"相手: {message}");
         }
 

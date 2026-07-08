@@ -88,9 +88,12 @@ namespace direct_module.Discovery
                 LogReceived?.Invoke($"BLEスキャン停止失敗: {ex.GetType().Name}");
                 LogReceived?.Invoke(ex.Message);
 
-                _watcher.Received -= OnReceived;
-                _watcher.Stopped -= OnStopped;
-                _watcher = null;
+                if (_watcher != null)
+                {
+                    _watcher.Received -= OnReceived;
+                    _watcher.Stopped -= OnStopped;
+                    _watcher = null;
+                }
             }
         }
 

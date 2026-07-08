@@ -1,5 +1,8 @@
 using direct_module.Crypto;
 using System;
+using System.Diagnostics;
+using System.IO;
+using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -11,8 +14,14 @@ namespace direct_module.Network
 {
     public class ChatConnection
     {
-        private readonly IMessageCrypto _messageCrypto;
+        private const int MaxMessageFrameLength = 1024 * 1024;
+        private const int MaxHandshakeFrameLength = 4096;
+        private static readonly byte[] HandshakeMagic = Encoding.ASCII.GetBytes("NOVA-ECDH-1|");
+
+        private readonly bool _useEcdhHandshake;
         private readonly SemaphoreSlim _sendLock = new(1, 1);
+        private IMessageCrypto _messageCrypto;
+        private bool _ownsMessageCrypto;
         private StreamSocket? _socket;
         private DataWriter? _writer;
         private DataReader? _reader;
@@ -20,13 +29,23 @@ namespace direct_module.Network
         private bool _isReceiveLoopStarted;
 
         public ChatConnection()
-            : this(new NoOpMessageCrypto())
+            : this(new NoOpMessageCrypto(), useEcdhHandshake: true, ownsMessageCrypto: true)
         {
         }
 
         public ChatConnection(IMessageCrypto messageCrypto)
+            : this(messageCrypto, useEcdhHandshake: false, ownsMessageCrypto: false)
         {
-            _messageCrypto = messageCrypto;
+        }
+
+        private ChatConnection(
+            IMessageCrypto messageCrypto,
+            bool useEcdhHandshake,
+            bool ownsMessageCrypto)
+        {
+            _messageCrypto = messageCrypto ?? throw new ArgumentNullException(nameof(messageCrypto));
+            _useEcdhHandshake = useEcdhHandshake;
+            _ownsMessageCrypto = ownsMessageCrypto;
         }
 
         public event Action<string>? LogReceived;
@@ -59,6 +78,8 @@ namespace direct_module.Network
 
             try
             {
+                long startedAt = Stopwatch.GetTimestamp();
+
                 LogReceived?.Invoke("Chat TCP接続開始");
                 LogReceived?.Invoke($"接続先IP: {ipAddress}");
                 LogReceived?.Invoke($"接続先Port: {port}");
@@ -67,9 +88,10 @@ namespace direct_module.Network
                 await socket.ConnectAsync(new HostName(ipAddress), port.ToString());
 
                 AttachSocket(socket);
+                await InitializeCryptoAsync(isInitiator: true);
 
                 LogReceived?.Invoke("Chat TCP接続成功");
-                LogReceived?.Invoke($"MessageCrypto: {_messageCrypto.GetType().Name}");
+                LogReceived?.Invoke($"Chat TCP接続時間: {GetElapsedMilliseconds(startedAt)}ms");
                 StartReceiveLoop();
             }
             catch (Exception ex)
@@ -79,14 +101,26 @@ namespace direct_module.Network
             }
         }
 
-        public void AttachAcceptedSocket(StreamSocket socket)
+        public async Task AttachAcceptedSocketAsync(StreamSocket socket)
         {
-            Close();
-            AttachSocket(socket);
-            LogReceived?.Invoke("Chat TCP接続成功");
-            LogReceived?.Invoke("Chat TCP受信側socketを保持しました");
-            LogReceived?.Invoke($"MessageCrypto: {_messageCrypto.GetType().Name}");
-            StartReceiveLoop();
+            try
+            {
+                long startedAt = Stopwatch.GetTimestamp();
+
+                Close();
+                AttachSocket(socket);
+                await InitializeCryptoAsync(isInitiator: false);
+
+                LogReceived?.Invoke("Chat TCP接続成功");
+                LogReceived?.Invoke("Chat TCP受信側socketを保持しました");
+                LogReceived?.Invoke($"Chat TCP受信側準備時間: {GetElapsedMilliseconds(startedAt)}ms");
+                StartReceiveLoop();
+            }
+            catch (Exception ex)
+            {
+                LogException(ex);
+                Close();
+            }
         }
 
         public async Task SendAsync(string message)
@@ -102,8 +136,9 @@ namespace direct_module.Network
 
             try
             {
+                long startedAt = Stopwatch.GetTimestamp();
+
                 LogReceived?.Invoke("Chat TCP送信開始");
-                LogReceived?.Invoke($"送信内容: {message}");
 
                 byte[] plainBytes = Encoding.UTF8.GetBytes(message);
                 byte[] encryptedBytes = _messageCrypto.Encrypt(plainBytes);
@@ -111,11 +146,11 @@ namespace direct_module.Network
                 _writer.WriteInt32(encryptedBytes.Length);
                 _writer.WriteBytes(encryptedBytes);
                 await _writer.StoreAsync();
-                await _writer.FlushAsync();
 
                 LogReceived?.Invoke("Chat TCP送信成功");
                 LogReceived?.Invoke($"平文Bytes: {plainBytes.Length}");
                 LogReceived?.Invoke($"送信Bytes: {encryptedBytes.Length}");
+                LogReceived?.Invoke($"Chat TCP送信時間: {GetElapsedMilliseconds(startedAt)}ms");
             }
             catch (Exception ex)
             {
@@ -165,7 +200,7 @@ namespace direct_module.Network
 
                     int length = _reader.ReadInt32();
 
-                    if (length <= 0 || length > 1024 * 1024)
+                    if (length <= 0 || length > MaxMessageFrameLength)
                     {
                         LogReceived?.Invoke("Chat TCPエラー");
                         LogReceived?.Invoke($"Message: 不正なメッセージ長です Length={length}");
@@ -188,7 +223,6 @@ namespace direct_module.Network
                     LogReceived?.Invoke("Chat TCP受信");
                     LogReceived?.Invoke($"受信Bytes: {encryptedBytes.Length}");
                     LogReceived?.Invoke($"復号後Bytes: {plainBytes.Length}");
-                    LogReceived?.Invoke($"受信内容: {message}");
                     MessageReceived?.Invoke(message);
                 }
             }
@@ -218,6 +252,11 @@ namespace direct_module.Network
             _reader = null;
             _socket = null;
 
+            if (_useEcdhHandshake && _messageCrypto is not NoOpMessageCrypto)
+            {
+                SetMessageCrypto(new NoOpMessageCrypto(), ownsMessageCrypto: true);
+            }
+
             if (wasConnected)
             {
                 LogReceived?.Invoke("Chat TCP切断");
@@ -241,12 +280,162 @@ namespace direct_module.Network
             _isReceiveLoopStarted = false;
         }
 
+        private async Task InitializeCryptoAsync(bool isInitiator)
+        {
+            if (!_useEcdhHandshake)
+            {
+                LogReceived?.Invoke($"MessageCrypto: {_messageCrypto.GetType().Name}");
+                return;
+            }
+
+            if (_writer == null || _reader == null)
+            {
+                throw new InvalidOperationException("Chat TCP stream is not ready.");
+            }
+
+            using ECDiffieHellman localKey = EcdhService.Create();
+            byte[] localPublicKey = EcdhService.GetPublicKey(localKey);
+            byte[]? remotePublicKey = null;
+            byte[]? sharedKey = null;
+
+            try
+            {
+                long startedAt = Stopwatch.GetTimestamp();
+
+                LogReceived?.Invoke("Chat暗号ハンドシェイク開始");
+
+                if (isInitiator)
+                {
+                    await WriteHandshakePublicKeyAsync(localPublicKey);
+                    remotePublicKey = await ReadHandshakePublicKeyAsync();
+                }
+                else
+                {
+                    remotePublicKey = await ReadHandshakePublicKeyAsync();
+                    await WriteHandshakePublicKeyAsync(localPublicKey);
+                }
+
+                string remoteFingerprint = EcdhService.CreateFingerprint(remotePublicKey);
+                sharedKey = EcdhService.CreateSharedKey(localKey, remotePublicKey);
+                SetMessageCrypto(new AesGcmMessageCrypto(sharedKey), ownsMessageCrypto: true);
+
+                LogReceived?.Invoke("Chat暗号ハンドシェイク成功");
+                LogReceived?.Invoke($"Chat暗号ハンドシェイク時間: {GetElapsedMilliseconds(startedAt)}ms");
+                LogReceived?.Invoke($"PeerPublicKeyFingerprint: {remoteFingerprint}");
+                LogReceived?.Invoke($"MessageCrypto: {_messageCrypto.GetType().Name}");
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(localPublicKey);
+
+                if (remotePublicKey != null)
+                {
+                    CryptographicOperations.ZeroMemory(remotePublicKey);
+                }
+
+                if (sharedKey != null)
+                {
+                    CryptographicOperations.ZeroMemory(sharedKey);
+                }
+            }
+        }
+
+        private async Task WriteHandshakePublicKeyAsync(byte[] publicKey)
+        {
+            if (_writer == null)
+            {
+                throw new InvalidOperationException("Chat TCP writer is not ready.");
+            }
+
+            byte[] payload = CreateHandshakePayload(publicKey);
+
+            _writer.WriteInt32(payload.Length);
+            _writer.WriteBytes(payload);
+            await _writer.StoreAsync();
+        }
+
+        private async Task<byte[]> ReadHandshakePublicKeyAsync()
+        {
+            if (_reader == null)
+            {
+                throw new InvalidOperationException("Chat TCP reader is not ready.");
+            }
+
+            uint headerLoaded = await _reader.LoadAsync(sizeof(int));
+
+            if (headerLoaded < sizeof(int))
+            {
+                throw new EndOfStreamException("Chat暗号ハンドシェイクを読み込めませんでした。");
+            }
+
+            int length = _reader.ReadInt32();
+
+            if (length <= HandshakeMagic.Length || length > MaxHandshakeFrameLength)
+            {
+                throw new InvalidDataException($"Chat暗号ハンドシェイク長が不正です Length={length}");
+            }
+
+            uint bodyLoaded = await _reader.LoadAsync((uint)length);
+
+            if (bodyLoaded < length)
+            {
+                throw new EndOfStreamException("Chat暗号ハンドシェイク本文を読み込めませんでした。");
+            }
+
+            byte[] payload = new byte[length];
+            _reader.ReadBytes(payload);
+
+            return ReadPublicKeyFromHandshakePayload(payload);
+        }
+
+        private static byte[] CreateHandshakePayload(byte[] publicKey)
+        {
+            if (publicKey == null || publicKey.Length == 0)
+            {
+                throw new ArgumentException("公開鍵が不正です。", nameof(publicKey));
+            }
+
+            byte[] payload = new byte[HandshakeMagic.Length + publicKey.Length];
+            System.Buffer.BlockCopy(HandshakeMagic, 0, payload, 0, HandshakeMagic.Length);
+            System.Buffer.BlockCopy(publicKey, 0, payload, HandshakeMagic.Length, publicKey.Length);
+            return payload;
+        }
+
+        private static byte[] ReadPublicKeyFromHandshakePayload(byte[] payload)
+        {
+            if (payload.Length <= HandshakeMagic.Length ||
+                !payload.AsSpan(0, HandshakeMagic.Length).SequenceEqual(HandshakeMagic))
+            {
+                throw new InvalidDataException("Chat暗号ハンドシェイク形式が不正です。");
+            }
+
+            byte[] publicKey = new byte[payload.Length - HandshakeMagic.Length];
+            System.Buffer.BlockCopy(payload, HandshakeMagic.Length, publicKey, 0, publicKey.Length);
+            return publicKey;
+        }
+
+        private void SetMessageCrypto(IMessageCrypto messageCrypto, bool ownsMessageCrypto)
+        {
+            if (_ownsMessageCrypto && _messageCrypto is IDisposable disposable)
+            {
+                disposable.Dispose();
+            }
+
+            _messageCrypto = messageCrypto;
+            _ownsMessageCrypto = ownsMessageCrypto;
+        }
+
         private void LogException(Exception ex)
         {
             LogReceived?.Invoke("Chat TCPエラー");
             LogReceived?.Invoke($"例外名: {ex.GetType().Name}");
             LogReceived?.Invoke($"HResult: 0x{ex.HResult:X8}");
             LogReceived?.Invoke($"Message: {ex.Message}");
+        }
+
+        private static long GetElapsedMilliseconds(long startedAt)
+        {
+            return (long)Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds;
         }
     }
 }
