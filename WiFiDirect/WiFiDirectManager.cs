@@ -52,6 +52,24 @@ namespace direct_module.WiFiDirect
                 shortSessionId: shortSessionId);
         }
 
+        public void RestartAdvertisement(string displayName, string shortSessionId)
+        {
+            LogReceived?.Invoke("Manager: Wi-Fi Direct Advertisement 再起動開始");
+            _advertiser.Stop();
+            _advertiser.Start(
+                listenerRegistered: _listener.IsStarted,
+                displayName: displayName,
+                shortSessionId: shortSessionId);
+        }
+
+        public void Stop()
+        {
+            LogReceived?.Invoke("Manager: Wi-Fi Direct 停止開始");
+            _scanner.Stop();
+            _advertiser.Stop();
+            LogReceived?.Invoke("Manager: Wi-Fi Direct 停止完了");
+        }
+
         public async Task StartScanAsync()
         {
             await _scanner.StartAssociationEndpointAsync();

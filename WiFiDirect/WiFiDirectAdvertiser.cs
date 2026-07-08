@@ -23,6 +23,8 @@ namespace direct_module.WiFiDirect
 
             try
             {
+                CleanupPublisher();
+
                 _publisher = new WiFiDirectAdvertisementPublisher();
                 LogReceived?.Invoke("AdvertisementPublisher作成");
 
@@ -137,15 +139,22 @@ namespace direct_module.WiFiDirect
 
             if (args.Status == WiFiDirectAdvertisementPublisherStatus.Aborted)
             {
-                _isStarted = false;
+                LogReceived?.Invoke("AdvertisementPublisher Aborted: Publisherをクリアします");
+                CleanupPublisher(sender);
             }
         }
 
-        private void CleanupPublisher()
+        private void CleanupPublisher(WiFiDirectAdvertisementPublisher? publisher = null)
         {
-            if (_publisher != null)
+            WiFiDirectAdvertisementPublisher? target = publisher ?? _publisher;
+
+            if (target != null)
             {
-                _publisher.StatusChanged -= OnStatusChanged;
+                target.StatusChanged -= OnStatusChanged;
+            }
+
+            if (publisher == null || ReferenceEquals(_publisher, publisher))
+            {
                 _publisher = null;
             }
 

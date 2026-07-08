@@ -105,6 +105,7 @@ namespace direct_module
         private void MainWindow_Closed(object sender, WindowEventArgs args)
         {
             _chatConnectionManager.StopKeepAlive();
+            _manager.Stop();
         }
 
         private void ResizeWindow(int width, int height)
