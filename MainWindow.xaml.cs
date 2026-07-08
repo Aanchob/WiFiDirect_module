@@ -1,4 +1,5 @@
 using direct_module.Discovery;
+using direct_module.Database;
 using direct_module.Network;
 using direct_module.WiFiDirect;
 using direct_module.WiFiDirect.Models;
@@ -43,7 +44,10 @@ namespace direct_module
         private readonly TcpServer _tcpServer = new();
         private readonly ChatConnectionManager _chatConnectionManager = new();
         private readonly List<string> _logLines = new();
+        private readonly HashSet<string> _savedMessageIds = new(StringComparer.OrdinalIgnoreCase);
         private readonly Guid _localSessionId = Guid.NewGuid();
+        private readonly DatabaseService? _databaseService = null;
+        private readonly ChatRepository? _chatRepository = null;
 
         private ChatRole _chatRole = ChatRole.Client;
 
@@ -52,6 +56,17 @@ namespace direct_module
             InitializeComponent();
             Title = "NOVA Chat";
             ResizeWindow(1440, 920);
+
+            try
+            {
+                _databaseService = new DatabaseService();
+                _chatRepository = new ChatRepository(_databaseService);
+                AddLog("履歴DB初期化成功", LogLevel.Success);
+            }
+            catch (Exception ex)
+            {
+                AddLog($"履歴DB初期化失敗: {ex.Message}", LogLevel.Error);
+            }
 
             _manager = new WiFiDirectManager();
             _discoveryManager = new DiscoveryManager();
@@ -199,6 +214,7 @@ namespace direct_module
                     AddLog($"Host送信: 接続中ClientへBroadcast Count={_chatConnectionManager.ConnectedCount}");
                     await _chatConnectionManager.BroadcastAsync(message);
                     AddChatMessage($"自分: {body}");
+                    SaveChatMessageSafely(message, true, null, null);
                     return;
                 }
 
@@ -219,6 +235,7 @@ namespace direct_module
 
                 await connection.SendAsync(message);
                 AddChatMessage($"自分: {body}");
+                SaveChatMessageSafely(message, true, peer, connection);
                 MessageTextBox.Text = "";
                 AddLog($"SendMessage_Click完了 合計: {totalWatch.ElapsedMilliseconds}ms", LogLevel.Debug);
             }
@@ -663,6 +680,7 @@ namespace direct_module
             DispatcherQueue.TryEnqueue(() =>
             {
                 AddChatMessage($"{message.SenderName}: {message.Body}");
+                SaveChatMessageSafely(message, false, FindPeerForConnection(sourceConnection), sourceConnection);
                 AddLog($"TCP受信メッセージ: {message.Body}", LogLevel.Success);
                 AddConnectedPeerDisplay(sourceConnection);
             });
@@ -1506,6 +1524,139 @@ namespace direct_module
         {
             MessageList.Items.Add(message);
             MessageList.ScrollIntoView(message);
+        }
+
+        private void SaveChatMessageSafely(ChatMessage message, bool isOutgoing, PeerInfo? peer, ChatConnection? connection)
+        {
+            if (!string.Equals(message.Type, "chat", StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            if (_chatRepository == null)
+            {
+                AddLog("履歴保存失敗: ChatRepositoryが初期化されていません", LogLevel.Error);
+                return;
+            }
+
+            if (!string.IsNullOrWhiteSpace(message.MessageId) && !_savedMessageIds.Add(message.MessageId))
+            {
+                AddLog($"重複MessageIdのため履歴保存をスキップ: {message.MessageId}", LogLevel.Debug);
+                return;
+            }
+
+            try
+            {
+                direct_module.Models.ChatMessage dbMessage = ToDatabaseMessage(message, isOutgoing, peer, connection);
+                _chatRepository.SaveMessage(dbMessage);
+
+                AddLog(
+                    isOutgoing
+                        ? $"送信メッセージ履歴保存成功: MessageId={message.MessageId}"
+                        : $"受信メッセージ履歴保存成功: MessageId={message.MessageId}",
+                    LogLevel.Debug);
+            }
+            catch (Exception ex)
+            {
+                if (!string.IsNullOrWhiteSpace(message.MessageId))
+                {
+                    _savedMessageIds.Remove(message.MessageId);
+                }
+
+                AddLog($"履歴保存失敗: MessageId={message.MessageId}, Error={ex.Message}", LogLevel.Error);
+            }
+        }
+
+        private direct_module.Models.ChatMessage ToDatabaseMessage(
+            ChatMessage message,
+            bool isOutgoing,
+            PeerInfo? peer,
+            ChatConnection? connection)
+        {
+            string peerId = GetHistoryPeerId(peer, connection, isOutgoing);
+            string peerName = GetHistoryPeerName(peer, connection, isOutgoing);
+
+            return new direct_module.Models.ChatMessage
+            {
+                ConversationId = GetHistoryConversationId(peer, connection, isOutgoing),
+                SenderId = isOutgoing ? LocalPeerId : message.SenderId,
+                SenderName = isOutgoing ? Environment.MachineName : message.SenderName,
+                ReceiverId = isOutgoing ? peerId : LocalPeerId,
+                ReceiverName = isOutgoing ? peerName : Environment.MachineName,
+                Message = message.Body,
+                SendTime = message.SentAt,
+                IsMine = isOutgoing
+            };
+        }
+
+        private static string GetHistoryConversationId(PeerInfo? peer, ChatConnection? connection, bool isOutgoing)
+        {
+            if (peer != null)
+            {
+                return GetPeerConnectionId(peer);
+            }
+
+            if (!string.IsNullOrWhiteSpace(connection?.ShortSessionId))
+            {
+                return connection.ShortSessionId;
+            }
+
+            if (!string.IsNullOrWhiteSpace(connection?.PeerId))
+            {
+                return connection.PeerId;
+            }
+
+            if (!string.IsNullOrWhiteSpace(connection?.RemoteIpAddress))
+            {
+                return connection.RemoteIpAddress;
+            }
+
+            return isOutgoing ? "broadcast" : "unknown";
+        }
+
+        private static string GetHistoryPeerId(PeerInfo? peer, ChatConnection? connection, bool isOutgoing)
+        {
+            if (peer != null)
+            {
+                return GetPeerConnectionId(peer);
+            }
+
+            if (!string.IsNullOrWhiteSpace(connection?.PeerId))
+            {
+                return connection.PeerId;
+            }
+
+            if (!string.IsNullOrWhiteSpace(connection?.ShortSessionId))
+            {
+                return connection.ShortSessionId;
+            }
+
+            if (!string.IsNullOrWhiteSpace(connection?.RemoteIpAddress))
+            {
+                return connection.RemoteIpAddress;
+            }
+
+            return isOutgoing ? "broadcast" : "unknown";
+        }
+
+        private static string GetHistoryPeerName(PeerInfo? peer, ChatConnection? connection, bool isOutgoing)
+        {
+            if (!string.IsNullOrWhiteSpace(peer?.DisplayName))
+            {
+                return peer.DisplayName;
+            }
+
+            if (!string.IsNullOrWhiteSpace(connection?.PeerName))
+            {
+                return connection.PeerName;
+            }
+
+            if (!string.IsNullOrWhiteSpace(connection?.RemoteIpAddress))
+            {
+                return connection.RemoteIpAddress;
+            }
+
+            return isOutgoing ? "Broadcast" : "Unknown";
         }
 
         private void AddLog(string message, LogLevel level = LogLevel.Info)
