@@ -342,17 +342,17 @@ namespace direct_module
             MoveLogCaretToEnd();
         }
 
-        private async void OnPeerFound(PeerInfo peer)
+        private void OnPeerFound(PeerInfo peer)
         {
-            DispatcherQueue.TryEnqueue(() =>
+            DispatcherQueue.TryEnqueue(async () =>
             {
                 AddOrMergePeer(peer);
-            });
 
-            if (peer.DiscoveredByBle)
-            {
-                await HandleBleRoleNegotiationAsync(peer);
-            }
+                if (peer.DiscoveredByBle)
+                {
+                    await HandleBleRoleNegotiationAsync(peer);
+                }
+            });
         }
 
         private void OnLogReceived(string message)
