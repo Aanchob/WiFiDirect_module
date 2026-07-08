@@ -42,6 +42,10 @@ public class PeerInfo
 
     public string DeviceKind { get; set; } = "";
 
+    public bool CanConnect { get; set; }
+
+    public double ConnectButtonOpacity => CanConnect ? 1.0 : 0.25;
+
     public string SourceText
     {
         get

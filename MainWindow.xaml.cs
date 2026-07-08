@@ -288,6 +288,15 @@ namespace direct_module
 
         private async System.Threading.Tasks.Task ConnectPeerAsync(PeerInfo peer)
         {
+            UpdatePeerConnectAvailability(peer);
+            if (!peer.CanConnect)
+            {
+                AddLog($"接続条件を満たしていないため接続を開始しません: Peer={peer.DisplayName}", LogLevel.Error);
+                AddLog("接続にはBLEとWi-Fi Directの両方、ShortSessionId、RoleKey、Client側判定が必要です", LogLevel.Error);
+                RefreshPeerDisplay(peer);
+                return;
+            }
+
             if (peer.DeviceId.Contains("_PendingRequest", StringComparison.OrdinalIgnoreCase))
             {
                 AddLog("_PendingRequest付きDeviceIdのため通常接続を中止します", LogLevel.Error);
@@ -311,6 +320,7 @@ namespace direct_module
             AddLog("Chat Role: Client");
             AddLog($"Wi-Fi Direct接続開始: {peer.DisplayText}");
             await _manager.ConnectAsync(peer);
+            UpdatePeerConnectAvailability(peer);
             RefreshPeerDisplay(peer);
         }
 
@@ -448,6 +458,22 @@ namespace direct_module
         private static int CompareRoleKey(string localRoleKey, string remoteRoleKey)
         {
             return string.Compare(localRoleKey, remoteRoleKey, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private void UpdatePeerConnectAvailability(PeerInfo peer)
+        {
+            peer.CanConnect =
+                peer.DiscoveredByBle &&
+                peer.DiscoveredByWiFiDirect &&
+                !string.IsNullOrWhiteSpace(peer.DeviceId) &&
+                !peer.DeviceId.Contains("_PendingRequest", StringComparison.OrdinalIgnoreCase) &&
+                !string.IsNullOrWhiteSpace(peer.ShortSessionId) &&
+                !string.IsNullOrWhiteSpace(peer.RoleKey) &&
+                IsLocalClientForWifiDirect(peer) &&
+                !peer.IsConnected &&
+                !peer.IsTcpConnected &&
+                !peer.IsChatReady &&
+                !peer.IsPreparingChatTcp;
         }
 
         private void OnConnectionRequested(PeerInfo peer)
@@ -930,6 +956,7 @@ namespace direct_module
                         : message.SenderName,
                     RemoteIpAddress = sourceConnection.RemoteIpAddress
                 };
+                UpdatePeerConnectAvailability(matchedPeer);
                 PeerList.Items.Add(matchedPeer);
                 AddLog("BLE情報なしのためHELLO情報でPeerInfoを更新");
             }
@@ -1412,7 +1439,12 @@ namespace direct_module
 
             if (PeerList.SelectedItem is PeerInfo peer)
             {
+                UpdatePeerConnectAvailability(peer);
                 canReconnect =
+                    peer.DiscoveredByBle &&
+                    peer.DiscoveredByWiFiDirect &&
+                    !string.IsNullOrWhiteSpace(peer.RoleKey) &&
+                    (!string.IsNullOrWhiteSpace(peer.RemoteIpAddress) || !string.IsNullOrWhiteSpace(peer.DeviceId)) &&
                     !peer.IsChatReady &&
                     !peer.IsPreparingChatTcp &&
                     !string.Equals(peer.StatusText, "再接続中", StringComparison.OrdinalIgnoreCase);
@@ -1483,6 +1515,7 @@ namespace direct_module
                 }
 
                 MergePeer(existing, incoming);
+                UpdatePeerConnectAvailability(existing);
                 RefreshPeerDisplay(existing);
 
                 LogLevel level = matchReason.StartsWith("注意:", StringComparison.Ordinal)
@@ -1493,6 +1526,7 @@ namespace direct_module
                 return;
             }
 
+            UpdatePeerConnectAvailability(incoming);
             PeerList.Items.Add(incoming);
             UpdatePeerCount();
             UpdateSelectedPeerDetails(PeerList.SelectedItem as PeerInfo);
@@ -1664,6 +1698,7 @@ namespace direct_module
                 StatusText = connection.IsConnected ? "HELLO確認中" : "送信不可"
             };
 
+            UpdatePeerConnectAvailability(peer);
             PeerList.Items.Add(peer);
             UpdatePeerCount();
             UpdateSelectedPeerDetails(PeerList.SelectedItem as PeerInfo);
@@ -1671,6 +1706,8 @@ namespace direct_module
 
         private void RefreshPeerDisplay(PeerInfo peer)
         {
+            UpdatePeerConnectAvailability(peer);
+
             int selectedIndex = PeerList.SelectedIndex;
             int index = PeerList.Items.IndexOf(peer);
             if (index < 0)

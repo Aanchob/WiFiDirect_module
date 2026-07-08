@@ -206,6 +206,8 @@
                                             BorderThickness="1"
                                             Click="ConnectPeerItem_Click"
                                             Foreground="{StaticResource LimeBrush}"
+                                            IsEnabled="{Binding CanConnect}"
+                                            Opacity="{Binding ConnectButtonOpacity}"
                                             Style="{StaticResource IconOnlyButtonStyle}"
                                             ToolTipService.ToolTip="接続">
                                             <FontIcon FontSize="14" Glyph="&#xE8A7;" />
