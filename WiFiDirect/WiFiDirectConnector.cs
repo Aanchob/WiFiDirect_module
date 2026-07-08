@@ -7,6 +7,9 @@ namespace direct_module.WiFiDirect
 {
     public class WiFiDirectConnector
     {
+        private const int ConnectRetryCount = 8;
+        private static readonly TimeSpan ConnectRetryDelay = TimeSpan.FromSeconds(3);
+
         private bool _isConnecting;
         private bool _isAcceptingIncomingConnection;
 
@@ -44,6 +47,11 @@ namespace direct_module.WiFiDirect
 
             try
             {
+                if (await ConnectWithRetryAsync(peer))
+                {
+                    return;
+                }
+
                 WiFiDirectDevice? device = await CreateDeviceFromIdAsync(peer.DeviceId, "FromIdAsync", "Target");
 
                 if (device == null)
@@ -62,6 +70,42 @@ namespace direct_module.WiFiDirect
             {
                 _isConnecting = false;
             }
+        }
+
+        private async Task<bool> ConnectWithRetryAsync(PeerInfo peer)
+        {
+            for (int attempt = 1; attempt <= ConnectRetryCount; attempt++)
+            {
+                try
+                {
+                    LogReceived?.Invoke($"Wi-Fi Direct接続試行: Attempt={attempt}/{ConnectRetryCount}");
+                    WiFiDirectDevice? device = await CreateDeviceFromIdAsync(peer.DeviceId, "FromIdAsync", "Target");
+
+                    if (device == null)
+                    {
+                        LogReceived?.Invoke($"Wi-Fi Direct接続試行失敗: device=null, Attempt={attempt}/{ConnectRetryCount}");
+                    }
+                    else
+                    {
+                        CompleteConnection(peer, device, "Wi-Fi Direct接続成功");
+                        return true;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    LogReceived?.Invoke($"Wi-Fi Direct接続試行失敗: Attempt={attempt}/{ConnectRetryCount}");
+                    LogReceived?.Invoke($"例外名: {ex.GetType().Name}");
+                    LogReceived?.Invoke($"HResult: 0x{ex.HResult:X8}");
+                    LogReceived?.Invoke($"Message: {ex.Message}");
+                }
+
+                if (attempt < ConnectRetryCount)
+                {
+                    await Task.Delay(ConnectRetryDelay);
+                }
+            }
+
+            return false;
         }
 
         public async Task AcceptIncomingConnectionAsync(

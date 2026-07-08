@@ -34,7 +34,7 @@ namespace direct_module.WiFiDirect
             return StartAsync(WiFiDirectScanSelectorType.Default, scanSeconds);
         }
 
-        public Task StartAssociationEndpointAsync(int scanSeconds = 30)
+        public Task StartAssociationEndpointAsync(int scanSeconds = 0)
         {
             return StartAsync(WiFiDirectScanSelectorType.AssociationEndpoint, scanSeconds);
         }
@@ -73,6 +73,12 @@ namespace direct_module.WiFiDirect
                 _watcher.Start();
 
                 LogReceived?.Invoke($"Watcher Status after Start: {_watcher.Status}");
+
+                if (scanSeconds <= 0)
+                {
+                    LogReceived?.Invoke("Wi-Fi Direct探索は自動停止せず継続します");
+                    return;
+                }
 
                 await Task.Delay(scanSeconds * 1000);
 
