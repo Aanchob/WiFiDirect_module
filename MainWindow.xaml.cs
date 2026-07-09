@@ -641,11 +641,11 @@ namespace direct_module
         {
             DispatcherQueue.TryEnqueue(async () =>
             {
-                AddOrMergePeer(peer);
+                PeerInfo effectivePeer = AddOrMergePeer(peer);
 
-                if (peer.DiscoveredByBle)
+                if (effectivePeer.DiscoveredByBle)
                 {
-                    await HandleBleRoleNegotiationAsync(peer);
+                    await HandleBleRoleNegotiationAsync(effectivePeer);
                 }
             });
         }
@@ -1705,12 +1705,12 @@ namespace direct_module
             return _chatConnectionManager.FindForPeer(peer);
         }
 
-        private void AddOrMergePeer(PeerInfo incoming)
+        private PeerInfo AddOrMergePeer(PeerInfo incoming)
         {
             if (incoming.DeviceId.Contains("_PendingRequest", StringComparison.OrdinalIgnoreCase))
             {
                 AddLog($"PendingRequestはPeerListに追加しません: {incoming.DisplayName}", LogLevel.Debug);
-                return;
+                return incoming;
             }
 
             AddLog(
@@ -1735,7 +1735,7 @@ namespace direct_module
                             _peerConnectionStateService.UpdateConnectAvailability(existing);
                             RefreshPeerDisplay(existing);
                             AddLog($"Peer統合: BLE/Wi-Fi Direct部分名一致 -> {existing.DisplayText}", LogLevel.Success);
-                            return;
+                            return existing;
                         }
 
                         AddLog($"Peer名の部分一致候補を検出しましたが、自動統合しません: {existing.DisplayName} / {incoming.DisplayName}", LogLevel.Debug);
@@ -1753,11 +1753,12 @@ namespace direct_module
                     : LogLevel.Success;
 
                 AddLog($"Peer統合: {matchReason} -> {existing.DisplayText}", level);
-                return;
+                return existing;
             }
 
             var fallbackCandidates = PeerList.Items
                 .Cast<PeerInfo>()
+                .Where(existing => !existing.IsGroupChat)
                 .Where(existing => PeerMergeService.IsSingleCandidateFallback(existing, incoming))
                 .ToList();
 
@@ -1769,7 +1770,7 @@ namespace direct_module
                 RefreshPeerDisplay(existing);
 
                 AddLog($"Peer統合: 注意: 単一BLE/Wi-Fi Direct候補として統合 ({existing.DisplayName} / {incoming.DisplayName}) -> {existing.DisplayText}", LogLevel.Error);
-                return;
+                return existing;
             }
 
             if (fallbackCandidates.Count > 1)
@@ -1783,6 +1784,7 @@ namespace direct_module
             UpdateSelectedPeerDetails(PeerList.SelectedItem as PeerInfo);
             AddLog($"確実な照合キーがないため新規Peerとして追加: {incoming.DisplayName}", LogLevel.Debug);
             AddLog($"Peer追加: {incoming.DisplayText}");
+            return incoming;
         }
 
         private static bool IsBleWiFiDirectPartialNamePair(PeerInfo existing, PeerInfo incoming)
@@ -1802,6 +1804,11 @@ namespace direct_module
 
             foreach (PeerInfo peer in peers)
             {
+                if (peer.IsGroupChat)
+                {
+                    continue;
+                }
+
                 if (!peer.DiscoveredByWiFiDirect || peer.IsConnected)
                 {
                     continue;
