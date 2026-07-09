@@ -379,7 +379,7 @@ namespace direct_module
         {
             DispatcherQueue.TryEnqueue(() =>
             {
-                AddLog(message, ClassifyLogMessage(message));
+                AddLog(message, LogClassifier.Classify(message));
             });
         }
 
@@ -1711,7 +1711,7 @@ namespace direct_module
         private void AddLog(string message, LogLevel level = LogLevel.Info)
         {
             LogLevel effectiveLevel = level == LogLevel.Info
-                ? ClassifyLogMessage(message)
+                ? LogClassifier.Classify(message)
                 : level;
 
             if (effectiveLevel == LogLevel.Debug && ShowDebugLogCheckBox?.IsChecked != true)
@@ -1741,119 +1741,6 @@ namespace direct_module
             }
 
             MoveLogCaretToEnd();
-        }
-
-        private static LogLevel ClassifyLogMessage(string message)
-        {
-            if (IsErrorLogMessage(message))
-            {
-                return LogLevel.Error;
-            }
-
-            if (IsDebugLogMessage(message))
-            {
-                return LogLevel.Debug;
-            }
-
-            if (IsSuccessLogMessage(message))
-            {
-                return LogLevel.Success;
-            }
-
-            return LogLevel.Info;
-        }
-
-        private static bool IsErrorLogMessage(string message)
-        {
-            string[] errorKeywords =
-            {
-                "失敗",
-                "エラー",
-                "例外",
-                "Exception",
-                "HResult",
-                "Message:",
-                "不正",
-                "切断",
-                "未接続",
-                "送信できません",
-                "接続できません",
-                "ありません",
-                "注意:"
-            };
-
-            return errorKeywords.Any(keyword =>
-                message.Contains(keyword, StringComparison.OrdinalIgnoreCase));
-        }
-
-        private static bool IsSuccessLogMessage(string message)
-        {
-            string[] successKeywords =
-            {
-                "成功",
-                "完了",
-                "接続済み",
-                "送信成功",
-                "受信",
-                "RemoteIpAddress保存",
-                "チャット準備完了",
-                "SendMessageButton有効化",
-                "Peer統合"
-            };
-
-            return successKeywords.Any(keyword =>
-                message.Contains(keyword, StringComparison.OrdinalIgnoreCase));
-        }
-
-        private static bool IsDebugLogMessage(string message)
-        {
-            string[] debugKeywords =
-            {
-                "Selector",
-                "Watcher Status",
-                "Added",
-                "Updated",
-                "Removed",
-                "EnumerationCompleted",
-                "Stopped",
-                "Kind",
-                "IsEnabled",
-                "InformationElements.Count",
-                "LegacySettings.IsEnabled",
-                "ListenStateDiscoverability",
-                "LocalServiceName",
-                "RemoteServiceName",
-                "WriteUInt32",
-                "WriteBytes",
-                "StoreAsync",
-                "FlushAsync",
-                "平文Bytes",
-                "暗号化後Bytes",
-                "送信Bytes",
-                "送信フレームBytes",
-                "length読み取り",
-                "本文読み取り",
-                "ConnectAsync:",
-                "Stopwatch",
-                "Elapsed",
-                "合計:",
-                "ms",
-                "Local IP",
-                "Local SessionId",
-                "Local ShortSessionId",
-                "Local TCP Port",
-                "Peer照合開始",
-                "DeviceIdあり",
-                "接続中Peer数",
-                "SendAsync内でConnectが必要か",
-                "接続状態: IsConnected",
-                "MessageId:",
-                "SenderName:",
-                "MessageCrypto:"
-            };
-
-            return debugKeywords.Any(keyword =>
-                message.Contains(keyword, StringComparison.OrdinalIgnoreCase));
         }
 
         private void MoveLogCaretToEnd()
