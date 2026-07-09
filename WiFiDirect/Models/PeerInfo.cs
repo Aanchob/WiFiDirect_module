@@ -1,8 +1,3 @@
-using Microsoft.UI;
-using Microsoft.UI.Xaml;
-using Microsoft.UI.Xaml.Media;
-using Windows.UI;
-
 namespace direct_module.WiFiDirect.Models;
 
 public class PeerInfo
@@ -51,43 +46,12 @@ public class PeerInfo
 
     public bool CanConnect { get; set; }
 
-    public bool IsGroupChat { get; set; }
-
-    public bool CanDisconnect => !IsGroupChat && (IsConnected || IsTcpConnected || IsChatReady) && !IsConnectingWiFiDirect && !IsPreparingChatTcp;
-
-    public bool ActionButtonEnabled => CanConnect || CanDisconnect;
-
-    public double ActionButtonOpacity => ActionButtonEnabled ? 1.0 : 0.25;
-
-    public string ActionButtonGlyph => CanDisconnect ? "\uE71A" : "\uE8A7";
-
-    public string ActionButtonTooltip => CanDisconnect ? "切断" : "接続";
-
-    public Visibility ActionButtonVisibility => IsGroupChat ? Visibility.Collapsed : Visibility.Visible;
-
-    public Brush ActionButtonBackground => CanDisconnect
-        ? new SolidColorBrush(Color.FromArgb(0x2C, 0xFF, 0x5F, 0x5F))
-        : new SolidColorBrush(Color.FromArgb(0x2C, 0xB8, 0xFF, 0x6A));
-
-    public Brush ActionButtonBorderBrush => CanDisconnect
-        ? new SolidColorBrush(Color.FromArgb(0x77, 0xFF, 0x5F, 0x5F))
-        : new SolidColorBrush(Color.FromArgb(0x77, 0xB8, 0xFF, 0x6A));
-
-    public Brush ActionButtonForeground => CanDisconnect
-        ? new SolidColorBrush(Color.FromArgb(0xFF, 0xFF, 0x5F, 0x5F))
-        : new SolidColorBrush(Color.FromArgb(0xFF, 0xB8, 0xFF, 0x6A));
-
     public double ConnectButtonOpacity => CanConnect ? 1.0 : 0.25;
 
     public string SourceText
     {
         get
         {
-            if (IsGroupChat)
-            {
-                return "Group";
-            }
-
             if (DiscoveredByBle && DiscoveredByWiFiDirect)
             {
                 return "BLE + Wi-Fi Direct";
@@ -106,11 +70,6 @@ public class PeerInfo
     {
         get
         {
-            if (IsGroupChat)
-            {
-                return "グループチャット (複数人接続時のみ有効)";
-            }
-
             string bleText = DiscoveredByBle ? "BLE:発見済み" : "BLE:未発見";
             string wifiText = IsConnectingWiFiDirect
                 ? "Wi-Fi Direct:接続中"

@@ -99,16 +99,14 @@ namespace direct_module.Services
 
             return new direct_module.Models.ChatMessage
             {
-                ConversationId = message.IsGroup ? "group" : GetHistoryConversationId(peer, connection, isOutgoing),
+                ConversationId = GetHistoryConversationId(peer, connection, isOutgoing),
                 SenderId = isOutgoing ? _localPeerId : message.SenderId,
                 SenderName = isOutgoing ? _localPeerName : message.SenderName,
-                ReceiverId = message.IsGroup ? "group" : (isOutgoing ? peerId : _localPeerId),
-                ReceiverName = message.IsGroup ? "Group" : (isOutgoing ? peerName : _localPeerName),
+                ReceiverId = isOutgoing ? peerId : _localPeerId,
+                ReceiverName = isOutgoing ? peerName : _localPeerName,
                 Message = message.Body,
                 SendTime = message.SentAt,
-                IsMine = isOutgoing,
-                MessageType = "chat",
-                IsGroup = message.IsGroup
+                IsMine = isOutgoing
             };
         }
 

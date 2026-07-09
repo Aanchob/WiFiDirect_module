@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using Microsoft.Data.Sqlite;
 using direct_module.Models;
@@ -35,14 +35,7 @@ namespace direct_module.Database
                 ReceiverName,
                 Message,
                 SendTime,
-                IsMine,
-                MessageType,
-                FileId,
-                FileName,
-                FileSize,
-                LocalFilePath,
-                MimeType,
-                IsGroup
+                IsMine
             )
             VALUES
             (
@@ -53,14 +46,7 @@ namespace direct_module.Database
                 @ReceiverName,
                 @Message,
                 @SendTime,
-                @IsMine,
-                @MessageType,
-                @FileId,
-                @FileName,
-                @FileSize,
-                @LocalFilePath,
-                @MimeType,
-                @IsGroup
+                @IsMine
             );
             ";
 
@@ -72,13 +58,6 @@ namespace direct_module.Database
             command.Parameters.AddWithValue("@Message", message.Message);
             command.Parameters.AddWithValue("@SendTime", message.SendTime.ToString("o"));
             command.Parameters.AddWithValue("@IsMine", message.IsMine ? 1 : 0);
-            command.Parameters.AddWithValue("@MessageType", message.MessageType);
-            command.Parameters.AddWithValue("@FileId", (object?)message.FileId ?? DBNull.Value);
-            command.Parameters.AddWithValue("@FileName", (object?)message.FileName ?? DBNull.Value);
-            command.Parameters.AddWithValue("@FileSize", message.FileSize);
-            command.Parameters.AddWithValue("@LocalFilePath", (object?)message.LocalFilePath ?? DBNull.Value);
-            command.Parameters.AddWithValue("@MimeType", (object?)message.MimeType ?? DBNull.Value);
-            command.Parameters.AddWithValue("@IsGroup", message.IsGroup ? 1 : 0);
 
             command.ExecuteNonQuery();
         }
@@ -105,14 +84,7 @@ namespace direct_module.Database
                 ReceiverName,
                 Message,
                 SendTime,
-                IsMine,
-                MessageType,
-                FileId,
-                FileName,
-                FileSize,
-                LocalFilePath,
-                MimeType,
-                IsGroup
+                IsMine
             FROM ChatMessages
             ORDER BY SendTime ASC;
             ";
@@ -130,14 +102,7 @@ namespace direct_module.Database
                     ReceiverName = reader.GetString(4),
                     Message = reader.GetString(5),
                     SendTime = DateTime.Parse(reader.GetString(6)),
-                    IsMine = reader.GetInt32(7) == 1,
-                    MessageType = reader.IsDBNull(8) ? "chat" : reader.GetString(8),
-                    FileId = reader.IsDBNull(9) ? null : reader.GetString(9),
-                    FileName = reader.IsDBNull(10) ? null : reader.GetString(10),
-                    FileSize = reader.IsDBNull(11) ? 0 : reader.GetInt64(11),
-                    LocalFilePath = reader.IsDBNull(12) ? null : reader.GetString(12),
-                    MimeType = reader.IsDBNull(13) ? null : reader.GetString(13),
-                    IsGroup = reader.IsDBNull(14) ? false : reader.GetInt32(14) == 1
+                    IsMine = reader.GetInt32(7) == 1
                 });
             }
 
@@ -166,14 +131,7 @@ namespace direct_module.Database
                 ReceiverName,
                 Message,
                 SendTime,
-                IsMine,
-                MessageType,
-                FileId,
-                FileName,
-                FileSize,
-                LocalFilePath,
-                MimeType,
-                IsGroup
+                IsMine
             FROM ChatMessages
             WHERE ConversationId = @ConversationId
             ORDER BY SendTime ASC;
@@ -194,14 +152,7 @@ namespace direct_module.Database
                     ReceiverName = reader.GetString(4),
                     Message = reader.GetString(5),
                     SendTime = DateTime.Parse(reader.GetString(6)),
-                    IsMine = reader.GetInt32(7) == 1,
-                    MessageType = reader.IsDBNull(8) ? "chat" : reader.GetString(8),
-                    FileId = reader.IsDBNull(9) ? null : reader.GetString(9),
-                    FileName = reader.IsDBNull(10) ? null : reader.GetString(10),
-                    FileSize = reader.IsDBNull(11) ? 0 : reader.GetInt64(11),
-                    LocalFilePath = reader.IsDBNull(12) ? null : reader.GetString(12),
-                    MimeType = reader.IsDBNull(13) ? null : reader.GetString(13),
-                    IsGroup = reader.IsDBNull(14) ? false : reader.GetInt32(14) == 1
+                    IsMine = reader.GetInt32(7) == 1
                 });
             }
 
