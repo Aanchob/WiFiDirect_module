@@ -496,7 +496,7 @@ namespace direct_module
 
                 string sendFilePath = await PreparePickedFileForSendAsync(file);
                 AddLog($"ファイル送信準備完了: {file.Name} -> {sendFilePath}");
-                AddChatMessage($"自分: [ファイル] {file.Name}");
+                AddFileChatMessage($"自分: [ファイル] {file.Name}", file.Name, sendFilePath);
 
                 await _fileTransferService.SendFileAsync(
                     sendFilePath,
@@ -592,6 +592,27 @@ namespace direct_module
                     Windows.Storage.NameCollisionOption.GenerateUniqueName);
 
             return copiedFile.Path;
+        }
+
+        private async void OpenAttachmentButton_Click(object sender, RoutedEventArgs e)
+        {
+            if ((sender as FrameworkElement)?.DataContext is not ChatMessageItem item ||
+                string.IsNullOrWhiteSpace(item.LocalFilePath) ||
+                !System.IO.File.Exists(item.LocalFilePath))
+            {
+                AddLog("ファイルが見つかりません。", LogLevel.Error);
+                return;
+            }
+
+            try
+            {
+                var storageFile = await Windows.Storage.StorageFile.GetFileFromPathAsync(item.LocalFilePath);
+                await Windows.System.Launcher.LaunchFileAsync(storageFile);
+            }
+            catch (Exception ex)
+            {
+                AddLog($"ファイルを開けませんでした: {ex.Message}", LogLevel.Error);
+            }
         }
 
         private void ClearLog_Click(object sender, RoutedEventArgs e)
@@ -1091,45 +1112,55 @@ namespace direct_module
 
         private async System.Threading.Tasks.Task HandleFileTransferMessageAsync(ChatMessage message, ChatConnection sourceConnection)
         {
-            string? displayMessage = null;
-
-            switch (message.Type.ToLowerInvariant())
+            try
             {
-                case "file_start":
-                    displayMessage = await _fileTransferService.HandleFileStartAsync(message);
-                    break;
-                case "file_chunk":
-                    await _fileTransferService.HandleFileChunkAsync(message);
-                    break;
-                case "file_end":
-                    displayMessage = await _fileTransferService.HandleFileEndAsync(message);
-                    break;
-            }
-
-            if (!string.IsNullOrWhiteSpace(displayMessage))
-            {
-                AddChatMessage($"{message.SenderName}: {displayMessage}");
-
-                if (string.Equals(message.Type, "file_end", StringComparison.OrdinalIgnoreCase))
+                if (_chatRole == ChatRole.Host && message.IsGroup)
                 {
-                    var historyMessage = new ChatMessage
-                    {
-                        Type = "chat",
-                        SenderId = message.SenderId,
-                        SenderName = message.SenderName,
-                        ShortSessionId = message.ShortSessionId,
-                        Body = $"[ファイル] {message.FileName}",
-                        IsGroup = message.IsGroup,
-                        ConversationId = message.ConversationId
-                    };
+                    await _chatConnectionManager.BroadcastExceptAsync(message, sourceConnection);
+                }
 
-                    SaveChatMessageSafely(historyMessage, false, FindPeerForConnection(sourceConnection), sourceConnection);
+                FileTransferDisplayResult? displayResult = null;
+
+                switch (message.Type.ToLowerInvariant())
+                {
+                    case "file_start":
+                        displayResult = await _fileTransferService.HandleFileStartAsync(message);
+                        break;
+                    case "file_chunk":
+                        await _fileTransferService.HandleFileChunkAsync(message);
+                        break;
+                    case "file_end":
+                        displayResult = await _fileTransferService.HandleFileEndAsync(message);
+                        break;
+                }
+
+                if (displayResult != null && !string.IsNullOrWhiteSpace(displayResult.Message))
+                {
+                    AddFileChatMessage(
+                        $"{message.SenderName}: {displayResult.Message}",
+                        displayResult.FileName,
+                        displayResult.LocalFilePath);
+
+                    if (string.Equals(message.Type, "file_end", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var historyMessage = new ChatMessage
+                        {
+                            Type = "chat",
+                            SenderId = message.SenderId,
+                            SenderName = message.SenderName,
+                            ShortSessionId = message.ShortSessionId,
+                            Body = $"[ファイル] {message.FileName}",
+                            IsGroup = message.IsGroup,
+                            ConversationId = message.ConversationId
+                        };
+
+                        SaveChatMessageSafely(historyMessage, false, FindPeerForConnection(sourceConnection), sourceConnection);
+                    }
                 }
             }
-
-            if (_chatRole == ChatRole.Host && message.IsGroup)
+            catch (Exception ex)
             {
-                await _chatConnectionManager.BroadcastExceptAsync(message, sourceConnection);
+                AddLog($"ファイル受信処理に失敗しました: {ex.Message}", LogLevel.Error);
             }
         }
 
@@ -1863,8 +1894,26 @@ namespace direct_module
 
         private void AddChatMessage(string message)
         {
-            MessageList.Items.Add(message);
-            MessageList.ScrollIntoView(message);
+            AddChatMessageItem(new ChatMessageItem
+            {
+                Text = message
+            });
+        }
+
+        private void AddFileChatMessage(string message, string fileName, string localFilePath)
+        {
+            AddChatMessageItem(new ChatMessageItem
+            {
+                Text = message,
+                FileName = fileName,
+                LocalFilePath = localFilePath
+            });
+        }
+
+        private void AddChatMessageItem(ChatMessageItem item)
+        {
+            MessageList.Items.Add(item);
+            MessageList.ScrollIntoView(item);
         }
 
         private void OnFileTransferProgressChanged(FileTransferProgress progress)

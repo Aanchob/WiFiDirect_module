@@ -16,6 +16,13 @@ namespace direct_module.Services
         public string? LocalFilePath { get; init; }
     }
 
+    public sealed class FileTransferDisplayResult
+    {
+        public string Message { get; init; } = "";
+        public string FileName { get; init; } = "";
+        public string LocalFilePath { get; init; } = "";
+    }
+
     public sealed class FileTransferService
     {
         private const long MaxFileSize = 50 * 1024 * 1024;
@@ -138,11 +145,11 @@ namespace direct_module.Services
             }
         }
 
-        public Task<string?> HandleFileStartAsync(ChatMessage message)
+        public Task<FileTransferDisplayResult?> HandleFileStartAsync(ChatMessage message)
         {
             if (string.IsNullOrWhiteSpace(message.FileId))
             {
-                return Task.FromResult<string?>(null);
+                return Task.FromResult<FileTransferDisplayResult?>(null);
             }
 
             string fileName = SafeFileName(message.FileName);
@@ -167,7 +174,11 @@ namespace direct_module.Services
             }
 
             LogReceived?.Invoke($"File receive started: {fileName}");
-            return Task.FromResult<string?>($"受信開始: {fileName}");
+            return Task.FromResult<FileTransferDisplayResult?>(new FileTransferDisplayResult
+            {
+                Message = $"受信開始: {fileName}",
+                FileName = fileName
+            });
         }
 
         public async Task<string?> HandleFileChunkAsync(ChatMessage message)
@@ -223,7 +234,7 @@ namespace direct_module.Services
             }
         }
 
-        public async Task<string?> HandleFileEndAsync(ChatMessage message)
+        public async Task<FileTransferDisplayResult?> HandleFileEndAsync(ChatMessage message)
         {
             if (string.IsNullOrWhiteSpace(message.FileId))
             {
@@ -234,10 +245,6 @@ namespace direct_module.Services
             lock (_incomingFiles)
             {
                 _incomingFiles.TryGetValue(message.FileId, out session);
-                if (session != null)
-                {
-                    _incomingFiles.Remove(message.FileId);
-                }
             }
 
             if (session == null)
@@ -278,12 +285,26 @@ namespace direct_module.Services
                 });
 
                 LogReceived?.Invoke($"File receive completed: {session.FileName} -> {finalPath}");
-                return $"受信完了: {session.FileName} ({finalPath})";
+                return new FileTransferDisplayResult
+                {
+                    Message = $"受信完了: {session.FileName}",
+                    FileName = session.FileName,
+                    LocalFilePath = finalPath
+                };
             }
             finally
             {
-                session.Gate.Release();
-                session.Gate.Dispose();
+                try
+                {
+                    lock (_incomingFiles)
+                    {
+                        _incomingFiles.Remove(session.FileId);
+                    }
+                }
+                finally
+                {
+                    session.Gate.Release();
+                }
             }
         }
 
@@ -308,16 +329,21 @@ namespace direct_module.Services
         private static string ResolveAttachmentsDirectory()
         {
             string userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-            string localAppData = string.IsNullOrWhiteSpace(userProfile)
+            string downloadsDirectory = string.IsNullOrWhiteSpace(userProfile)
                 ? ""
-                : Path.Combine(userProfile, "AppData", "Local");
+                : Path.Combine(userProfile, "Downloads");
 
-            if (string.IsNullOrWhiteSpace(localAppData))
+            if (string.IsNullOrWhiteSpace(downloadsDirectory))
             {
-                localAppData = Environment.GetEnvironmentVariable("LOCALAPPDATA") ?? AppContext.BaseDirectory;
+                downloadsDirectory = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
             }
 
-            return Path.Combine(localAppData, "direct_module", "attachments");
+            if (string.IsNullOrWhiteSpace(downloadsDirectory))
+            {
+                downloadsDirectory = AppContext.BaseDirectory;
+            }
+
+            return Path.Combine(downloadsDirectory, "Hide Chat");
         }
 
         private static async Task WaitForExpectedChunksAsync(IncomingFileSession session)

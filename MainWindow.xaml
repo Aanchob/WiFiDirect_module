@@ -349,11 +349,25 @@
                                         BorderBrush="{StaticResource StrokeBrush}"
                                         BorderThickness="1"
                                         CornerRadius="4,16,16,16">
-                                        <TextBlock
-                                            FontSize="14"
-                                            Foreground="{StaticResource AppInkBrush}"
-                                            Text="{Binding}"
-                                            TextWrapping="Wrap" />
+                                        <StackPanel Spacing="8">
+                                            <TextBlock
+                                                FontSize="14"
+                                                Foreground="{StaticResource AppInkBrush}"
+                                                Text="{Binding Text}"
+                                                TextWrapping="Wrap" />
+                                            <Image
+                                                MaxWidth="360"
+                                                MaxHeight="260"
+                                                HorizontalAlignment="Left"
+                                                Source="{Binding ImageSource}"
+                                                Stretch="Uniform"
+                                                Visibility="{Binding ImageVisibility}" />
+                                            <Button
+                                                Click="OpenAttachmentButton_Click"
+                                                Content="開く"
+                                                Style="{StaticResource GhostButtonStyle}"
+                                                Visibility="{Binding FileButtonVisibility}" />
+                                        </StackPanel>
                                     </Border>
                                 </Grid>
                             </DataTemplate>
