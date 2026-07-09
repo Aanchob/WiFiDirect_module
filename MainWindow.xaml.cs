@@ -1,6 +1,7 @@
 using direct_module.Discovery;
 using direct_module.Database;
 using direct_module.Network;
+using direct_module.Services;
 using direct_module.WiFiDirect;
 using direct_module.WiFiDirect.Models;
 using Microsoft.UI;
@@ -1505,10 +1506,10 @@ namespace direct_module
 
             foreach (PeerInfo existing in PeerList.Items.Cast<PeerInfo>())
             {
-                string matchReason = GetPeerMatchReason(existing, incoming);
+                string matchReason = PeerMergeService.GetMatchReason(existing, incoming);
                 if (string.IsNullOrEmpty(matchReason))
                 {
-                    if (IsPartialNameMatchCandidate(existing, incoming))
+                    if (PeerMergeService.IsPartialNameMatchCandidate(existing, incoming))
                     {
                         AddLog($"Peer名の部分一致候補を検出しましたが、自動統合しません: {existing.DisplayName} / {incoming.DisplayName}", LogLevel.Debug);
                     }
@@ -1516,7 +1517,7 @@ namespace direct_module
                     continue;
                 }
 
-                MergePeer(existing, incoming);
+                PeerMergeService.Merge(existing, incoming);
                 UpdatePeerConnectAvailability(existing);
                 RefreshPeerDisplay(existing);
 
@@ -1566,71 +1567,11 @@ namespace direct_module
             return "";
         }
 
-        private static bool IsPartialNameMatchCandidate(PeerInfo existing, PeerInfo incoming)
-        {
-            string existingName = existing.DisplayName ?? "";
-            string incomingName = incoming.DisplayName ?? "";
-
-            return existingName.Length >= 4 &&
-                   incomingName.Length >= 4 &&
-                   !string.Equals(existingName, incomingName, StringComparison.OrdinalIgnoreCase) &&
-                   (existingName.Contains(incomingName, StringComparison.OrdinalIgnoreCase) ||
-                    incomingName.Contains(existingName, StringComparison.OrdinalIgnoreCase));
-        }
-
         private static bool HasSameValue(string left, string right)
         {
             return !string.IsNullOrWhiteSpace(left) &&
                    !string.IsNullOrWhiteSpace(right) &&
                    string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
-        }
-
-        private void MergePeer(PeerInfo target, PeerInfo source)
-        {
-            if (!string.IsNullOrWhiteSpace(source.DisplayName) &&
-                (string.IsNullOrWhiteSpace(target.DisplayName) ||
-                 source.DisplayName.Length > target.DisplayName.Length))
-            {
-                target.DisplayName = source.DisplayName;
-            }
-
-            target.DiscoveredByBle |= source.DiscoveredByBle;
-            target.DiscoveredByWiFiDirect |= source.DiscoveredByWiFiDirect;
-
-            CopyIfPresent(source.BleName, value => target.BleName = value);
-            CopyIfPresent(source.WiFiDirectName, value => target.WiFiDirectName = value);
-            CopyIfPresent(source.MatchKey, value => target.MatchKey = value);
-            CopyIfPresent(source.ShortSessionId, value => target.ShortSessionId = value);
-            CopyIfPresent(source.RoleKey, value => target.RoleKey = value);
-            CopyIfPresent(source.DeviceId, value => target.DeviceId = value);
-            CopyIfPresent(source.DeviceKind, value => target.DeviceKind = value);
-            CopyIfPresent(source.IpAddress, value => target.IpAddress = value);
-            CopyIfPresent(source.RemoteIpAddress, value => target.RemoteIpAddress = value);
-
-            if (source.TcpPort > 0)
-            {
-                target.TcpPort = source.TcpPort;
-            }
-
-            if (source.IsEnabled.HasValue)
-            {
-                target.IsEnabled = source.IsEnabled;
-            }
-
-            target.IsConnected |= source.IsConnected;
-            target.IsPreparingChatTcp |= source.IsPreparingChatTcp;
-            target.IsTcpConnected |= source.IsTcpConnected;
-            target.IsHelloVerified |= source.IsHelloVerified;
-            target.IsChatReady |= source.IsChatReady;
-            CopyIfPresent(source.StatusText, value => target.StatusText = value);
-        }
-
-        private static void CopyIfPresent(string value, Action<string> apply)
-        {
-            if (!string.IsNullOrWhiteSpace(value))
-            {
-                apply(value);
-            }
         }
 
         private void ClearStaleWiFiDirectPeers()
