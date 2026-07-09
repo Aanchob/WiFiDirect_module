@@ -44,14 +44,21 @@ public class PeerInfo
 
     public string DeviceKind { get; set; } = "";
 
+    public bool IsGroupChat { get; set; }
+
     public bool CanConnect { get; set; }
 
-    public double ConnectButtonOpacity => CanConnect ? 1.0 : 0.25;
+    public double ConnectButtonOpacity => CanConnect && !IsGroupChat ? 1.0 : 0.25;
 
     public string SourceText
     {
         get
         {
+            if (IsGroupChat)
+            {
+                return "Group";
+            }
+
             if (DiscoveredByBle && DiscoveredByWiFiDirect)
             {
                 return "BLE + Wi-Fi Direct";
@@ -70,6 +77,11 @@ public class PeerInfo
     {
         get
         {
+            if (IsGroupChat)
+            {
+                return "接続中の相手全員に送信します";
+            }
+
             string bleText = DiscoveredByBle ? "BLE:発見済み" : "BLE:未発見";
             string wifiText = IsConnectingWiFiDirect
                 ? "Wi-Fi Direct:接続中"

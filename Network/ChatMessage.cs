@@ -18,6 +18,10 @@ namespace direct_module.Network
 
         public DateTime SentAt { get; set; } = DateTime.Now;
 
+        public bool IsGroup { get; set; }
+
+        public string ConversationId { get; set; } = "";
+
         public string? FileId { get; set; }
 
         public string? FileName { get; set; }

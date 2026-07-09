@@ -375,9 +375,10 @@
                                 <ColumnDefinition Width="Auto" />
                             </Grid.ColumnDefinitions>
                             <Button
-                                IsEnabled="False"
+                                x:Name="AttachFileButton"
+                                Click="AttachFileButton_Click"
                                 Style="{StaticResource IconOnlyButtonStyle}"
-                                ToolTipService.ToolTip="ファイルをアップロード">
+                                ToolTipService.ToolTip="ファイルを送信">
                                 <FontIcon FontSize="20" Glyph="&#xE710;" />
                             </Button>
                             <TextBox
