@@ -24,6 +24,8 @@ public class PeerInfo
 
     public bool IsConnected { get; set; }
 
+    public bool IsConnectingWiFiDirect { get; set; }
+
     public bool IsPreparingChatTcp { get; set; }
 
     public bool IsTcpConnected { get; set; }
@@ -69,7 +71,9 @@ public class PeerInfo
         get
         {
             string bleText = DiscoveredByBle ? "BLE:発見済み" : "BLE:未発見";
-            string wifiText = !string.IsNullOrWhiteSpace(DeviceId)
+            string wifiText = IsConnectingWiFiDirect
+                ? "Wi-Fi Direct:接続中"
+                : !string.IsNullOrWhiteSpace(DeviceId)
                 ? IsConnected ? "Wi-Fi Direct:接続済み" : "Wi-Fi Direct:DeviceIdあり"
                 : "Wi-Fi Direct:DeviceIdなし";
             string tcpText = StatusText == "エラー"

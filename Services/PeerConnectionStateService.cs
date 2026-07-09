@@ -22,6 +22,7 @@ namespace direct_module.Services
                 !string.IsNullOrWhiteSpace(peer.ShortSessionId) &&
                 !string.IsNullOrWhiteSpace(peer.RoleKey) &&
                 _connectionRoleService.IsLocalClientForWifiDirect(peer) &&
+                !peer.IsConnectingWiFiDirect &&
                 !peer.IsConnected &&
                 !peer.IsTcpConnected &&
                 !peer.IsChatReady &&
@@ -37,6 +38,7 @@ namespace direct_module.Services
                    !string.IsNullOrWhiteSpace(peer.RoleKey) &&
                    (!string.IsNullOrWhiteSpace(peer.RemoteIpAddress) || !string.IsNullOrWhiteSpace(peer.DeviceId)) &&
                    !peer.IsChatReady &&
+                   !peer.IsConnectingWiFiDirect &&
                    !peer.IsPreparingChatTcp &&
                    !string.Equals(peer.StatusText, "再接続中", StringComparison.OrdinalIgnoreCase);
         }

@@ -39,6 +39,10 @@ namespace direct_module
     {
         private const int LocalTcpPort = 50001;
         private const int MaxLogLines = 500;
+        private static readonly TimeSpan WiFiDirectScanRestartDelay = TimeSpan.FromMilliseconds(500);
+        private static readonly TimeSpan WiFiDirectGoAdvertisementWait = TimeSpan.FromSeconds(3);
+        private static readonly TimeSpan WiFiDirectCandidateRefreshTimeout = TimeSpan.FromSeconds(10);
+        private static readonly TimeSpan WiFiDirectCandidatePollInterval = TimeSpan.FromMilliseconds(250);
 
         private readonly DiscoveryManager _discoveryManager;
         private readonly WiFiDirectManager _manager;
@@ -321,12 +325,118 @@ namespace direct_module
                 return;
             }
 
-            _chatRole = ChatRole.Client;
-            AddLog("Chat Role: Client");
-            AddLog($"Wi-Fi Direct接続開始: {peer.DisplayText}");
-            await _manager.ConnectAsync(peer);
-            _peerConnectionStateService.UpdateConnectAvailability(peer);
+            bool connectAttempted = false;
+
+            try
+            {
+                _chatRole = ChatRole.Client;
+                peer.IsConnectingWiFiDirect = true;
+                peer.StatusText = "Wi-Fi Direct接続準備中";
+                RefreshPeerDisplay(peer);
+
+                AddLog("Chat Role: Client");
+
+                if (!await RefreshWiFiDirectCandidateBeforeConnectAsync(peer))
+                {
+                    peer.StatusText = "Wi-Fi Direct再探索失敗";
+                    AddLog($"Wi-Fi Direct候補を再取得できなかったため接続を中止します: Peer={peer.DisplayName}", LogLevel.Error);
+                    return;
+                }
+
+                peer.StatusText = "Wi-Fi Direct接続中";
+                RefreshPeerDisplay(peer);
+
+                AddLog($"Wi-Fi Direct接続開始: {peer.DisplayText}");
+                connectAttempted = true;
+                await _manager.ConnectAsync(peer);
+            }
+            finally
+            {
+                peer.IsConnectingWiFiDirect = false;
+
+                if (peer.IsConnected)
+                {
+                    if (IsTransientWiFiDirectStatus(peer.StatusText))
+                    {
+                        peer.StatusText = "";
+                    }
+                }
+                else if (connectAttempted)
+                {
+                    peer.StatusText = "Wi-Fi Direct接続失敗";
+                }
+
+                _peerConnectionStateService.UpdateConnectAvailability(peer);
+                RefreshPeerDisplay(peer);
+            }
+        }
+
+        private async System.Threading.Tasks.Task<bool> RefreshWiFiDirectCandidateBeforeConnectAsync(PeerInfo peer)
+        {
+            AddLog($"接続前にWi-Fi Direct候補を再探索します: Peer={peer.DisplayName}");
+
+            _manager.StopScan();
+            await System.Threading.Tasks.Task.Delay(WiFiDirectScanRestartDelay);
+
+            ClearWiFiDirectCandidateForPreConnect(peer);
+
+            AddLog($"GO再広告待機: {WiFiDirectGoAdvertisementWait.TotalSeconds:0.0}秒");
+            await System.Threading.Tasks.Task.Delay(WiFiDirectGoAdvertisementWait);
+
+            AddLog("接続前Wi-Fi Direct再スキャン開始");
+            await _manager.StartAssociationEndpointScanAsync();
+
+            if (await WaitForWiFiDirectCandidateAsync(peer, WiFiDirectCandidateRefreshTimeout))
+            {
+                AddLog($"Wi-Fi Direct候補再取得: Peer={peer.DisplayName}, DeviceId={peer.DeviceId}", LogLevel.Success);
+                return true;
+            }
+
+            return false;
+        }
+
+        private void ClearWiFiDirectCandidateForPreConnect(PeerInfo peer)
+        {
+            peer.DiscoveredByWiFiDirect = false;
+            peer.WiFiDirectName = "";
+            peer.DeviceId = "";
+            peer.DeviceKind = "";
+            peer.IsEnabled = null;
+            peer.IsConnected = false;
+            peer.RemoteIpAddress = "";
+            peer.StatusText = "Wi-Fi Direct再探索中";
             RefreshPeerDisplay(peer);
+        }
+
+        private async System.Threading.Tasks.Task<bool> WaitForWiFiDirectCandidateAsync(PeerInfo peer, TimeSpan timeout)
+        {
+            var watch = Stopwatch.StartNew();
+
+            while (watch.Elapsed < timeout)
+            {
+                if (HasUsableWiFiDirectCandidate(peer))
+                {
+                    return true;
+                }
+
+                await System.Threading.Tasks.Task.Delay(WiFiDirectCandidatePollInterval);
+            }
+
+            return HasUsableWiFiDirectCandidate(peer);
+        }
+
+        private static bool HasUsableWiFiDirectCandidate(PeerInfo peer)
+        {
+            return peer.DiscoveredByWiFiDirect &&
+                   !string.IsNullOrWhiteSpace(peer.DeviceId) &&
+                   !peer.DeviceId.Contains("_PendingRequest", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsTransientWiFiDirectStatus(string statusText)
+        {
+            return string.Equals(statusText, "Wi-Fi Direct接続準備中", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(statusText, "Wi-Fi Direct再探索中", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(statusText, "Wi-Fi Direct接続中", StringComparison.OrdinalIgnoreCase);
         }
 
         private void MessageTextBox_KeyDown(object sender, KeyRoutedEventArgs e)
@@ -454,6 +564,12 @@ namespace direct_module
         {
             DispatcherQueue.TryEnqueue(async () =>
             {
+                peer.IsConnectingWiFiDirect = false;
+                if (IsTransientWiFiDirectStatus(peer.StatusText))
+                {
+                    peer.StatusText = "";
+                }
+
                 AddLog($"Wi-Fi Direct接続完了通知: {peer.DisplayText}", LogLevel.Success);
                 AddOrMergePeer(peer);
                 await EnsureTcpServerStartedAsync("Wi-Fi Direct接続完了");

@@ -33,6 +33,11 @@ namespace direct_module.Services
                 return "TCP準備中";
             }
 
+            if (peer.IsConnectingWiFiDirect)
+            {
+                return "Wi-Fi Direct接続中";
+            }
+
             if (peer.IsConnected)
             {
                 return "Wi-Fi Direct接続済み";
@@ -58,7 +63,7 @@ namespace direct_module.Services
                 return 68;
             }
 
-            if (peer.IsPreparingChatTcp || peer.IsConnected)
+            if (peer.IsPreparingChatTcp || peer.IsConnectingWiFiDirect || peer.IsConnected)
             {
                 return 48;
             }
