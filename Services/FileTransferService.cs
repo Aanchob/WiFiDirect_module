@@ -35,6 +35,12 @@ namespace direct_module.Services
         public event Action<string>? LogReceived;
         public event Action<FileTransferProgress>? ProgressChanged;
 
+        public void EnsureStorageReady()
+        {
+            EnsureAttachmentsDirectory();
+            LogReceived?.Invoke($"Attachments directory ready: {_attachmentsDirectory}");
+        }
+
         public async Task SendFileAsync(
             string filePath,
             string senderId,
@@ -301,7 +307,11 @@ namespace direct_module.Services
 
         private static string ResolveAttachmentsDirectory()
         {
-            string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            string userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            string localAppData = string.IsNullOrWhiteSpace(userProfile)
+                ? ""
+                : Path.Combine(userProfile, "AppData", "Local");
+
             if (string.IsNullOrWhiteSpace(localAppData))
             {
                 localAppData = Environment.GetEnvironmentVariable("LOCALAPPDATA") ?? AppContext.BaseDirectory;

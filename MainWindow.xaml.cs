@@ -101,6 +101,7 @@ namespace direct_module
             _chatConnectionManager.StartKeepAlive(LocalPeerId, Environment.MachineName, GetLocalShortSessionId());
             _fileTransferService.LogReceived += OnLogReceived;
             _fileTransferService.ProgressChanged += OnFileTransferProgressChanged;
+            _fileTransferService.EnsureStorageReady();
             AddLog($"添付ファイル保存先: {_fileTransferService.AttachmentsDirectory}");
             Closed += MainWindow_Closed;
 
