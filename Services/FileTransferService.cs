@@ -343,7 +343,7 @@ namespace direct_module.Services
                 downloadsDirectory = AppContext.BaseDirectory;
             }
 
-            return Path.Combine(downloadsDirectory, "Hide Chat");
+            return downloadsDirectory;
         }
 
         private static async Task WaitForExpectedChunksAsync(IncomingFileSession session)
