@@ -59,7 +59,7 @@ namespace direct_module
             InitializeComponent();
             _connectionRoleService = new ConnectionRoleService(GetLocalShortSessionId(), GetLocalRoleKey());
             _peerConnectionStateService = new PeerConnectionStateService(_connectionRoleService);
-            Title = "NOVA Chat";
+            Title = "Hide Chat";
             ResizeWindow(1440, 920);
 
             try
@@ -1332,6 +1332,15 @@ namespace direct_module
                 {
                     if (PeerMergeService.IsPartialNameMatchCandidate(existing, incoming))
                     {
+                        if (IsBleWiFiDirectPartialNamePair(existing, incoming))
+                        {
+                            PeerMergeService.Merge(existing, incoming);
+                            _peerConnectionStateService.UpdateConnectAvailability(existing);
+                            RefreshPeerDisplay(existing);
+                            AddLog($"Peer統合: BLE/Wi-Fi Direct部分名一致 -> {existing.DisplayText}", LogLevel.Success);
+                            return;
+                        }
+
                         AddLog($"Peer名の部分一致候補を検出しましたが、自動統合しません: {existing.DisplayName} / {incoming.DisplayName}", LogLevel.Debug);
                     }
 
@@ -1357,6 +1366,17 @@ namespace direct_module
             AddLog($"確実な照合キーがないため新規Peerとして追加: {incoming.DisplayName}", LogLevel.Debug);
             AddLog($"Peer追加: {incoming.DisplayText}");
         }
+
+        private static bool IsBleWiFiDirectPartialNamePair(PeerInfo existing, PeerInfo incoming)
+        {
+            return (existing.DiscoveredByBle &&
+                    !existing.DiscoveredByWiFiDirect &&
+                    incoming.DiscoveredByWiFiDirect) ||
+                   (incoming.DiscoveredByBle &&
+                    !incoming.DiscoveredByWiFiDirect &&
+                    existing.DiscoveredByWiFiDirect);
+        }
+
         private void ClearStaleWiFiDirectPeers()
         {
             int removed = 0;

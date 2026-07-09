@@ -32,6 +32,13 @@ namespace direct_module.Services
                 return $"DisplayName完全一致 ({incoming.DisplayName})";
             }
 
+            if (IsBleNamePrefixMatch(existing, incoming))
+            {
+                string bleName = GetBleName(existing, incoming);
+                string wifiName = GetWifiDirectName(existing, incoming);
+                return $"BLE名前頭一致 ({bleName} -> {wifiName})";
+            }
+
             return "";
         }
 
@@ -92,6 +99,58 @@ namespace direct_module.Services
             return !string.IsNullOrWhiteSpace(left) &&
                    !string.IsNullOrWhiteSpace(right) &&
                    string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsBleNamePrefixMatch(PeerInfo existing, PeerInfo incoming)
+        {
+            return IsBleNamePrefixMatchCore(existing, incoming) ||
+                   IsBleNamePrefixMatchCore(incoming, existing);
+        }
+
+        private static bool IsBleNamePrefixMatchCore(PeerInfo blePeer, PeerInfo wifiPeer)
+        {
+            if (!blePeer.DiscoveredByBle ||
+                blePeer.DiscoveredByWiFiDirect ||
+                !wifiPeer.DiscoveredByWiFiDirect ||
+                wifiPeer.DiscoveredByBle)
+            {
+                return false;
+            }
+
+            string bleName = GetPeerBleName(blePeer);
+            string wifiName = GetPeerWiFiDirectName(wifiPeer);
+
+            return bleName.Length >= 3 &&
+                   wifiName.Length > bleName.Length &&
+                   wifiName.StartsWith(bleName, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static string GetBleName(PeerInfo existing, PeerInfo incoming)
+        {
+            return existing.DiscoveredByBle && !existing.DiscoveredByWiFiDirect
+                ? GetPeerBleName(existing)
+                : GetPeerBleName(incoming);
+        }
+
+        private static string GetWifiDirectName(PeerInfo existing, PeerInfo incoming)
+        {
+            return existing.DiscoveredByWiFiDirect && !existing.DiscoveredByBle
+                ? GetPeerWiFiDirectName(existing)
+                : GetPeerWiFiDirectName(incoming);
+        }
+
+        private static string GetPeerBleName(PeerInfo peer)
+        {
+            return !string.IsNullOrWhiteSpace(peer.BleName)
+                ? peer.BleName
+                : peer.DisplayName;
+        }
+
+        private static string GetPeerWiFiDirectName(PeerInfo peer)
+        {
+            return !string.IsNullOrWhiteSpace(peer.WiFiDirectName)
+                ? peer.WiFiDirectName
+                : peer.DisplayName;
         }
 
         private static void CopyIfPresent(string value, Action<string> apply)
