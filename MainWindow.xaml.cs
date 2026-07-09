@@ -101,6 +101,7 @@ namespace direct_module
             _chatConnectionManager.StartKeepAlive(LocalPeerId, Environment.MachineName, GetLocalShortSessionId());
             _fileTransferService.LogReceived += OnLogReceived;
             _fileTransferService.ProgressChanged += OnFileTransferProgressChanged;
+            AddLog($"添付ファイル保存先: {_fileTransferService.AttachmentsDirectory}");
             Closed += MainWindow_Closed;
 
             AddGroupChatPeer();
@@ -486,29 +487,18 @@ namespace direct_module
                     return;
                 }
 
-                bool isGroup = IsGroupChatSelected();
-                string conversationId = isGroup ? "group" : "";
-                ChatConnection? connection = null;
-                PeerInfo? peer = null;
-
-                if (!isGroup)
+                if (!TryGetFileSendTarget(out bool isGroup, out string conversationId, out PeerInfo? peer, out ChatConnection? connection, out string errorMessage))
                 {
-                    if (PeerList.SelectedItem is not PeerInfo selectedPeer ||
-                        !PeerConnectionStateService.IsChatReady(selectedPeer))
-                    {
-                        AddLog("ファイル送信先のPeerが準備できていません。", LogLevel.Error);
-                        return;
-                    }
-
-                    peer = selectedPeer;
-                    conversationId = PeerIdentityService.GetConnectionId(selectedPeer);
-                    connection = GetConnectionForPeer(selectedPeer);
+                    AddLog(errorMessage, LogLevel.Error);
+                    return;
                 }
 
+                string sendFilePath = await PreparePickedFileForSendAsync(file);
+                AddLog($"ファイル送信準備完了: {file.Name} -> {sendFilePath}");
                 AddChatMessage($"自分: [ファイル] {file.Name}");
 
                 await _fileTransferService.SendFileAsync(
-                    file.Path,
+                    sendFilePath,
                     LocalPeerId,
                     Environment.MachineName,
                     GetLocalShortSessionId(),
@@ -533,6 +523,74 @@ namespace direct_module
             {
                 AddLog($"ファイル送信に失敗しました: {ex.Message}", LogLevel.Error);
             }
+        }
+
+        private bool TryGetFileSendTarget(
+            out bool isGroup,
+            out string conversationId,
+            out PeerInfo? peer,
+            out ChatConnection? connection,
+            out string errorMessage)
+        {
+            isGroup = IsGroupChatSelected();
+            conversationId = isGroup ? "group" : "";
+            peer = null;
+            connection = null;
+            errorMessage = "";
+
+            if (isGroup)
+            {
+                bool hasReadyConnection = _chatConnectionManager.Connections
+                    .Any(item => item.IsConnected && item.IsReady);
+
+                if (!hasReadyConnection)
+                {
+                    errorMessage = "グループ送信できる接続がありません。";
+                    return false;
+                }
+
+                return true;
+            }
+
+            if (PeerList.SelectedItem is not PeerInfo selectedPeer ||
+                !PeerConnectionStateService.IsChatReady(selectedPeer))
+            {
+                errorMessage = "ファイル送信先のPeerが準備できていません。";
+                return false;
+            }
+
+            ChatConnection? selectedConnection = GetConnectionForPeer(selectedPeer);
+            if (selectedConnection == null || !selectedConnection.IsConnected || !selectedConnection.IsReady)
+            {
+                errorMessage = "ファイル送信先の接続が準備できていません。";
+                return false;
+            }
+
+            peer = selectedPeer;
+            connection = selectedConnection;
+            conversationId = PeerIdentityService.GetConnectionId(selectedPeer);
+            return true;
+        }
+
+        private static async System.Threading.Tasks.Task<string> PreparePickedFileForSendAsync(Windows.Storage.StorageFile file)
+        {
+            if (!string.IsNullOrWhiteSpace(file.Path) && System.IO.File.Exists(file.Path))
+            {
+                return file.Path;
+            }
+
+            Windows.Storage.StorageFolder folder =
+                await Windows.Storage.ApplicationData.Current.LocalCacheFolder.CreateFolderAsync(
+                    "outgoing",
+                    Windows.Storage.CreationCollisionOption.OpenIfExists);
+
+            Windows.Storage.StorageFile copiedFile =
+                await file.CopyAsync(
+                    folder,
+                    file.Name,
+                    Windows.Storage.NameCollisionOption.GenerateUniqueName);
+
+            return copiedFile.Path;
         }
 
         private void ClearLog_Click(object sender, RoutedEventArgs e)

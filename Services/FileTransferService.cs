@@ -26,10 +26,11 @@ namespace direct_module.Services
 
         public FileTransferService()
         {
-            string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-            _attachmentsDirectory = Path.Combine(localAppData, "direct_module", "attachments");
-            Directory.CreateDirectory(_attachmentsDirectory);
+            _attachmentsDirectory = ResolveAttachmentsDirectory();
+            EnsureAttachmentsDirectory();
         }
+
+        public string AttachmentsDirectory => _attachmentsDirectory;
 
         public event Action<string>? LogReceived;
         public event Action<FileTransferProgress>? ProgressChanged;
@@ -47,6 +48,8 @@ namespace direct_module.Services
             {
                 throw new FileNotFoundException("File was not found.", filePath);
             }
+
+            EnsureAttachmentsDirectory();
 
             var fileInfo = new FileInfo(filePath);
             if (fileInfo.Length > MaxFileSize)
@@ -123,6 +126,7 @@ namespace direct_module.Services
                     FileId = fileId,
                     FileName = fileName,
                     FileSize = fileSize,
+                    ChunkCount = chunkCount,
                     Body = ""
                 };
             }
@@ -136,6 +140,7 @@ namespace direct_module.Services
             }
 
             string fileName = SafeFileName(message.FileName);
+            EnsureAttachmentsDirectory();
             string partFilePath = Path.Combine(_attachmentsDirectory, $"{message.FileId}.part");
 
             if (File.Exists(partFilePath))
@@ -150,6 +155,7 @@ namespace direct_module.Services
                     FileId = message.FileId,
                     FileName = fileName,
                     FileSize = message.FileSize ?? 0,
+                    ExpectedChunkCount = message.ChunkCount ?? 0,
                     PartFilePath = partFilePath
                 };
             }
@@ -173,13 +179,24 @@ namespace direct_module.Services
                 return null;
             }
 
+            int chunkIndex = message.ChunkIndex ?? -1;
+            if (chunkIndex < 0)
+            {
+                LogReceived?.Invoke($"File chunk ignored because chunk index was missing: {message.FileId}");
+                return null;
+            }
+
             await session.Gate.WaitAsync();
             try
             {
                 byte[] chunk = Convert.FromBase64String(message.ChunkBase64);
-                await using var stream = new FileStream(session.PartFilePath, FileMode.Append, FileAccess.Write, FileShare.Read);
+                await using var stream = new FileStream(session.PartFilePath, FileMode.OpenOrCreate, FileAccess.Write, FileShare.Read);
+                stream.Seek(chunkIndex * ChunkSize, SeekOrigin.Begin);
                 await stream.WriteAsync(chunk);
-                session.ReceivedBytes += chunk.Length;
+                if (session.ReceivedChunkIndexes.Add(chunkIndex))
+                {
+                    session.ReceivedBytes += chunk.Length;
+                }
 
                 double percent = session.FileSize > 0
                     ? Math.Min(100, session.ReceivedBytes * 100.0 / session.FileSize)
@@ -223,9 +240,25 @@ namespace direct_module.Services
                 return null;
             }
 
+            EnsureAttachmentsDirectory();
+            await WaitForExpectedChunksAsync(session);
+
             await session.Gate.WaitAsync();
             try
             {
+                if (session.ExpectedChunkCount > 0 &&
+                    session.ReceivedChunkIndexes.Count < session.ExpectedChunkCount)
+                {
+                    throw new InvalidDataException(
+                        $"File receive incomplete: {session.FileName} chunks={session.ReceivedChunkIndexes.Count}/{session.ExpectedChunkCount}");
+                }
+
+                if (session.FileSize > 0 && session.ReceivedBytes != session.FileSize)
+                {
+                    throw new InvalidDataException(
+                        $"File receive size mismatch: {session.FileName} bytes={session.ReceivedBytes}/{session.FileSize}");
+                }
+
                 string finalPath = GetUniqueFilePath(_attachmentsDirectory, session.FileName);
                 File.Move(session.PartFilePath, finalPath);
 
@@ -254,6 +287,60 @@ namespace direct_module.Services
             {
                 _incomingFiles.TryGetValue(fileId, out IncomingFileSession? session);
                 return session;
+            }
+        }
+
+        private void EnsureAttachmentsDirectory()
+        {
+            Directory.CreateDirectory(_attachmentsDirectory);
+            if (!Directory.Exists(_attachmentsDirectory))
+            {
+                throw new DirectoryNotFoundException($"Attachments directory was not created: {_attachmentsDirectory}");
+            }
+        }
+
+        private static string ResolveAttachmentsDirectory()
+        {
+            string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            if (string.IsNullOrWhiteSpace(localAppData))
+            {
+                localAppData = Environment.GetEnvironmentVariable("LOCALAPPDATA") ?? AppContext.BaseDirectory;
+            }
+
+            return Path.Combine(localAppData, "direct_module", "attachments");
+        }
+
+        private static async Task WaitForExpectedChunksAsync(IncomingFileSession session)
+        {
+            if (session.ExpectedChunkCount <= 0)
+            {
+                return;
+            }
+
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            while (!timeout.IsCancellationRequested)
+            {
+                await session.Gate.WaitAsync();
+                try
+                {
+                    if (session.ReceivedChunkIndexes.Count >= session.ExpectedChunkCount)
+                    {
+                        return;
+                    }
+                }
+                finally
+                {
+                    session.Gate.Release();
+                }
+
+                try
+                {
+                    await Task.Delay(100, timeout.Token);
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
             }
         }
 
@@ -298,8 +385,10 @@ namespace direct_module.Services
             public string FileId { get; init; } = "";
             public string FileName { get; init; } = "";
             public long FileSize { get; init; }
+            public int ExpectedChunkCount { get; init; }
             public string PartFilePath { get; init; } = "";
             public long ReceivedBytes { get; set; }
+            public HashSet<int> ReceivedChunkIndexes { get; } = new();
             public SemaphoreSlim Gate { get; } = new(1, 1);
         }
     }
