@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using direct_module.Services;
 using direct_module.WiFiDirect.Models;
 
 namespace direct_module.Network
@@ -160,7 +161,7 @@ namespace direct_module.Network
         public ChatConnection? FindForPeer(PeerInfo peer)
         {
             return FindByShortSessionId(peer.ShortSessionId) ??
-                   FindByPeerId(GetPeerConnectionId(peer)) ??
+                   FindByPeerId(PeerIdentityService.GetConnectionId(peer)) ??
                    FindByRemoteIpAddress(peer.RemoteIpAddress) ??
                    FindByPeerId(peer.DeviceId);
         }
@@ -355,24 +356,5 @@ namespace direct_module.Network
             return connection.PeerId;
         }
 
-        private static string GetPeerConnectionId(PeerInfo peer)
-        {
-            if (!string.IsNullOrWhiteSpace(peer.ShortSessionId))
-            {
-                return peer.ShortSessionId;
-            }
-
-            if (!string.IsNullOrWhiteSpace(peer.DeviceId))
-            {
-                return peer.DeviceId;
-            }
-
-            if (!string.IsNullOrWhiteSpace(peer.RemoteIpAddress))
-            {
-                return peer.RemoteIpAddress;
-            }
-
-            return peer.DisplayName;
-        }
     }
 }

@@ -48,14 +48,17 @@ namespace direct_module
         private readonly Guid _localSessionId = Guid.NewGuid();
         private readonly DatabaseService? _databaseService = null;
         private readonly ChatHistoryService? _chatHistoryService = null;
+        private readonly ConnectionRoleService _connectionRoleService;
+        private readonly PeerConnectionStateService _peerConnectionStateService;
         private bool _isAutonomousGoAdvertisementEnabled;
-        private string _negotiatedBlePeerKey = "";
 
         private ChatRole _chatRole = ChatRole.Client;
 
         public MainWindow()
         {
             InitializeComponent();
+            _connectionRoleService = new ConnectionRoleService(GetLocalShortSessionId(), GetLocalRoleKey());
+            _peerConnectionStateService = new PeerConnectionStateService(_connectionRoleService);
             Title = "NOVA Chat";
             ResizeWindow(1440, 920);
 
@@ -129,7 +132,7 @@ namespace direct_module
             AddLog("相手探索開始");
             AddLog($"Local ShortSessionId: {GetLocalShortSessionId()}");
             AddLog($"Local RoleKey: {GetLocalRoleKey()}");
-            _negotiatedBlePeerKey = "";
+            _connectionRoleService.ResetBleNegotiation();
 
             _manager.Start(Environment.MachineName, GetLocalShortSessionId());
             StartBleAdvertiseCore();
@@ -230,7 +233,7 @@ namespace direct_module
                     return;
                 }
 
-                if (PeerList.SelectedItem is not PeerInfo peer || !IsPeerChatReady(peer))
+                if (PeerList.SelectedItem is not PeerInfo peer || !PeerConnectionStateService.IsChatReady(peer))
                 {
                     AddLog("送信先Peerがチャット準備完了ではありません", LogLevel.Error);
                     UpdateSendButtonState();
@@ -289,7 +292,7 @@ namespace direct_module
 
         private async System.Threading.Tasks.Task ConnectPeerAsync(PeerInfo peer)
         {
-            UpdatePeerConnectAvailability(peer);
+            _peerConnectionStateService.UpdateConnectAvailability(peer);
             if (!peer.CanConnect)
             {
                 AddLog($"接続条件を満たしていないため接続を開始しません: Peer={peer.DisplayName}", LogLevel.Error);
@@ -310,7 +313,8 @@ namespace direct_module
                 return;
             }
 
-            if (HasRoleKey(peer) && !IsLocalClientForWifiDirect(peer))
+            if (ConnectionRoleService.HasRoleKey(peer) &&
+                !_connectionRoleService.IsLocalClientForWifiDirect(peer))
             {
                 AddLog($"BLE RoleKey判定では自分がGOのため、手動Wi-Fi Direct接続を開始しません: Peer={peer.DisplayName}");
                 AddLog("相手ClientからのJoinを待ち受けます");
@@ -321,7 +325,7 @@ namespace direct_module
             AddLog("Chat Role: Client");
             AddLog($"Wi-Fi Direct接続開始: {peer.DisplayText}");
             await _manager.ConnectAsync(peer);
-            UpdatePeerConnectAvailability(peer);
+            _peerConnectionStateService.UpdateConnectAvailability(peer);
             RefreshPeerDisplay(peer);
         }
 
@@ -385,36 +389,25 @@ namespace direct_module
 
         private async System.Threading.Tasks.Task HandleBleRoleNegotiationAsync(PeerInfo peer)
         {
-            string localRoleKey = GetLocalRoleKey();
-            string remoteRoleKey = peer.RoleKey;
-            string peerKey = GetPeerConnectionId(peer);
+            string peerKey = PeerIdentityService.GetConnectionId(peer);
+            BleRoleNegotiationResult decision = _connectionRoleService.DecideBleRole(peer, peerKey);
 
-            if (string.IsNullOrWhiteSpace(remoteRoleKey))
+            switch (decision.Status)
             {
-                AddLog($"BLE RoleKeyなしのため、自動Wi-Fi Direct探索を開始しません Peer={peer.DisplayName}", LogLevel.Debug);
-                return;
+                case BleRoleNegotiationStatus.MissingRemoteRoleKey:
+                    AddLog($"BLE RoleKeyなしのため、自動Wi-Fi Direct探索を開始しません Peer={peer.DisplayName}", LogLevel.Debug);
+                    return;
+                case BleRoleNegotiationStatus.AlreadyNegotiatedForOtherPeer:
+                    AddLog($"BLE Role Negotiationは既に別Peerで確定済みのためスキップ: Current={decision.CurrentPeerKey}, Ignored={decision.IgnoredPeerKey}", LogLevel.Debug);
+                    return;
+                case BleRoleNegotiationStatus.RoleKeyCollision:
+                    AddLog($"BLE RoleKey衝突のため、自動Wi-Fi Direct探索を開始しません Local={decision.LocalRoleKey}, Remote={decision.RemoteRoleKey}", LogLevel.Error);
+                    return;
             }
 
-            if (!string.IsNullOrWhiteSpace(_negotiatedBlePeerKey) &&
-                !string.Equals(_negotiatedBlePeerKey, peerKey, StringComparison.OrdinalIgnoreCase))
-            {
-                AddLog($"BLE Role Negotiationは既に別Peerで確定済みのためスキップ: Current={_negotiatedBlePeerKey}, Ignored={peerKey}", LogLevel.Debug);
-                return;
-            }
+            AddLog($"BLE Role Negotiation: LocalRoleKey={decision.LocalRoleKey}, RemoteRoleKey={decision.RemoteRoleKey}, LocalRole={(decision.LocalIsGo ? "GO" : "Client")}");
 
-            int compare = CompareRoleKey(localRoleKey, remoteRoleKey);
-            if (compare == 0)
-            {
-                AddLog($"BLE RoleKey衝突のため、自動Wi-Fi Direct探索を開始しません Local={localRoleKey}, Remote={remoteRoleKey}", LogLevel.Error);
-                return;
-            }
-
-            _negotiatedBlePeerKey = peerKey;
-
-            bool localIsGo = compare > 0;
-            AddLog($"BLE Role Negotiation: LocalRoleKey={localRoleKey}, RemoteRoleKey={remoteRoleKey}, LocalRole={(localIsGo ? "GO" : "Client")}");
-
-            if (localIsGo)
+            if (decision.LocalIsGo)
             {
                 if (!_isAutonomousGoAdvertisementEnabled)
                 {
@@ -444,38 +437,6 @@ namespace direct_module
             ClearStaleWiFiDirectPeers();
             await _manager.StartAssociationEndpointScanAsync();
             AddLog("BLE RoleKey判定後にClient側だけWi-Fi Direct探索を開始します");
-        }
-
-        private static bool HasRoleKey(PeerInfo peer)
-        {
-            return !string.IsNullOrWhiteSpace(peer.RoleKey);
-        }
-
-        private bool IsLocalClientForWifiDirect(PeerInfo peer)
-        {
-            return HasRoleKey(peer) &&
-                   CompareRoleKey(GetLocalRoleKey(), peer.RoleKey) < 0;
-        }
-
-        private static int CompareRoleKey(string localRoleKey, string remoteRoleKey)
-        {
-            return string.Compare(localRoleKey, remoteRoleKey, StringComparison.OrdinalIgnoreCase);
-        }
-
-        private void UpdatePeerConnectAvailability(PeerInfo peer)
-        {
-            peer.CanConnect =
-                peer.DiscoveredByBle &&
-                peer.DiscoveredByWiFiDirect &&
-                !string.IsNullOrWhiteSpace(peer.DeviceId) &&
-                !peer.DeviceId.Contains("_PendingRequest", StringComparison.OrdinalIgnoreCase) &&
-                !string.IsNullOrWhiteSpace(peer.ShortSessionId) &&
-                !string.IsNullOrWhiteSpace(peer.RoleKey) &&
-                IsLocalClientForWifiDirect(peer) &&
-                !peer.IsConnected &&
-                !peer.IsTcpConnected &&
-                !peer.IsChatReady &&
-                !peer.IsPreparingChatTcp;
         }
 
         private void OnConnectionRequested(PeerInfo peer)
@@ -591,7 +552,7 @@ namespace direct_module
 
             var connection = new ChatConnection
             {
-                PeerId = GetPeerConnectionId(peer),
+                PeerId = PeerIdentityService.GetConnectionId(peer),
                 PeerName = peer.DisplayName,
                 RemoteIpAddress = peer.RemoteIpAddress,
                 ShortSessionId = peer.ShortSessionId
@@ -734,7 +695,7 @@ namespace direct_module
 
             var connection = new ChatConnection
             {
-                PeerId = GetPeerConnectionId(peer),
+                PeerId = PeerIdentityService.GetConnectionId(peer),
                 PeerName = peer.DisplayName,
                 RemoteIpAddress = peer.RemoteIpAddress,
                 ShortSessionId = peer.ShortSessionId
@@ -959,7 +920,7 @@ namespace direct_module
                         : message.SenderName,
                     RemoteIpAddress = sourceConnection.RemoteIpAddress
                 };
-                UpdatePeerConnectAvailability(matchedPeer);
+                _peerConnectionStateService.UpdateConnectAvailability(matchedPeer);
                 PeerList.Items.Add(matchedPeer);
                 AddLog("BLE情報なしのためHELLO情報でPeerInfoを更新");
             }
@@ -1023,7 +984,7 @@ namespace direct_module
             return PeerList.Items
                 .Cast<PeerInfo>()
                 .FirstOrDefault(peer =>
-                    string.Equals(GetPeerConnectionId(peer), peerId, StringComparison.OrdinalIgnoreCase));
+                    string.Equals(PeerIdentityService.GetConnectionId(peer), peerId, StringComparison.OrdinalIgnoreCase));
         }
 
         private PeerInfo? FindPeerForHello(ChatMessage message, ChatConnection sourceConnection)
@@ -1118,40 +1079,33 @@ namespace direct_module
 
             return FindPeerByRemoteIpOrName(connectedPeer.RemoteIpAddress, "")
                 ?? FindPeerByRemoteIpOrName("", connectedPeer.DisplayName)
-                ?? FindPeerByPeerId(GetPeerConnectionId(connectedPeer));
+                ?? FindPeerByPeerId(PeerIdentityService.GetConnectionId(connectedPeer));
         }
 
         private bool ShouldStartTcpConnection(PeerInfo peer)
         {
-            if (HasRoleKey(peer))
+            TcpRoleDecision decision = _connectionRoleService.DecideTcpRole(
+                peer,
+                _chatRole == ChatRole.Client);
+
+            if (decision.Source == TcpRoleDecisionSource.RoleKey)
             {
-                bool localIsClient = IsLocalClientForWifiDirect(peer);
-                AddLog($"RoleKey判定によりTCPロール決定: LocalRole={(localIsClient ? "Client" : "GO")}, RemoteRoleKey={peer.RoleKey}", LogLevel.Debug);
-                return localIsClient;
+                AddLog($"RoleKey判定によりTCPロール決定: LocalRole={decision.LocalRoleText}, RemoteRoleKey={decision.RemoteRoleKey}", LogLevel.Debug);
+                return decision.ShouldStartConnection;
             }
 
-            string localShortSessionId = GetLocalShortSessionId();
-            string remoteShortSessionId = peer.ShortSessionId;
-
-            if (!string.IsNullOrWhiteSpace(localShortSessionId) &&
-                !string.IsNullOrWhiteSpace(remoteShortSessionId))
+            if (decision.Source == TcpRoleDecisionSource.EqualShortSessionIdFallback)
             {
-                int compare = string.Compare(
-                    localShortSessionId,
-                    remoteShortSessionId,
-                    StringComparison.OrdinalIgnoreCase);
-
-                if (compare == 0)
-                {
-                    AddLog("ShortSessionIdが同一のため現在のChatRoleにフォールバックします", LogLevel.Error);
-                    return _chatRole == ChatRole.Client;
-                }
-
-                return compare < 0;
+                AddLog("ShortSessionIdが同一のため現在のChatRoleにフォールバックします", LogLevel.Error);
+                return decision.ShouldStartConnection;
             }
 
-            AddLog("ShortSessionId不足のため現在のChatRoleにフォールバックします", LogLevel.Debug);
-            return _chatRole == ChatRole.Client;
+            if (decision.Source == TcpRoleDecisionSource.MissingShortSessionIdFallback)
+            {
+                AddLog("ShortSessionId不足のため現在のChatRoleにフォールバックします", LogLevel.Debug);
+            }
+
+            return decision.ShouldStartConnection;
         }
 
         private async System.Threading.Tasks.Task ReconnectPeerAsync(PeerInfo peer)
@@ -1302,120 +1256,28 @@ namespace direct_module
             string displayName = string.IsNullOrWhiteSpace(peer.DisplayName)
                 ? "Unknown Peer"
                 : peer.DisplayName;
-            string status = GetPeerStatusText(peer);
+            string status = PeerDisplayService.GetStatusText(peer);
 
-            ChatHeaderAvatarText.Text = CreateInitials(displayName);
+            ChatHeaderAvatarText.Text = PeerDisplayService.CreateInitials(displayName);
             ChatHeaderTitleText.Text = displayName;
             ChatHeaderStatusText.Text = status;
-            SelectedPeerAvatarText.Text = CreateInitials(displayName);
+            SelectedPeerAvatarText.Text = PeerDisplayService.CreateInitials(displayName);
             SelectedPeerNameText.Text = displayName;
             SelectedPeerStatusText.Text = status;
             SelectedPeerSourceText.Text = $"{peer.SourceText} / TCP:{(peer.IsTcpConnected ? "接続済み" : peer.IsPreparingChatTcp ? "準備中" : "未接続")} / HELLO:{(peer.IsHelloVerified ? "確認済み" : "未確認")}";
-            SelectedPeerProgress.Value = GetPeerProgressValue(peer);
-            SelectedPeerIpText.Text = $"Remote IP: {GetDisplayValue(peer.RemoteIpAddress)}";
-            SelectedPeerSessionText.Text = $"Session: {GetDisplayValue(peer.ShortSessionId)}";
-            SelectedPeerDeviceText.Text = $"DeviceId: {GetDisplayValue(peer.DeviceId)}";
+            SelectedPeerProgress.Value = PeerDisplayService.GetProgressValue(peer);
+            SelectedPeerIpText.Text = $"Remote IP: {PeerDisplayService.GetDisplayValue(peer.RemoteIpAddress)}";
+            SelectedPeerSessionText.Text = $"Session: {PeerDisplayService.GetDisplayValue(peer.ShortSessionId)}";
+            SelectedPeerDeviceText.Text = $"DeviceId: {PeerDisplayService.GetDisplayValue(peer.DeviceId)}";
             SelectedPeerOnlineDot.Fill = new SolidColorBrush(peer.IsChatReady ? Colors.LimeGreen : peer.IsTcpConnected ? Colors.DeepSkyBlue : Colors.Gray);
         }
-
-        private static string GetPeerStatusText(PeerInfo peer)
-        {
-            if (!string.IsNullOrWhiteSpace(peer.StatusText))
-            {
-                return peer.StatusText;
-            }
-
-            if (peer.IsChatReady)
-            {
-                return "チャット準備完了";
-            }
-
-            if (peer.IsHelloVerified)
-            {
-                return "HELLO確認済み";
-            }
-
-            if (peer.IsTcpConnected)
-            {
-                return "TCP接続済み";
-            }
-
-            if (peer.IsPreparingChatTcp)
-            {
-                return "TCP準備中";
-            }
-
-            if (peer.IsConnected)
-            {
-                return "Wi-Fi Direct接続済み";
-            }
-
-            return "接続前";
-        }
-
-        private static double GetPeerProgressValue(PeerInfo peer)
-        {
-            if (peer.IsChatReady)
-            {
-                return 100;
-            }
-
-            if (peer.IsHelloVerified)
-            {
-                return 84;
-            }
-
-            if (peer.IsTcpConnected)
-            {
-                return 68;
-            }
-
-            if (peer.IsPreparingChatTcp || peer.IsConnected)
-            {
-                return 48;
-            }
-
-            if (peer.DiscoveredByBle || peer.DiscoveredByWiFiDirect)
-            {
-                return 24;
-            }
-
-            return 10;
-        }
-
-        private static string GetDisplayValue(string value)
-        {
-            return string.IsNullOrWhiteSpace(value) ? "-" : value;
-        }
-
-        private static string CreateInitials(string displayName)
-        {
-            string normalized = displayName.Trim();
-            if (string.IsNullOrWhiteSpace(normalized))
-            {
-                return "--";
-            }
-
-            string[] parts = normalized
-                .Split(new[] { ' ', '-', '_' }, StringSplitOptions.RemoveEmptyEntries);
-
-            if (parts.Length >= 2)
-            {
-                return string.Concat(parts.Take(2).Select(part => char.ToUpperInvariant(part[0])));
-            }
-
-            return normalized.Length <= 2
-                ? normalized.ToUpperInvariant()
-                : normalized[..2].ToUpperInvariant();
-        }
-
         private void UpdateSendButtonState()
         {
             bool canSend = false;
 
             if (PeerList.SelectedItem is PeerInfo peer)
             {
-                canSend = IsPeerChatReady(peer) && GetConnectionForPeer(peer)?.IsReady == true;
+                canSend = PeerConnectionStateService.IsChatReady(peer) && GetConnectionForPeer(peer)?.IsReady == true;
             }
             else if (_chatRole == ChatRole.Host)
             {
@@ -1435,23 +1297,10 @@ namespace direct_module
 
             UpdateReconnectButtonState();
         }
-
         private void UpdateReconnectButtonState()
         {
-            bool canReconnect = false;
-
-            if (PeerList.SelectedItem is PeerInfo peer)
-            {
-                UpdatePeerConnectAvailability(peer);
-                canReconnect =
-                    peer.DiscoveredByBle &&
-                    peer.DiscoveredByWiFiDirect &&
-                    !string.IsNullOrWhiteSpace(peer.RoleKey) &&
-                    (!string.IsNullOrWhiteSpace(peer.RemoteIpAddress) || !string.IsNullOrWhiteSpace(peer.DeviceId)) &&
-                    !peer.IsChatReady &&
-                    !peer.IsPreparingChatTcp &&
-                    !string.Equals(peer.StatusText, "再接続中", StringComparison.OrdinalIgnoreCase);
-            }
+            bool canReconnect = PeerList.SelectedItem is PeerInfo peer &&
+                _peerConnectionStateService.CanReconnect(peer);
 
             DispatcherQueue.TryEnqueue(() =>
             {
@@ -1459,37 +1308,9 @@ namespace direct_module
             });
         }
 
-        private static bool IsPeerChatReady(PeerInfo peer)
-        {
-            return !peer.IsPreparingChatTcp &&
-                   peer.IsTcpConnected &&
-                   peer.IsHelloVerified &&
-                   peer.IsChatReady;
-        }
-
         private ChatConnection? GetConnectionForPeer(PeerInfo peer)
         {
             return _chatConnectionManager.FindForPeer(peer);
-        }
-
-        private static string GetPeerConnectionId(PeerInfo peer)
-        {
-            if (!string.IsNullOrWhiteSpace(peer.ShortSessionId))
-            {
-                return peer.ShortSessionId;
-            }
-
-            if (!string.IsNullOrWhiteSpace(peer.DeviceId))
-            {
-                return peer.DeviceId;
-            }
-
-            if (!string.IsNullOrWhiteSpace(peer.RemoteIpAddress))
-            {
-                return peer.RemoteIpAddress;
-            }
-
-            return peer.DisplayName;
         }
 
         private void AddOrMergePeer(PeerInfo incoming)
@@ -1518,7 +1339,7 @@ namespace direct_module
                 }
 
                 PeerMergeService.Merge(existing, incoming);
-                UpdatePeerConnectAvailability(existing);
+                _peerConnectionStateService.UpdateConnectAvailability(existing);
                 RefreshPeerDisplay(existing);
 
                 LogLevel level = matchReason.StartsWith("注意:", StringComparison.Ordinal)
@@ -1529,51 +1350,13 @@ namespace direct_module
                 return;
             }
 
-            UpdatePeerConnectAvailability(incoming);
+            _peerConnectionStateService.UpdateConnectAvailability(incoming);
             PeerList.Items.Add(incoming);
             UpdatePeerCount();
             UpdateSelectedPeerDetails(PeerList.SelectedItem as PeerInfo);
             AddLog($"確実な照合キーがないため新規Peerとして追加: {incoming.DisplayName}", LogLevel.Debug);
             AddLog($"Peer追加: {incoming.DisplayText}");
         }
-
-        private static string GetPeerMatchReason(PeerInfo existing, PeerInfo incoming)
-        {
-            if (HasSameValue(existing.ShortSessionId, incoming.ShortSessionId))
-            {
-                return $"ShortSessionId一致 ({incoming.ShortSessionId})";
-            }
-
-            if (HasSameValue(existing.DeviceId, incoming.DeviceId))
-            {
-                return "DeviceId一致";
-            }
-
-            if (HasSameValue(existing.RemoteIpAddress, incoming.RemoteIpAddress))
-            {
-                return $"RemoteIpAddress一致 ({incoming.RemoteIpAddress})";
-            }
-
-            if (HasSameValue(existing.MatchKey, incoming.MatchKey))
-            {
-                return $"MatchKey一致 ({incoming.MatchKey})";
-            }
-
-            if (HasSameValue(existing.DisplayName, incoming.DisplayName))
-            {
-                return $"DisplayName完全一致 ({incoming.DisplayName})";
-            }
-
-            return "";
-        }
-
-        private static bool HasSameValue(string left, string right)
-        {
-            return !string.IsNullOrWhiteSpace(left) &&
-                   !string.IsNullOrWhiteSpace(right) &&
-                   string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
-        }
-
         private void ClearStaleWiFiDirectPeers()
         {
             int removed = 0;
@@ -1641,7 +1424,7 @@ namespace direct_module
                 StatusText = connection.IsConnected ? "HELLO確認中" : "送信不可"
             };
 
-            UpdatePeerConnectAvailability(peer);
+            _peerConnectionStateService.UpdateConnectAvailability(peer);
             PeerList.Items.Add(peer);
             UpdatePeerCount();
             UpdateSelectedPeerDetails(PeerList.SelectedItem as PeerInfo);
@@ -1649,7 +1432,7 @@ namespace direct_module
 
         private void RefreshPeerDisplay(PeerInfo peer)
         {
-            UpdatePeerConnectAvailability(peer);
+            _peerConnectionStateService.UpdateConnectAvailability(peer);
 
             int selectedIndex = PeerList.SelectedIndex;
             int index = PeerList.Items.IndexOf(peer);

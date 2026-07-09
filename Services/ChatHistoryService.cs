@@ -114,7 +114,7 @@ namespace direct_module.Services
         {
             if (peer != null)
             {
-                return GetPeerConnectionId(peer);
+                return PeerIdentityService.GetConnectionId(peer);
             }
 
             if (!string.IsNullOrWhiteSpace(connection?.ShortSessionId))
@@ -139,7 +139,7 @@ namespace direct_module.Services
         {
             if (peer != null)
             {
-                return GetPeerConnectionId(peer);
+                return PeerIdentityService.GetConnectionId(peer);
             }
 
             if (!string.IsNullOrWhiteSpace(connection?.PeerId))
@@ -180,24 +180,5 @@ namespace direct_module.Services
             return isOutgoing ? "Broadcast" : "Unknown";
         }
 
-        private static string GetPeerConnectionId(PeerInfo peer)
-        {
-            if (!string.IsNullOrWhiteSpace(peer.ShortSessionId))
-            {
-                return peer.ShortSessionId;
-            }
-
-            if (!string.IsNullOrWhiteSpace(peer.DeviceId))
-            {
-                return peer.DeviceId;
-            }
-
-            if (!string.IsNullOrWhiteSpace(peer.RemoteIpAddress))
-            {
-                return peer.RemoteIpAddress;
-            }
-
-            return peer.DisplayName;
-        }
     }
 }
