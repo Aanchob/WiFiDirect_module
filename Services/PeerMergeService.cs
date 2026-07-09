@@ -39,6 +39,11 @@ namespace direct_module.Services
                 return $"BLE名前頭一致 ({bleName} -> {wifiName})";
             }
 
+            if (IsBleWiFiDirectPartialNameMatch(existing, incoming))
+            {
+                return $"注意: BLE/Wi-Fi Direct名の部分一致 ({existing.DisplayName} / {incoming.DisplayName})";
+            }
+
             return "";
         }
 
@@ -52,6 +57,14 @@ namespace direct_module.Services
                    !string.Equals(existingName, incomingName, StringComparison.OrdinalIgnoreCase) &&
                    (existingName.Contains(incomingName, StringComparison.OrdinalIgnoreCase) ||
                     incomingName.Contains(existingName, StringComparison.OrdinalIgnoreCase));
+        }
+
+        public static bool IsSingleCandidateFallback(PeerInfo existing, PeerInfo incoming)
+        {
+            return IsBleWiFiDirectPair(existing, incoming) &&
+                   !HasStableIdentityConflict(existing, incoming) &&
+                   HasAnyDiscoveryIdentity(existing) &&
+                   HasAnyDiscoveryIdentity(incoming);
         }
 
         public static void Merge(PeerInfo target, PeerInfo source)
@@ -92,6 +105,27 @@ namespace direct_module.Services
             target.IsHelloVerified |= source.IsHelloVerified;
             target.IsChatReady |= source.IsChatReady;
             CopyIfPresent(source.StatusText, value => target.StatusText = value);
+        }
+
+        private static bool IsBleWiFiDirectPartialNameMatch(PeerInfo existing, PeerInfo incoming)
+        {
+            return IsSingleCandidateFallback(existing, incoming) &&
+                   IsPartialNameMatchCandidate(existing, incoming);
+        }
+
+        private static bool IsBleWiFiDirectPair(PeerInfo existing, PeerInfo incoming)
+        {
+            return (existing.DiscoveredByBle && incoming.DiscoveredByWiFiDirect) ||
+                   (existing.DiscoveredByWiFiDirect && incoming.DiscoveredByBle);
+        }
+
+        private static bool HasStableIdentityConflict(PeerInfo existing, PeerInfo incoming)
+        {
+            return HasDifferentValue(existing.ShortSessionId, incoming.ShortSessionId) ||
+                   HasDifferentValue(existing.DeviceId, incoming.DeviceId) ||
+                   HasDifferentValue(existing.RemoteIpAddress, incoming.RemoteIpAddress) ||
+                   HasDifferentValue(existing.MatchKey, incoming.MatchKey) ||
+                   HasDifferentValue(existing.RoleKey, incoming.RoleKey);
         }
 
         private static bool HasSameValue(string left, string right)
@@ -151,6 +185,23 @@ namespace direct_module.Services
             return !string.IsNullOrWhiteSpace(peer.WiFiDirectName)
                 ? peer.WiFiDirectName
                 : peer.DisplayName;
+        }
+
+        private static bool HasDifferentValue(string left, string right)
+        {
+            return !string.IsNullOrWhiteSpace(left) &&
+                   !string.IsNullOrWhiteSpace(right) &&
+                   !string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool HasAnyDiscoveryIdentity(PeerInfo peer)
+        {
+            return !string.IsNullOrWhiteSpace(peer.ShortSessionId) ||
+                   !string.IsNullOrWhiteSpace(peer.DeviceId) ||
+                   !string.IsNullOrWhiteSpace(peer.RemoteIpAddress) ||
+                   !string.IsNullOrWhiteSpace(peer.MatchKey) ||
+                   !string.IsNullOrWhiteSpace(peer.RoleKey) ||
+                   !string.IsNullOrWhiteSpace(peer.DisplayName);
         }
 
         private static void CopyIfPresent(string value, Action<string> apply)

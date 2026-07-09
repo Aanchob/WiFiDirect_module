@@ -1359,6 +1359,27 @@ namespace direct_module
                 return;
             }
 
+            var fallbackCandidates = PeerList.Items
+                .Cast<PeerInfo>()
+                .Where(existing => PeerMergeService.IsSingleCandidateFallback(existing, incoming))
+                .ToList();
+
+            if (fallbackCandidates.Count == 1)
+            {
+                PeerInfo existing = fallbackCandidates[0];
+                PeerMergeService.Merge(existing, incoming);
+                _peerConnectionStateService.UpdateConnectAvailability(existing);
+                RefreshPeerDisplay(existing);
+
+                AddLog($"Peer統合: 注意: 単一BLE/Wi-Fi Direct候補として統合 ({existing.DisplayName} / {incoming.DisplayName}) -> {existing.DisplayText}", LogLevel.Error);
+                return;
+            }
+
+            if (fallbackCandidates.Count > 1)
+            {
+                AddLog($"Peer統合スキップ: BLE/Wi-Fi Direct候補が複数あるため自動統合しません Count={fallbackCandidates.Count}, Incoming={incoming.DisplayName}", LogLevel.Debug);
+            }
+
             _peerConnectionStateService.UpdateConnectAvailability(incoming);
             PeerList.Items.Add(incoming);
             UpdatePeerCount();
