@@ -13,6 +13,7 @@ using Microsoft.UI.Xaml.Media;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using System.Linq;
 using Windows.Graphics;
 using Windows.Networking.Sockets;
@@ -55,12 +56,25 @@ namespace direct_module
         private readonly ConnectionRoleService _connectionRoleService;
         private readonly PeerConnectionStateService _peerConnectionStateService;
         private bool _isAutonomousGoAdvertisementEnabled;
+        private readonly Dictionary<string, IncomingFileSession> _incomingFiles = new();
+
+        private class IncomingFileSession
+        {
+            public string FileId { get; set; } = "";
+            public string FileName { get; set; } = "";
+            public long FileSize { get; set; }
+            public string MimeType { get; set; } = "";
+            public string PartFilePath { get; set; } = "";
+            public int LastChunkIndex { get; set; } = -1;
+            public ChatMessageViewModel? ViewModel { get; set; }
+        }
 
         private ChatRole _chatRole = ChatRole.Client;
 
         public MainWindow()
         {
             InitializeComponent();
+            MessageTextBox.Paste += MessageTextBox_Paste;
             _connectionRoleService = new ConnectionRoleService(GetLocalShortSessionId(), GetLocalRoleKey());
             _peerConnectionStateService = new PeerConnectionStateService(_connectionRoleService);
             Title = "Hide Chat";
@@ -99,6 +113,16 @@ namespace direct_module
             _chatConnectionManager.ConnectionsChanged += OnChatConnectionsChanged;
             _chatConnectionManager.StartKeepAlive(LocalPeerId, Environment.MachineName, GetLocalShortSessionId());
             Closed += MainWindow_Closed;
+
+            // グループチャット用疑似Peerの追加
+            var groupPeer = new PeerInfo
+            {
+                DisplayName = "グループ",
+                IsGroupChat = true,
+                CanConnect = false,
+                StatusText = "グループチャット"
+            };
+            PeerList.Items.Add(groupPeer);
 
             SetChatReady(false);
             UpdatePeerCount();
@@ -217,44 +241,102 @@ namespace direct_module
                     return;
                 }
 
+                bool isGroup = false;
+                string conversationId = "";
+                PeerInfo? peer = null;
+                ChatConnection? connection = null;
+
+                if (PeerList.SelectedItem is PeerInfo selectedPeer)
+                {
+                    if (selectedPeer.IsGroupChat)
+                    {
+                        isGroup = true;
+                        conversationId = "group";
+                    }
+                    else
+                    {
+                        isGroup = false;
+                        conversationId = PeerIdentityService.GetConnectionId(selectedPeer);
+                        peer = selectedPeer;
+                        connection = GetConnectionForPeer(selectedPeer);
+                    }
+                }
+                else
+                {
+                    if (_chatRole == ChatRole.Host && _chatConnectionManager.ConnectedCount > 0)
+                    {
+                        isGroup = true;
+                        conversationId = "group";
+                    }
+                    else
+                    {
+                        AddLog("送信先Peerが選択されていません", LogLevel.Error);
+                        return;
+                    }
+                }
+
                 var message = new ChatMessage
                 {
                     Type = "chat",
                     SenderId = LocalPeerId,
                     SenderName = Environment.MachineName,
                     ShortSessionId = GetLocalShortSessionId(),
-                    Body = body
+                    Body = body,
+                    IsGroup = isGroup,
+                    ConversationId = conversationId
                 };
 
                 _chatConnectionManager.MarkMessageSeen(message.MessageId);
 
-                if (_chatRole == ChatRole.Host && PeerList.SelectedItem is not PeerInfo && _chatConnectionManager.ConnectedCount > 0)
+                if (isGroup)
                 {
-                    AddLog($"Host送信: 接続中ClientへBroadcast Count={_chatConnectionManager.ConnectedCount}");
-                    await _chatConnectionManager.BroadcastAsync(message);
-                    AddChatMessage($"自分: {body}");
+                    if (_chatRole == ChatRole.Host)
+                    {
+                        AddLog($"Hostグループ送信: 接続中ClientへBroadcast Count={_chatConnectionManager.ConnectedCount}");
+                        await _chatConnectionManager.BroadcastAsync(message);
+                    }
+                    else
+                    {
+                        var hostConn = _chatConnectionManager.Connections.FirstOrDefault(c => c.IsConnected && c.IsReady);
+                        if (hostConn != null)
+                        {
+                            AddLog("Clientグループ送信: Hostへ送信");
+                            await hostConn.SendAsync(message);
+                        }
+                        else
+                        {
+                            AddLog("グループ送信失敗: Hostへの接続がありません", LogLevel.Error);
+                            return;
+                        }
+                    }
+
+                    var viewModel = CreateViewModelFromNetworkMessage(message, true);
+                    AddChatMessage(viewModel);
                     SaveChatMessageSafely(message, true, null, null);
-                    return;
                 }
-
-                if (PeerList.SelectedItem is not PeerInfo peer || !PeerConnectionStateService.IsChatReady(peer))
+                else
                 {
-                    AddLog("送信先Peerがチャット準備完了ではありません", LogLevel.Error);
-                    UpdateSendButtonState();
-                    return;
+                    if (peer == null || !PeerConnectionStateService.IsChatReady(peer))
+                    {
+                        AddLog("送信先Peerがチャット準備完了ではありません", LogLevel.Error);
+                        UpdateSendButtonState();
+                        return;
+                    }
+
+                    if (connection == null || !connection.IsConnected || !connection.IsReady)
+                    {
+                        AddLog("選択中PeerのChatConnectionが見つかりません", LogLevel.Error);
+                        UpdateSendButtonState();
+                        return;
+                    }
+
+                    await connection.SendAsync(message);
+
+                    var viewModel = CreateViewModelFromNetworkMessage(message, true);
+                    AddChatMessage(viewModel);
+                    SaveChatMessageSafely(message, true, peer, connection);
                 }
 
-                ChatConnection? connection = GetSelectedPeerPreparedConnection();
-                if (connection == null || !connection.IsConnected || !connection.IsReady)
-                {
-                    AddLog("選択中PeerのChatConnectionが見つかりません", LogLevel.Error);
-                    UpdateSendButtonState();
-                    return;
-                }
-
-                await connection.SendAsync(message);
-                AddChatMessage($"自分: {body}");
-                SaveChatMessageSafely(message, true, peer, connection);
                 MessageTextBox.Text = "";
                 AddLog($"SendMessage_Click完了 合計: {totalWatch.ElapsedMilliseconds}ms", LogLevel.Debug);
             }
@@ -279,7 +361,14 @@ namespace direct_module
                 return;
             }
 
-            await ConnectPeerAsync(peer);
+            if (peer.CanDisconnect)
+            {
+                await DisconnectPeerAsync(peer);
+            }
+            else
+            {
+                await ConnectPeerAsync(peer);
+            }
         }
 
         private async void ConnectPeerItem_Click(object sender, RoutedEventArgs e)
@@ -291,7 +380,14 @@ namespace direct_module
             }
 
             PeerList.SelectedItem = peer;
-            await ConnectPeerAsync(peer);
+            if (peer.CanDisconnect)
+            {
+                await DisconnectPeerAsync(peer);
+            }
+            else
+            {
+                await ConnectPeerAsync(peer);
+            }
         }
 
         private async System.Threading.Tasks.Task ConnectPeerAsync(PeerInfo peer)
@@ -874,13 +970,31 @@ namespace direct_module
                     });
                     return;
 
-                case "system":
                 case "file_start":
+                    DispatcherQueue.TryEnqueue(async () =>
+                    {
+                        await HandleFileStartAsync(message, sourceConnection);
+                    });
+                    break;
+
                 case "file_chunk":
+                    DispatcherQueue.TryEnqueue(async () =>
+                    {
+                        await HandleFileChunkAsync(message, sourceConnection);
+                    });
+                    break;
+
                 case "file_end":
+                    DispatcherQueue.TryEnqueue(async () =>
+                    {
+                        await HandleFileEndAsync(message, sourceConnection);
+                    });
+                    break;
+
+                case "system":
                     DispatcherQueue.TryEnqueue(() =>
                     {
-                        AddLog($"未実装Typeを受信: {messageType}");
+                        AddLog($"システムメッセージを受信: {message.Body}");
                     });
                     return;
 
@@ -892,15 +1006,39 @@ namespace direct_module
                     return;
             }
 
-            DispatcherQueue.TryEnqueue(() =>
+            if (messageType.ToLowerInvariant() == "chat")
             {
-                AddChatMessage($"{message.SenderName}: {message.Body}");
-                SaveChatMessageSafely(message, false, FindPeerForConnection(sourceConnection), sourceConnection);
-                AddLog($"TCP受信メッセージ: {message.Body}", LogLevel.Success);
-                AddConnectedPeerDisplay(sourceConnection);
-            });
+                DispatcherQueue.TryEnqueue(() =>
+                {
+                    bool shouldAddToUi = false;
+                    if (PeerList.SelectedItem is PeerInfo activePeer)
+                    {
+                        if (message.IsGroup && activePeer.IsGroupChat)
+                        {
+                            shouldAddToUi = true;
+                        }
+                        else if (!message.IsGroup && !activePeer.IsGroupChat)
+                        {
+                            string activeId = PeerIdentityService.GetConnectionId(activePeer);
+                            if (string.Equals(activeId, message.ConversationId, StringComparison.OrdinalIgnoreCase))
+                            {
+                                shouldAddToUi = true;
+                            }
+                        }
+                    }
 
-            if (_chatRole == ChatRole.Host)
+                    if (shouldAddToUi)
+                    {
+                        AddChatMessage(CreateViewModelFromNetworkMessage(message, false));
+                    }
+
+                    SaveChatMessageSafely(message, false, FindPeerForConnection(sourceConnection), sourceConnection);
+                    AddLog($"TCP受信メッセージ: {message.Body}", LogLevel.Success);
+                    AddConnectedPeerDisplay(sourceConnection);
+                });
+            }
+
+            if (_chatRole == ChatRole.Host && message.IsGroup)
             {
                 AddLog($"Host転送開始: From={message.SenderName}, MessageId={message.MessageId}");
                 await _chatConnectionManager.BroadcastExceptAsync(message, sourceConnection);
@@ -1343,6 +1481,7 @@ namespace direct_module
         {
             UpdateSelectedPeerDetails(PeerList.SelectedItem as PeerInfo);
             UpdateSendButtonState();
+            LoadChatHistory();
         }
 
         private void UpdatePeerCount()
@@ -1393,7 +1532,14 @@ namespace direct_module
 
             if (PeerList.SelectedItem is PeerInfo peer)
             {
-                canSend = PeerConnectionStateService.IsChatReady(peer) && GetConnectionForPeer(peer)?.IsReady == true;
+                if (peer.IsGroupChat)
+                {
+                    canSend = _chatConnectionManager.ConnectedCount > 0;
+                }
+                else
+                {
+                    canSend = PeerConnectionStateService.IsChatReady(peer) && GetConnectionForPeer(peer)?.IsReady == true;
+                }
             }
             else if (_chatRole == ChatRole.Host)
             {
@@ -1403,6 +1549,7 @@ namespace direct_module
             DispatcherQueue.TryEnqueue(() =>
             {
                 SendMessageButton.IsEnabled = canSend;
+                AttachFileButton.IsEnabled = canSend;
             });
 
             AddLog(
@@ -1416,6 +1563,7 @@ namespace direct_module
         private void UpdateReconnectButtonState()
         {
             bool canReconnect = PeerList.SelectedItem is PeerInfo peer &&
+                !peer.IsGroupChat &&
                 _peerConnectionStateService.CanReconnect(peer);
 
             DispatcherQueue.TryEnqueue(() =>
@@ -1426,6 +1574,7 @@ namespace direct_module
 
         private ChatConnection? GetConnectionForPeer(PeerInfo peer)
         {
+            if (peer.IsGroupChat) return null;
             return _chatConnectionManager.FindForPeer(peer);
         }
 
@@ -1443,6 +1592,10 @@ namespace direct_module
 
             foreach (PeerInfo existing in PeerList.Items.Cast<PeerInfo>())
             {
+                if (existing.IsGroupChat)
+                {
+                    continue;
+                }
                 string matchReason = PeerMergeService.GetMatchReason(existing, incoming);
                 if (string.IsNullOrEmpty(matchReason))
                 {
@@ -1477,7 +1630,7 @@ namespace direct_module
 
             var fallbackCandidates = PeerList.Items
                 .Cast<PeerInfo>()
-                .Where(existing => PeerMergeService.IsSingleCandidateFallback(existing, incoming))
+                .Where(existing => !existing.IsGroupChat && PeerMergeService.IsSingleCandidateFallback(existing, incoming))
                 .ToList();
 
             if (fallbackCandidates.Count == 1)
@@ -1521,6 +1674,10 @@ namespace direct_module
 
             foreach (PeerInfo peer in peers)
             {
+                if (peer.IsGroupChat)
+                {
+                    continue;
+                }
                 if (!peer.DiscoveredByWiFiDirect || peer.IsConnected)
                 {
                     continue;
@@ -1561,6 +1718,10 @@ namespace direct_module
 
             foreach (PeerInfo existing in PeerList.Items.Cast<PeerInfo>())
             {
+                if (existing.IsGroupChat)
+                {
+                    continue;
+                }
                 if (string.Equals(existing.RemoteIpAddress, connection.RemoteIpAddress, StringComparison.OrdinalIgnoreCase) ||
                     string.Equals(existing.DisplayName, displayName, StringComparison.OrdinalIgnoreCase))
                 {
@@ -1611,10 +1772,668 @@ namespace direct_module
             UpdateSendButtonState();
         }
 
-        private void AddChatMessage(string message)
+        private async System.Threading.Tasks.Task DisconnectPeerAsync(PeerInfo peer)
+        {
+            AddLog($"切断処理開始: Peer={peer.DisplayName}");
+            try
+            {
+                // 1. ChatConnection を閉じる
+                ChatConnection? connection = _chatConnectionManager.FindForPeer(peer);
+                if (connection != null)
+                {
+                    connection.Close();
+                    _chatConnectionManager.RemoveConnection(connection);
+                    AddLog($"ChatConnectionを閉じました: Peer={peer.DisplayName}");
+                }
+
+                // 2. Wi-Fi Directセッションを破棄
+                _manager.CloseSession(peer);
+
+                // 3. Peer状態を更新
+                peer.IsConnected = false;
+                peer.IsTcpConnected = false;
+                peer.IsHelloVerified = false;
+                peer.IsChatReady = false;
+                peer.StatusText = "切断";
+
+                RefreshPeerDisplay(peer);
+                AddLog($"切断処理完了: Peer={peer.DisplayName}", LogLevel.Success);
+            }
+            catch (Exception ex)
+            {
+                AddLog($"切断処理エラー: {ex.Message}", LogLevel.Error);
+            }
+        }
+
+        private void AddChatMessage(ChatMessageViewModel message)
         {
             MessageList.Items.Add(message);
             MessageList.ScrollIntoView(message);
+        }
+
+        private ChatMessageViewModel CreateViewModelFromNetworkMessage(ChatMessage message, bool isMine)
+        {
+            return new ChatMessageViewModel
+            {
+                SenderName = message.SenderName,
+                Body = message.Body,
+                TimeText = message.SentAt.ToString("HH:mm"),
+                IsMine = isMine,
+                IsGroup = message.IsGroup,
+                MessageType = "chat"
+            };
+        }
+
+        private ChatMessageViewModel CreateViewModelFromDbMessage(direct_module.Models.ChatMessage message)
+        {
+            return new ChatMessageViewModel
+            {
+                SenderName = message.SenderName,
+                Body = message.Message,
+                TimeText = message.SendTime.ToString("HH:mm"),
+                IsMine = message.IsMine,
+                IsGroup = message.IsGroup,
+                MessageType = message.MessageType,
+                FileId = message.FileId ?? "",
+                FileName = message.FileName ?? "",
+                FileSize = message.FileSize,
+                LocalFilePath = message.LocalFilePath ?? "",
+                MimeType = message.MimeType ?? "",
+                IsTransferring = false,
+                ProgressValue = 100
+            };
+        }
+
+        private void LoadChatHistory()
+        {
+            MessageList.Items.Clear();
+
+            if (PeerList.SelectedItem is not PeerInfo peer)
+            {
+                return;
+            }
+
+            string conversationId = peer.IsGroupChat ? "group" : PeerIdentityService.GetConnectionId(peer);
+            
+            if (_databaseService == null)
+            {
+                return;
+            }
+
+            try
+            {
+                var chatRepository = new ChatRepository(_databaseService);
+                var messages = chatRepository.GetMessages(conversationId);
+
+                foreach (var msg in messages)
+                {
+                    MessageList.Items.Add(CreateViewModelFromDbMessage(msg));
+                }
+
+                if (MessageList.Items.Count > 0)
+                {
+                    MessageList.ScrollIntoView(MessageList.Items[^1]);
+                }
+            }
+            catch (Exception ex)
+            {
+                AddLog($"履歴読み込み失敗: {ex.Message}", LogLevel.Error);
+            }
+        }
+
+        private async System.Threading.Tasks.Task SendFileAsync(string filePath, string fileName)
+        {
+            if (!System.IO.File.Exists(filePath))
+            {
+                AddLog($"ファイルが見つかりません: {filePath}", LogLevel.Error);
+                return;
+            }
+
+            var fileInfo = new System.IO.FileInfo(filePath);
+            const long MaxFileSize = 50 * 1024 * 1024; // 50MB limit
+            if (fileInfo.Length > MaxFileSize)
+            {
+                AddLog($"送信不可: ファイルサイズが上限(50MB)を超えています ({fileInfo.Length / (1024.0 * 1024.0):F1}MB)", LogLevel.Error);
+                return;
+            }
+
+            long fileSize = fileInfo.Length;
+            string fileId = Guid.NewGuid().ToString("N");
+            string mimeType = GetMimeType(fileName);
+            string msgType = mimeType.StartsWith("image/") ? "image" : "file";
+
+            AddLog($"添付送信開始: {fileName} ({fileSize / 1024.0:F1} KB)");
+
+            bool isGroup = false;
+            string conversationId = "";
+            PeerInfo? peer = null;
+            ChatConnection? connection = null;
+
+            if (PeerList.SelectedItem is PeerInfo selectedPeer)
+            {
+                if (selectedPeer.IsGroupChat)
+                {
+                    isGroup = true;
+                    conversationId = "group";
+                }
+                else
+                {
+                    isGroup = false;
+                    conversationId = PeerIdentityService.GetConnectionId(selectedPeer);
+                    peer = selectedPeer;
+                    connection = GetConnectionForPeer(selectedPeer);
+                }
+            }
+
+            var viewModel = new ChatMessageViewModel
+            {
+                SenderName = Environment.MachineName,
+                Body = $"[添付ファイル] {fileName}",
+                TimeText = DateTime.Now.ToString("HH:mm"),
+                IsMine = true,
+                IsGroup = isGroup,
+                MessageType = msgType,
+                FileId = fileId,
+                FileName = fileName,
+                FileSize = fileSize,
+                LocalFilePath = filePath,
+                MimeType = mimeType,
+                IsTransferring = true,
+                ProgressValue = 0,
+                ProgressText = "準備中..."
+            };
+
+            AddChatMessage(viewModel);
+
+            var dbMsg = new direct_module.Models.ChatMessage
+            {
+                ConversationId = conversationId,
+                SenderId = LocalPeerId,
+                SenderName = Environment.MachineName,
+                ReceiverId = isGroup ? "group" : (peer != null ? PeerIdentityService.GetConnectionId(peer) : "unknown"),
+                ReceiverName = isGroup ? "Group" : (peer != null ? peer.DisplayName : "Unknown"),
+                Message = $"[添付ファイル] {fileName}",
+                SendTime = DateTime.Now,
+                IsMine = true,
+                MessageType = msgType,
+                FileId = fileId,
+                FileName = fileName,
+                FileSize = fileSize,
+                LocalFilePath = filePath,
+                MimeType = mimeType,
+                IsGroup = isGroup
+            };
+
+            if (_databaseService != null)
+            {
+                var chatRepository = new ChatRepository(_databaseService);
+                chatRepository.SaveMessage(dbMsg);
+            }
+
+            _ = System.Threading.Tasks.Task.Run(async () =>
+            {
+                try
+                {
+                    var startMsg = new ChatMessage
+                    {
+                        Type = "file_start",
+                        SenderId = LocalPeerId,
+                        SenderName = Environment.MachineName,
+                        ShortSessionId = GetLocalShortSessionId(),
+                        IsGroup = isGroup,
+                        ConversationId = conversationId,
+                        FileId = fileId,
+                        FileName = fileName,
+                        FileSize = fileSize,
+                        MimeType = mimeType,
+                        Body = ""
+                    };
+
+                    await SendNetworkMessageAsync(startMsg, isGroup, connection);
+
+                    const int ChunkSize = 256 * 1024; // 256KB chunks
+                    int chunkCount = (int)Math.Ceiling((double)fileSize / ChunkSize);
+                    if (chunkCount == 0) chunkCount = 1;
+
+                    byte[] buffer = new byte[ChunkSize];
+                    using (var fileStream = new System.IO.FileStream(filePath, System.IO.FileMode.Open, System.IO.FileAccess.Read, System.IO.FileShare.Read))
+                    {
+                        for (int i = 0; i < chunkCount; i++)
+                        {
+                            int bytesRead = await fileStream.ReadAsync(buffer, 0, ChunkSize);
+                            byte[] actualChunk = new byte[bytesRead];
+                            Array.Copy(buffer, actualChunk, bytesRead);
+
+                            var chunkMsg = new ChatMessage
+                            {
+                                Type = "file_chunk",
+                                SenderId = LocalPeerId,
+                                SenderName = Environment.MachineName,
+                                ShortSessionId = GetLocalShortSessionId(),
+                                IsGroup = isGroup,
+                                ConversationId = conversationId,
+                                FileId = fileId,
+                                ChunkIndex = i,
+                                ChunkCount = chunkCount,
+                                ChunkBase64 = Convert.ToBase64String(actualChunk),
+                                Body = ""
+                            };
+
+                            await SendNetworkMessageAsync(chunkMsg, isGroup, connection);
+
+                            double pct = (double)(i + 1) / chunkCount * 100.0;
+                            DispatcherQueue.TryEnqueue(() =>
+                            {
+                                viewModel.ProgressValue = pct;
+                                viewModel.ProgressText = $"送信中... {pct:F0}%";
+                            });
+                        }
+                    }
+
+                    var endMsg = new ChatMessage
+                    {
+                        Type = "file_end",
+                        SenderId = LocalPeerId,
+                        SenderName = Environment.MachineName,
+                        ShortSessionId = GetLocalShortSessionId(),
+                        IsGroup = isGroup,
+                        ConversationId = conversationId,
+                        FileId = fileId,
+                        FileName = fileName,
+                        FileSize = fileSize,
+                        MimeType = mimeType,
+                        Body = ""
+                    };
+
+                    await SendNetworkMessageAsync(endMsg, isGroup, connection);
+
+                    DispatcherQueue.TryEnqueue(() =>
+                    {
+                        viewModel.IsTransferring = false;
+                        viewModel.ProgressValue = 100;
+                        viewModel.ProgressText = "送信完了";
+                    });
+
+                    AddLog($"添付送信完了: {fileName}", LogLevel.Success);
+                }
+                catch (Exception ex)
+                {
+                    DispatcherQueue.TryEnqueue(() =>
+                    {
+                        viewModel.IsTransferring = false;
+                        viewModel.ProgressText = "送信失敗";
+                        AddLog($"添付送信失敗: {fileName}. エラー: {ex.Message}", LogLevel.Error);
+                    });
+                }
+            });
+        }
+
+        private async System.Threading.Tasks.Task SendNetworkMessageAsync(ChatMessage msg, bool isGroup, ChatConnection? peerConnection)
+        {
+            if (isGroup)
+            {
+                if (_chatRole == ChatRole.Host)
+                {
+                    await _chatConnectionManager.BroadcastAsync(msg);
+                }
+                else
+                {
+                    var hostConn = _chatConnectionManager.Connections.FirstOrDefault(c => c.IsConnected && c.IsReady);
+                    if (hostConn == null)
+                    {
+                        throw new InvalidOperationException("Host接続が見つかりません。");
+                    }
+                    await hostConn.SendAsync(msg);
+                }
+            }
+            else
+            {
+                if (peerConnection == null || !peerConnection.IsConnected)
+                {
+                    throw new InvalidOperationException("送信先への接続がありません。");
+                }
+                await peerConnection.SendAsync(msg);
+            }
+        }
+
+        private static string GetMimeType(string fileName)
+        {
+            string ext = System.IO.Path.GetExtension(fileName).ToLowerInvariant();
+            return ext switch
+            {
+                ".png" => "image/png",
+                ".jpg" or ".jpeg" => "image/jpeg",
+                ".gif" => "image/gif",
+                ".bmp" => "image/bmp",
+                ".webp" => "image/webp",
+                ".pdf" => "application/pdf",
+                ".txt" => "text/plain",
+                ".zip" => "application/zip",
+                _ => "application/octet-stream"
+            };
+        }
+
+        private static string GetUniqueFilePath(string directory, string fileName)
+        {
+            string fullPath = System.IO.Path.Combine(directory, fileName);
+            if (!System.IO.File.Exists(fullPath))
+            {
+                return fullPath;
+            }
+
+            string nameOnly = System.IO.Path.GetFileNameWithoutExtension(fileName);
+            string extension = System.IO.Path.GetExtension(fileName);
+            int count = 1;
+
+            while (System.IO.File.Exists(fullPath))
+            {
+                fullPath = System.IO.Path.Combine(directory, $"{nameOnly}({count}){extension}");
+                count++;
+            }
+
+            return fullPath;
+        }
+
+        private string GetAttachmentsDirectory()
+        {
+            string dbDir = System.IO.Path.GetDirectoryName(_databaseService?.DatabasePath ?? System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "AppData", "Local", "direct_module", "chat.db"))!;
+            return System.IO.Path.Combine(dbDir, "attachments");
+        }
+
+        private async System.Threading.Tasks.Task HandleFileStartAsync(ChatMessage message, ChatConnection sourceConnection)
+        {
+            if (string.IsNullOrWhiteSpace(message.FileId)) return;
+
+            string fileId = message.FileId;
+            string fileName = message.FileName ?? "unknown";
+            long fileSize = message.FileSize ?? 0;
+            string mimeType = message.MimeType ?? "application/octet-stream";
+            string msgType = mimeType.StartsWith("image/") ? "image" : "file";
+
+            AddLog($"添付受信開始: {fileName} ({fileSize / 1024.0:F1} KB)");
+
+            string attachmentsDir = GetAttachmentsDirectory();
+            System.IO.Directory.CreateDirectory(attachmentsDir);
+            string partFilePath = System.IO.Path.Combine(attachmentsDir, fileId + ".part");
+
+            if (System.IO.File.Exists(partFilePath))
+            {
+                System.IO.File.Delete(partFilePath);
+            }
+
+            var session = new IncomingFileSession
+            {
+                FileId = fileId,
+                FileName = fileName,
+                FileSize = fileSize,
+                MimeType = mimeType,
+                PartFilePath = partFilePath
+            };
+
+            bool isCurrent = false;
+            if (PeerList.SelectedItem is PeerInfo activePeer)
+            {
+                if (message.IsGroup && activePeer.IsGroupChat) isCurrent = true;
+                else if (!message.IsGroup && !activePeer.IsGroupChat && string.Equals(PeerIdentityService.GetConnectionId(activePeer), message.ConversationId, StringComparison.OrdinalIgnoreCase)) isCurrent = true;
+            }
+
+            if (isCurrent)
+            {
+                var viewModel = new ChatMessageViewModel
+                {
+                    SenderName = message.SenderName,
+                    Body = $"[添付ファイル] {fileName}",
+                    TimeText = DateTime.Now.ToString("HH:mm"),
+                    IsMine = false,
+                    IsGroup = message.IsGroup,
+                    MessageType = msgType,
+                    FileId = fileId,
+                    FileName = fileName,
+                    FileSize = fileSize,
+                    MimeType = mimeType,
+                    IsTransferring = true,
+                    ProgressValue = 0,
+                    ProgressText = "受信中... 0%"
+                };
+                session.ViewModel = viewModel;
+                AddChatMessage(viewModel);
+            }
+
+            lock (_incomingFiles)
+            {
+                _incomingFiles[fileId] = session;
+            }
+        }
+
+        private async System.Threading.Tasks.Task HandleFileChunkAsync(ChatMessage message, ChatConnection sourceConnection)
+        {
+            if (string.IsNullOrWhiteSpace(message.FileId) || string.IsNullOrWhiteSpace(message.ChunkBase64)) return;
+
+            string fileId = message.FileId;
+            int chunkIndex = message.ChunkIndex ?? 0;
+            int chunkCount = message.ChunkCount ?? 1;
+
+            IncomingFileSession? session;
+            lock (_incomingFiles)
+            {
+                _incomingFiles.TryGetValue(fileId, out session);
+            }
+
+            if (session == null)
+            {
+                return;
+            }
+
+            try
+            {
+                byte[] chunkData = Convert.FromBase64String(message.ChunkBase64);
+
+                using (var fs = new System.IO.FileStream(session.PartFilePath, System.IO.FileMode.OpenOrCreate, System.IO.FileAccess.Write, System.IO.FileShare.ReadWrite))
+                {
+                    fs.Seek(0, System.IO.SeekOrigin.End);
+                    await fs.WriteAsync(chunkData, 0, chunkData.Length);
+                }
+
+                session.LastChunkIndex = chunkIndex;
+
+                if (session.ViewModel != null)
+                {
+                    double pct = (double)(chunkIndex + 1) / chunkCount * 100.0;
+                    DispatcherQueue.TryEnqueue(() =>
+                    {
+                        session.ViewModel.ProgressValue = pct;
+                        session.ViewModel.ProgressText = $"受信中... {pct:F0}%";
+                    });
+                }
+            }
+            catch (Exception ex)
+            {
+                AddLog($"チャンク書き込みエラー: {ex.Message}", LogLevel.Error);
+            }
+        }
+
+        private async System.Threading.Tasks.Task HandleFileEndAsync(ChatMessage message, ChatConnection sourceConnection)
+        {
+            if (string.IsNullOrWhiteSpace(message.FileId)) return;
+
+            string fileId = message.FileId;
+
+            IncomingFileSession? session;
+            lock (_incomingFiles)
+            {
+                _incomingFiles.TryGetValue(fileId, out session);
+                if (session != null)
+                {
+                    _incomingFiles.Remove(fileId);
+                }
+            }
+
+            if (session == null)
+            {
+                return;
+            }
+
+            try
+            {
+                string attachmentsDir = GetAttachmentsDirectory();
+                string finalPath = GetUniqueFilePath(attachmentsDir, session.FileName);
+
+                if (System.IO.File.Exists(session.PartFilePath))
+                {
+                    System.IO.File.Move(session.PartFilePath, finalPath);
+                }
+                else
+                {
+                    AddLog($"一時ファイルが見つかりません: {session.PartFilePath}", LogLevel.Error);
+                    return;
+                }
+
+                AddLog($"添付受信完了: {session.FileName} -> {finalPath}", LogLevel.Success);
+
+                string senderPeerId = message.SenderId;
+                string senderName = message.SenderName;
+                string convId = message.IsGroup ? "group" : message.ConversationId;
+
+                var dbMsg = new direct_module.Models.ChatMessage
+                {
+                    ConversationId = convId,
+                    SenderId = senderPeerId,
+                    SenderName = senderName,
+                    ReceiverId = message.IsGroup ? "group" : LocalPeerId,
+                    ReceiverName = message.IsGroup ? "Group" : Environment.MachineName,
+                    Message = $"[添付ファイル] {session.FileName}",
+                    SendTime = DateTime.Now,
+                    IsMine = false,
+                    MessageType = session.MimeType.StartsWith("image/") ? "image" : "file",
+                    FileId = fileId,
+                    FileName = session.FileName,
+                    FileSize = session.FileSize,
+                    LocalFilePath = finalPath,
+                    MimeType = session.MimeType,
+                    IsGroup = message.IsGroup
+                };
+
+                if (_databaseService != null)
+                {
+                    var chatRepository = new ChatRepository(_databaseService);
+                    chatRepository.SaveMessage(dbMsg);
+                }
+
+                if (session.ViewModel != null)
+                {
+                    DispatcherQueue.TryEnqueue(() =>
+                    {
+                        session.ViewModel.LocalFilePath = finalPath;
+                        session.ViewModel.IsTransferring = false;
+                        session.ViewModel.ProgressValue = 100;
+                        session.ViewModel.ProgressText = "受信完了";
+                        RefreshMessageListDisplay();
+                    });
+                }
+            }
+            catch (Exception ex)
+            {
+                AddLog($"ファイル受信完了処理エラー: {ex.Message}", LogLevel.Error);
+                if (session.ViewModel != null)
+                {
+                    DispatcherQueue.TryEnqueue(() =>
+                    {
+                        session.ViewModel.IsTransferring = false;
+                        session.ViewModel.ProgressText = "受信失敗";
+                    });
+                }
+            }
+        }
+
+        private async void AttachFileButton_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                var picker = new Windows.Storage.Pickers.FileOpenPicker();
+                picker.FileTypeFilter.Add("*");
+                
+                var windowHandle = WinRT.Interop.WindowNative.GetWindowHandle(this);
+                WinRT.Interop.InitializeWithWindow.Initialize(picker, windowHandle);
+
+                var files = await picker.PickMultipleFilesAsync();
+                if (files != null && files.Count > 0)
+                {
+                    foreach (var file in files)
+                    {
+                        await SendFileAsync(file.Path, file.Name);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                AddLog($"ファイル選択エラー: {ex.Message}", LogLevel.Error);
+            }
+        }
+
+        private async void MessageTextBox_Paste(object sender, TextControlPasteEventArgs e)
+        {
+            var dataPackageView = Windows.ApplicationModel.DataTransfer.Clipboard.GetContent();
+            if (dataPackageView.Contains(Windows.ApplicationModel.DataTransfer.StandardDataFormats.Bitmap))
+            {
+                e.Handled = true; // prevent text paste of image
+                
+                try
+                {
+                    var imageStreamRef = await dataPackageView.GetBitmapAsync();
+                    using var imageStream = await imageStreamRef.OpenReadAsync();
+                    
+                    string attachmentsDir = GetAttachmentsDirectory();
+                    System.IO.Directory.CreateDirectory(attachmentsDir);
+                    
+                    string tempFileName = $"clipboard_{DateTime.Now:yyyyMMdd_HHmmss}.png";
+                    string tempFilePath = System.IO.Path.Combine(attachmentsDir, tempFileName);
+                    
+                    using (var fileStream = new System.IO.FileStream(tempFilePath, System.IO.FileMode.Create, System.IO.FileAccess.Write))
+                    {
+                        using (var stream = imageStream.AsStreamForRead())
+                        {
+                            await stream.CopyToAsync(fileStream);
+                        }
+                    }
+                    
+                    AddLog($"クリップボード画像を取得しました: {tempFileName}");
+                    await SendFileAsync(tempFilePath, tempFileName);
+                }
+                catch (Exception ex)
+                {
+                    AddLog($"クリップボード画像取得エラー: {ex.Message}", LogLevel.Error);
+                }
+            }
+        }
+
+        private async void OpenFileButton_Click(object sender, RoutedEventArgs e)
+        {
+            if ((sender as FrameworkElement)?.DataContext is not ChatMessageViewModel viewModel)
+            {
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(viewModel.LocalFilePath) || !System.IO.File.Exists(viewModel.LocalFilePath))
+            {
+                AddLog($"ファイルが見つかりません: {viewModel.LocalFilePath}", LogLevel.Error);
+                return;
+            }
+
+            try
+            {
+                var file = await Windows.Storage.StorageFile.GetFileFromPathAsync(viewModel.LocalFilePath);
+                await Windows.System.Launcher.LaunchFileAsync(file);
+                AddLog($"ファイルを開きました: {viewModel.FileName}");
+            }
+            catch (Exception ex)
+            {
+                AddLog($"ファイルオープン失敗: {ex.Message}", LogLevel.Error);
+            }
+        }
+
+        private void RefreshMessageListDisplay()
+        {
+            // Binding triggers update automatically through INotifyPropertyChanged.
         }
 
         private void SaveChatMessageSafely(ChatMessage message, bool isOutgoing, PeerInfo? peer, ChatConnection? connection)

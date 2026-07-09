@@ -1,4 +1,4 @@
-﻿using Microsoft.Data.Sqlite;
+using Microsoft.Data.Sqlite;
 using System;
 using System.Diagnostics;
 using System.IO;
@@ -76,7 +76,37 @@ CREATE TABLE IF NOT EXISTS ChatMessages
 
             command.ExecuteNonQuery();
 
-            Debug.WriteLine("SQLite初期化完了");
+            // Perform migrations for new columns
+            string[] alterQueries = new[]
+            {
+                "ALTER TABLE ChatMessages ADD COLUMN MessageType TEXT DEFAULT 'chat';",
+                "ALTER TABLE ChatMessages ADD COLUMN FileId TEXT;",
+                "ALTER TABLE ChatMessages ADD COLUMN FileName TEXT;",
+                "ALTER TABLE ChatMessages ADD COLUMN FileSize INTEGER DEFAULT 0;",
+                "ALTER TABLE ChatMessages ADD COLUMN LocalFilePath TEXT;",
+                "ALTER TABLE ChatMessages ADD COLUMN MimeType TEXT;",
+                "ALTER TABLE ChatMessages ADD COLUMN IsGroup INTEGER DEFAULT 0;"
+            };
+
+            foreach (var query in alterQueries)
+            {
+                try
+                {
+                    using var alterCommand = connection.CreateCommand();
+                    alterCommand.CommandText = query;
+                    alterCommand.ExecuteNonQuery();
+                }
+                catch (SqliteException ex) when (ex.SqliteErrorCode == 1) // SQLITE_ERROR (column already exists)
+                {
+                    // Column already exists, ignore
+                }
+                catch (Exception ex)
+                {
+                    Debug.WriteLine($"Migration error for query '{query}': {ex.Message}");
+                }
+            }
+
+            Debug.WriteLine("SQLite初期化およびマイグレーション完了");
         }
 
         private static string ResolveDatabasePath()

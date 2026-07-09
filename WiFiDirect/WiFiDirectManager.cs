@@ -1,5 +1,7 @@
 using direct_module.WiFiDirect.Models;
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Threading.Tasks;
 using Windows.Devices.WiFiDirect;
 
@@ -11,6 +13,7 @@ namespace direct_module.WiFiDirect
         private readonly WiFiDirectAdvertiser _advertiser;
         private readonly WiFiDirectConnector _connector;
         private readonly WiFiDirectScanner _scanner;
+        private readonly List<WiFiDirectSession> _activeSessions = new();
 
         public event Action<string>? LogReceived;
         public event Action<PeerInfo>? ConnectionRequested;
@@ -141,8 +144,33 @@ namespace direct_module.WiFiDirect
 
         private void OnConnectorConnected(WiFiDirectSession session)
         {
+            lock (_activeSessions)
+            {
+                _activeSessions.Add(session);
+            }
             LogReceived?.Invoke($"Manager: 接続完了 {session.Peer.DisplayName}");
             Connected?.Invoke(session.Peer);
+        }
+
+        public void CloseSession(PeerInfo peer)
+        {
+            lock (_activeSessions)
+            {
+                var session = _activeSessions.FirstOrDefault(s => s.Peer == peer || s.Peer.DeviceId == peer.DeviceId || (!string.IsNullOrEmpty(peer.RemoteIpAddress) && s.Peer.RemoteIpAddress == peer.RemoteIpAddress));
+                if (session != null)
+                {
+                    try
+                    {
+                        session.Dispose();
+                    }
+                    catch (Exception ex)
+                    {
+                        LogReceived?.Invoke($"Manager: Session dispose error: {ex.Message}");
+                    }
+                    _activeSessions.Remove(session);
+                    LogReceived?.Invoke($"Manager: WiFiDirectSessionを破棄しました {peer.DisplayName}");
+                }
+            }
         }
 
         private void OnScannerPeerFound(PeerInfo peer)

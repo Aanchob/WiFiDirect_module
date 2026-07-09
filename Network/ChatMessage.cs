@@ -29,5 +29,11 @@ namespace direct_module.Network
         public int? ChunkCount { get; set; }
 
         public string? ChunkBase64 { get; set; }
+
+        public bool IsGroup { get; set; }
+
+        public string ConversationId { get; set; } = "";
+
+        public string? MimeType { get; set; }
     }
 }
