@@ -371,6 +371,9 @@ namespace direct_module
                 RefreshPeerDisplay(peer);
 
                 AddLog($"Wi-Fi Direct接続開始: {peer.DisplayText}");
+                _manager.StopScan();
+                await System.Threading.Tasks.Task.Delay(WiFiDirectScanRestartDelay);
+
                 connectAttempted = true;
                 await _manager.ConnectAsync(peer);
             }
@@ -402,6 +405,8 @@ namespace direct_module
             if (HasUsableWiFiDirectCandidate(peer))
             {
                 AddLog($"Wi-Fi Direct candidate is already available. Reusing DeviceId={peer.DeviceId}", LogLevel.Debug);
+                _manager.StopScan();
+                await System.Threading.Tasks.Task.Delay(WiFiDirectScanRestartDelay);
                 return true;
             }
 
@@ -419,6 +424,8 @@ namespace direct_module
             if (await WaitForWiFiDirectCandidateAsync(peer, WiFiDirectCandidateRefreshTimeout))
             {
                 AddLog($"Wi-Fi Direct候補再取得: Peer={peer.DisplayName}, DeviceId={peer.DeviceId}", LogLevel.Success);
+                _manager.StopScan();
+                await System.Threading.Tasks.Task.Delay(WiFiDirectScanRestartDelay);
                 return true;
             }
 

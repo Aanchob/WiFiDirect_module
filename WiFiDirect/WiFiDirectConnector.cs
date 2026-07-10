@@ -52,7 +52,7 @@ namespace direct_module.WiFiDirect
                     return;
                 }
 
-                WiFiDirectDevice? device = await CreateDeviceFromIdAsync(peer.DeviceId, "FromIdAsync", "Target");
+                WiFiDirectDevice? device = await CreateDeviceFromIdAsync(peer.DeviceId, "FromIdAsync", "Target", preferClientRole: true);
 
                 if (device == null)
                 {
@@ -79,7 +79,7 @@ namespace direct_module.WiFiDirect
                 try
                 {
                     LogReceived?.Invoke($"Wi-Fi Direct接続試行: Attempt={attempt}/{ConnectRetryCount}");
-                    WiFiDirectDevice? device = await CreateDeviceFromIdAsync(peer.DeviceId, "FromIdAsync", "Target");
+                    WiFiDirectDevice? device = await CreateDeviceFromIdAsync(peer.DeviceId, "FromIdAsync", "Target", preferClientRole: true);
 
                     if (device == null)
                     {
@@ -169,7 +169,8 @@ namespace direct_module.WiFiDirect
         private async Task<WiFiDirectDevice?> CreateDeviceFromIdAsync(
             string deviceId,
             string operationName,
-            string logPrefix)
+            string logPrefix,
+            bool preferClientRole = false)
         {
             bool completed = false;
 
@@ -185,7 +186,22 @@ namespace direct_module.WiFiDirect
 
             try
             {
-                WiFiDirectDevice? device = await WiFiDirectDevice.FromIdAsync(deviceId);
+                WiFiDirectDevice? device;
+                if (preferClientRole)
+                {
+                    var parameters = new WiFiDirectConnectionParameters
+                    {
+                        GroupOwnerIntent = 0
+                    };
+
+                    LogReceived?.Invoke("Wi-Fi Direct connection parameters: GroupOwnerIntent=0");
+                    device = await WiFiDirectDevice.FromIdAsync(deviceId, parameters);
+                }
+                else
+                {
+                    device = await WiFiDirectDevice.FromIdAsync(deviceId);
+                }
+
                 completed = true;
 
                 LogReceived?.Invoke(device == null
