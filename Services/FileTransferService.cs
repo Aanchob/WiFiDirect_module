@@ -27,17 +27,23 @@ namespace direct_module.Services
     {
         private const long MaxFileSize = 50 * 1024 * 1024;
         private const int ChunkSize = 128 * 1024;
+        private static readonly TimeSpan AttachmentRetention = TimeSpan.FromDays(30);
+        private static readonly TimeSpan PartialFileRetention = TimeSpan.FromDays(1);
 
         private readonly Dictionary<string, IncomingFileSession> _incomingFiles = new(StringComparer.OrdinalIgnoreCase);
         private readonly string _attachmentsDirectory;
+        private readonly string _downloadsDirectory;
 
         public FileTransferService()
         {
             _attachmentsDirectory = ResolveAttachmentsDirectory();
+            _downloadsDirectory = ResolveDownloadsDirectory();
             EnsureAttachmentsDirectory();
         }
 
         public string AttachmentsDirectory => _attachmentsDirectory;
+
+        public string DownloadsDirectory => _downloadsDirectory;
 
         public event Action<string>? LogReceived;
         public event Action<FileTransferProgress>? ProgressChanged;
@@ -46,6 +52,22 @@ namespace direct_module.Services
         {
             EnsureAttachmentsDirectory();
             LogReceived?.Invoke($"Attachments directory ready: {_attachmentsDirectory}");
+            CleanupTemporaryFiles();
+        }
+
+        public string SaveToDownloads(string localFilePath, string fileName)
+        {
+            if (string.IsNullOrWhiteSpace(localFilePath) || !File.Exists(localFilePath))
+            {
+                throw new FileNotFoundException("Attachment file was not found.", localFilePath);
+            }
+
+            Directory.CreateDirectory(_downloadsDirectory);
+            string safeName = SafeFileName(fileName);
+            string destinationPath = GetUniqueFilePath(_downloadsDirectory, safeName);
+            File.Copy(localFilePath, destinationPath);
+            LogReceived?.Invoke($"Attachment saved to Downloads: {destinationPath}");
+            return destinationPath;
         }
 
         public async Task SendFileAsync(
@@ -328,6 +350,17 @@ namespace direct_module.Services
 
         private static string ResolveAttachmentsDirectory()
         {
+            string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            if (string.IsNullOrWhiteSpace(localAppData))
+            {
+                localAppData = AppContext.BaseDirectory;
+            }
+
+            return Path.Combine(localAppData, "direct_module", "Attachments");
+        }
+
+        private static string ResolveDownloadsDirectory()
+        {
             string userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
             string downloadsDirectory = string.IsNullOrWhiteSpace(userProfile)
                 ? ""
@@ -344,6 +377,45 @@ namespace direct_module.Services
             }
 
             return downloadsDirectory;
+        }
+
+        private void CleanupTemporaryFiles()
+        {
+            if (!Directory.Exists(_attachmentsDirectory))
+            {
+                return;
+            }
+
+            DateTime now = DateTime.UtcNow;
+            int deleted = 0;
+
+            foreach (string filePath in Directory.EnumerateFiles(_attachmentsDirectory))
+            {
+                try
+                {
+                    var fileInfo = new FileInfo(filePath);
+                    TimeSpan age = now - fileInfo.LastWriteTimeUtc;
+                    bool isPartial = string.Equals(fileInfo.Extension, ".part", StringComparison.OrdinalIgnoreCase);
+                    TimeSpan retention = isPartial ? PartialFileRetention : AttachmentRetention;
+
+                    if (age <= retention)
+                    {
+                        continue;
+                    }
+
+                    fileInfo.Delete();
+                    deleted++;
+                }
+                catch (Exception ex)
+                {
+                    LogReceived?.Invoke($"Attachment cleanup skipped: {Path.GetFileName(filePath)} ({ex.GetType().Name})");
+                }
+            }
+
+            if (deleted > 0)
+            {
+                LogReceived?.Invoke($"Attachment cleanup completed: {deleted} file(s) deleted");
+            }
         }
 
         private static async Task WaitForExpectedChunksAsync(IncomingFileSession session)

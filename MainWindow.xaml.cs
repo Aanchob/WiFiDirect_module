@@ -105,7 +105,8 @@ namespace direct_module
             _fileTransferService.LogReceived += OnLogReceived;
             _fileTransferService.ProgressChanged += OnFileTransferProgressChanged;
             _fileTransferService.EnsureStorageReady();
-            AddLog($"添付ファイル保存先: {_fileTransferService.AttachmentsDirectory}");
+            AddLog($"添付ファイル一時保存先: {_fileTransferService.AttachmentsDirectory}");
+            AddLog($"添付ファイルDownloads保存先: {_fileTransferService.DownloadsDirectory}");
             Closed += MainWindow_Closed;
 
             AddGroupChatPeer();
@@ -632,6 +633,27 @@ namespace direct_module
             catch (Exception ex)
             {
                 AddLog($"ファイルを開けませんでした: {ex.Message}", LogLevel.Error);
+            }
+        }
+
+        private void SaveAttachmentButton_Click(object sender, RoutedEventArgs e)
+        {
+            if ((sender as FrameworkElement)?.DataContext is not ChatMessageItem item ||
+                string.IsNullOrWhiteSpace(item.LocalFilePath) ||
+                !System.IO.File.Exists(item.LocalFilePath))
+            {
+                AddLog("保存するファイルが見つかりません。", LogLevel.Error);
+                return;
+            }
+
+            try
+            {
+                string savedPath = _fileTransferService.SaveToDownloads(item.LocalFilePath, item.FileName);
+                AddLog($"ファイルをDownloadsに保存しました: {savedPath}", LogLevel.Success);
+            }
+            catch (Exception ex)
+            {
+                AddLog($"ファイルを保存できませんでした: {ex.Message}", LogLevel.Error);
             }
         }
 

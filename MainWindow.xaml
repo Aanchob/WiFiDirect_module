@@ -362,11 +362,19 @@
                                                 Source="{Binding ImageSource}"
                                                 Stretch="Uniform"
                                                 Visibility="{Binding ImageVisibility}" />
-                                            <Button
-                                                Click="OpenAttachmentButton_Click"
-                                                Content="開く"
-                                                Style="{StaticResource GhostButtonStyle}"
-                                                Visibility="{Binding FileButtonVisibility}" />
+                                            <StackPanel
+                                                Orientation="Horizontal"
+                                                Spacing="8"
+                                                Visibility="{Binding FileButtonVisibility}">
+                                                <Button
+                                                    Click="OpenAttachmentButton_Click"
+                                                    Content="開く"
+                                                    Style="{StaticResource GhostButtonStyle}" />
+                                                <Button
+                                                    Click="SaveAttachmentButton_Click"
+                                                    Content="保存"
+                                                    Style="{StaticResource GhostButtonStyle}" />
+                                            </StackPanel>
                                         </StackPanel>
                                     </Border>
                                 </Grid>
