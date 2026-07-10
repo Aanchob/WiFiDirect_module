@@ -14,6 +14,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
+using System.Threading;
 using Windows.Graphics;
 using Windows.Networking.Sockets;
 using Windows.System;
@@ -55,6 +56,7 @@ namespace direct_module
         private readonly ConnectionRoleService _connectionRoleService;
         private readonly PeerConnectionStateService _peerConnectionStateService;
         private readonly FileTransferService _fileTransferService = new();
+        private readonly SemaphoreSlim _fileTransferReceiveGate = new(1, 1);
         private bool _isAutonomousGoAdvertisementEnabled;
         private string _activeBleRolePeerKey = "";
         private bool? _activeBleRoleIsGo;
@@ -1159,10 +1161,7 @@ namespace direct_module
                 case "file_start":
                 case "file_chunk":
                 case "file_end":
-                    DispatcherQueue.TryEnqueue(async () =>
-                    {
-                        await HandleFileTransferMessageAsync(message, sourceConnection);
-                    });
+                    _ = ProcessFileTransferMessageAsync(message, sourceConnection);
                     return;
 
                 default:
@@ -1186,6 +1185,19 @@ namespace direct_module
                 AddLog($"Host転送開始: From={message.SenderName}, MessageId={message.MessageId}");
                 await _chatConnectionManager.BroadcastExceptAsync(message, sourceConnection);
                 AddLog("Host転送完了");
+            }
+        }
+
+        private async System.Threading.Tasks.Task ProcessFileTransferMessageAsync(ChatMessage message, ChatConnection sourceConnection)
+        {
+            await _fileTransferReceiveGate.WaitAsync();
+            try
+            {
+                await HandleFileTransferMessageAsync(message, sourceConnection);
+            }
+            finally
+            {
+                _fileTransferReceiveGate.Release();
             }
         }
 
@@ -1215,31 +1227,34 @@ namespace direct_module
 
                 if (displayResult != null && !string.IsNullOrWhiteSpace(displayResult.Message))
                 {
-                    AddFileChatMessage(
-                        $"{message.SenderName}: {displayResult.Message}",
-                        displayResult.FileName,
-                        displayResult.LocalFilePath);
-
-                    if (string.Equals(message.Type, "file_end", StringComparison.OrdinalIgnoreCase))
+                    DispatcherQueue.TryEnqueue(() =>
                     {
-                        var historyMessage = new ChatMessage
-                        {
-                            Type = "chat",
-                            SenderId = message.SenderId,
-                            SenderName = message.SenderName,
-                            ShortSessionId = message.ShortSessionId,
-                            Body = $"[ファイル] {message.FileName}",
-                            IsGroup = message.IsGroup,
-                            ConversationId = message.ConversationId
-                        };
+                        AddFileChatMessage(
+                            $"{message.SenderName}: {displayResult.Message}",
+                            displayResult.FileName,
+                            displayResult.LocalFilePath);
 
-                        SaveChatMessageSafely(historyMessage, false, FindPeerForConnection(sourceConnection), sourceConnection);
-                    }
+                        if (string.Equals(message.Type, "file_end", StringComparison.OrdinalIgnoreCase))
+                        {
+                            var historyMessage = new ChatMessage
+                            {
+                                Type = "chat",
+                                SenderId = message.SenderId,
+                                SenderName = message.SenderName,
+                                ShortSessionId = message.ShortSessionId,
+                                Body = $"[ファイル] {message.FileName}",
+                                IsGroup = message.IsGroup,
+                                ConversationId = message.ConversationId
+                            };
+
+                            SaveChatMessageSafely(historyMessage, false, FindPeerForConnection(sourceConnection), sourceConnection);
+                        }
+                    });
                 }
             }
             catch (Exception ex)
             {
-                AddLog($"ファイル受信処理に失敗しました: {ex.Message}", LogLevel.Error);
+                EnqueueLog($"ファイル受信処理に失敗しました: {ex.Message}", LogLevel.Error);
             }
         }
 
@@ -2005,7 +2020,15 @@ namespace direct_module
         private void OnFileTransferProgressChanged(FileTransferProgress progress)
         {
             string status = progress.IsComplete ? "完了" : $"{progress.Percent:F0}%";
-            AddLog($"File transfer: {progress.FileName} {status}", LogLevel.Debug);
+            EnqueueLog($"File transfer: {progress.FileName} {status}", LogLevel.Debug);
+        }
+
+        private void EnqueueLog(string message, LogLevel level = LogLevel.Info)
+        {
+            DispatcherQueue.TryEnqueue(() =>
+            {
+                AddLog(message, level);
+            });
         }
 
         private void SaveChatMessageSafely(ChatMessage message, bool isOutgoing, PeerInfo? peer, ChatConnection? connection)
