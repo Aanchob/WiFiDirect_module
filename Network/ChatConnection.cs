@@ -1,5 +1,6 @@
 using direct_module.Crypto;
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Security.Cryptography;
@@ -20,7 +21,10 @@ namespace direct_module.Network
         private static readonly byte[] HandshakeMagic = Encoding.ASCII.GetBytes("NOVA-ECDH-1|");
 
         private readonly bool _useEcdhHandshake;
-        private readonly SemaphoreSlim _sendLock = new(1, 1);
+        private readonly object _sendQueueLock = new();
+        private readonly Queue<PendingSend> _highPrioritySends = new();
+        private readonly Queue<PendingSend> _normalPrioritySends = new();
+        private readonly SemaphoreSlim _sendSignal = new(0);
         private IMessageCrypto _messageCrypto;
         private bool _ownsMessageCrypto;
         private StreamSocket? _socket;
@@ -28,6 +32,7 @@ namespace direct_module.Network
         private DataReader? _reader;
         private bool _isConnected;
         private bool _isReceiveLoopStarted;
+        private bool _isSendLoopStarted;
         private bool _disconnectNotified;
 
         public ChatConnection()
@@ -119,6 +124,7 @@ namespace direct_module.Network
                 RemoteIpAddress = ipAddress;
                 AttachSocket(socket);
                 await InitializeCryptoAsync(isInitiator: true);
+                StartSendLoop();
 
                 LogReceived?.Invoke("Chat TCP ConnectAsync完了");
                 LogReceived?.Invoke("Chat TCP接続成功");
@@ -151,6 +157,7 @@ namespace direct_module.Network
 
                 AttachSocket(socket);
                 await InitializeCryptoAsync(isInitiator: false);
+                StartSendLoop();
 
                 LogReceived?.Invoke("Chat TCP接続成功");
                 LogReceived?.Invoke("Chat TCP受信側socketを保持しました");
@@ -218,39 +225,161 @@ namespace direct_module.Network
                 return;
             }
 
-            await _sendLock.WaitAsync();
+            var pendingSend = new PendingSend(message);
+            EnqueueSend(pendingSend);
+            await pendingSend.Completion.Task;
 
+            LogReceived?.Invoke($"Chat TCP送信完了 合計: {totalWatch.ElapsedMilliseconds}ms");
+        }
+
+        private void EnqueueSend(PendingSend pendingSend)
+        {
+            lock (_sendQueueLock)
+            {
+                if (IsHighPriorityMessage(pendingSend.Message))
+                {
+                    _highPrioritySends.Enqueue(pendingSend);
+                }
+                else
+                {
+                    _normalPrioritySends.Enqueue(pendingSend);
+                }
+            }
+
+            _sendSignal.Release();
+            StartSendLoop();
+        }
+
+        private void StartSendLoop()
+        {
+            if (!_isConnected || _writer == null)
+            {
+                return;
+            }
+
+            lock (_sendQueueLock)
+            {
+                if (_isSendLoopStarted)
+                {
+                    return;
+                }
+
+                _isSendLoopStarted = true;
+            }
+
+            _ = SendLoopAsync();
+        }
+
+        private async Task SendLoopAsync()
+        {
             try
             {
-                string json = JsonSerializer.Serialize(message);
-                byte[] plainBytes = Encoding.UTF8.GetBytes(json);
-                byte[] encryptedBytes = _messageCrypto.Encrypt(plainBytes);
+                while (_isConnected)
+                {
+                    await _sendSignal.WaitAsync();
 
-                _writer.WriteUInt32((uint)encryptedBytes.Length);
-                _writer.WriteBytes(encryptedBytes);
+                    if (!TryDequeueSend(out PendingSend? pendingSend) || pendingSend == null)
+                    {
+                        continue;
+                    }
 
-                var storeWatch = Stopwatch.StartNew();
-                await _writer.StoreAsync();
-                LogReceived?.Invoke($"StoreAsync: {storeWatch.ElapsedMilliseconds}ms");
-
-                var flushWatch = Stopwatch.StartNew();
-                await _writer.FlushAsync();
-                LogReceived?.Invoke($"FlushAsync: {flushWatch.ElapsedMilliseconds}ms");
-
-                LogReceived?.Invoke("Chat TCP送信成功");
-                LogReceived?.Invoke($"平文Bytes: {plainBytes.Length}");
-                LogReceived?.Invoke($"送信Bytes: {encryptedBytes.Length}");
-                LogReceived?.Invoke($"Chat TCP送信完了 合計: {totalWatch.ElapsedMilliseconds}ms");
+                    try
+                    {
+                        await WriteMessageAsync(pendingSend.Message);
+                        pendingSend.Completion.TrySetResult();
+                    }
+                    catch (Exception ex)
+                    {
+                        LogException(ex);
+                        LogReceived?.Invoke($"SendAsync失敗により切断扱い: Peer={PeerName}");
+                        pendingSend.Completion.TrySetException(ex);
+                        Close();
+                        return;
+                    }
+                }
             }
             catch (Exception ex)
             {
                 LogException(ex);
-                LogReceived?.Invoke($"SendAsync失敗により切断扱い: Peer={PeerName}");
                 Close();
             }
             finally
             {
-                _sendLock.Release();
+                lock (_sendQueueLock)
+                {
+                    _isSendLoopStarted = false;
+                }
+            }
+        }
+
+        private bool TryDequeueSend(out PendingSend? pendingSend)
+        {
+            lock (_sendQueueLock)
+            {
+                if (_highPrioritySends.Count > 0)
+                {
+                    pendingSend = _highPrioritySends.Dequeue();
+                    return true;
+                }
+
+                if (_normalPrioritySends.Count > 0)
+                {
+                    pendingSend = _normalPrioritySends.Dequeue();
+                    return true;
+                }
+            }
+
+            pendingSend = null;
+            return false;
+        }
+
+        private async Task WriteMessageAsync(ChatMessage message)
+        {
+            if (!_isConnected || _writer == null)
+            {
+                throw new IOException("Chat TCP is not connected.");
+            }
+
+            string json = JsonSerializer.Serialize(message);
+            byte[] plainBytes = Encoding.UTF8.GetBytes(json);
+            byte[] encryptedBytes = _messageCrypto.Encrypt(plainBytes);
+
+            _writer.WriteUInt32((uint)encryptedBytes.Length);
+            _writer.WriteBytes(encryptedBytes);
+
+            var storeWatch = Stopwatch.StartNew();
+            await _writer.StoreAsync();
+            LogReceived?.Invoke($"StoreAsync: {storeWatch.ElapsedMilliseconds}ms");
+
+            var flushWatch = Stopwatch.StartNew();
+            await _writer.FlushAsync();
+            LogReceived?.Invoke($"FlushAsync: {flushWatch.ElapsedMilliseconds}ms");
+
+            LogReceived?.Invoke("Chat TCP送信成功");
+            LogReceived?.Invoke($"平文Bytes: {plainBytes.Length}");
+            LogReceived?.Invoke($"送信Bytes: {encryptedBytes.Length}");
+        }
+
+        private static bool IsHighPriorityMessage(ChatMessage message)
+        {
+            return string.Equals(message.Type, "ping", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(message.Type, "pong", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(message.Type, "hello", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private void FailPendingSends(Exception exception)
+        {
+            lock (_sendQueueLock)
+            {
+                while (_highPrioritySends.Count > 0)
+                {
+                    _highPrioritySends.Dequeue().Completion.TrySetException(exception);
+                }
+
+                while (_normalPrioritySends.Count > 0)
+                {
+                    _normalPrioritySends.Dequeue().Completion.TrySetException(exception);
+                }
             }
         }
 
@@ -366,6 +495,8 @@ namespace direct_module.Network
             IsPingWaiting = false;
             IsHelloVerified = false;
             IsReady = false;
+            FailPendingSends(new IOException("Chat TCP connection was closed."));
+            _sendSignal.Release();
 
             _reader?.DetachStream();
             _writer?.DetachStream();
@@ -601,6 +732,19 @@ namespace direct_module.Network
         private static long GetElapsedMilliseconds(long startedAt)
         {
             return (long)Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds;
+        }
+
+        private sealed class PendingSend
+        {
+            public PendingSend(ChatMessage message)
+            {
+                Message = message;
+            }
+
+            public ChatMessage Message { get; }
+
+            public TaskCompletionSource Completion { get; } =
+                new(TaskCreationOptions.RunContinuationsAsynchronously);
         }
     }
 }
