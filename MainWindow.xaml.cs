@@ -56,6 +56,9 @@ namespace direct_module
         private readonly PeerConnectionStateService _peerConnectionStateService;
         private readonly FileTransferService _fileTransferService = new();
         private bool _isAutonomousGoAdvertisementEnabled;
+        private string _activeBleRolePeerKey = "";
+        private bool? _activeBleRoleIsGo;
+        private bool _isClientWiFiDirectScanScheduled;
 
         private ChatRole _chatRole = ChatRole.Client;
 
@@ -153,6 +156,9 @@ namespace direct_module
             AddLog($"Local ShortSessionId: {GetLocalShortSessionId()}");
             AddLog($"Local RoleKey: {GetLocalRoleKey()}");
             _connectionRoleService.ResetBleNegotiation();
+            _activeBleRolePeerKey = "";
+            _activeBleRoleIsGo = null;
+            _isClientWiFiDirectScanScheduled = false;
 
             _manager.Start(Environment.MachineName, GetLocalShortSessionId());
             StartBleAdvertiseCore();
@@ -392,6 +398,12 @@ namespace direct_module
         private async System.Threading.Tasks.Task<bool> RefreshWiFiDirectCandidateBeforeConnectAsync(PeerInfo peer)
         {
             AddLog($"接続前にWi-Fi Direct候補を再探索します: Peer={peer.DisplayName}");
+
+            if (HasUsableWiFiDirectCandidate(peer))
+            {
+                AddLog($"Wi-Fi Direct candidate is already available. Reusing DeviceId={peer.DeviceId}", LogLevel.Debug);
+                return true;
+            }
 
             _manager.StopScan();
             await System.Threading.Tasks.Task.Delay(WiFiDirectScanRestartDelay);
@@ -680,6 +692,15 @@ namespace direct_module
 
             if (decision.LocalIsGo)
             {
+                if (IsSameActiveBleRole(peerKey, localIsGo: true) &&
+                    _isAutonomousGoAdvertisementEnabled)
+                {
+                    AddLog($"BLE role handling skipped because GO role is already active. PeerKey={peerKey}", LogLevel.Debug);
+                    return;
+                }
+
+                SetActiveBleRole(peerKey, localIsGo: true);
+
                 if (!_isAutonomousGoAdvertisementEnabled)
                 {
                     _manager.RestartAdvertisement(
@@ -695,6 +716,16 @@ namespace direct_module
             }
 
             AddLog("Clientロールのため、GOのAutonomous起動を待ってから探索します");
+            if (IsSameActiveBleRole(peerKey, localIsGo: false) &&
+                _isClientWiFiDirectScanScheduled)
+            {
+                AddLog($"BLE role handling skipped because client scan is already scheduled. PeerKey={peerKey}", LogLevel.Debug);
+                return;
+            }
+
+            SetActiveBleRole(peerKey, localIsGo: false);
+            _isClientWiFiDirectScanScheduled = true;
+
             if (_isAutonomousGoAdvertisementEnabled)
             {
                 _manager.RestartAdvertisement(
@@ -708,6 +739,23 @@ namespace direct_module
             ClearStaleWiFiDirectPeers();
             await _manager.StartAssociationEndpointScanAsync();
             AddLog("BLE RoleKey判定後にClient側だけWi-Fi Direct探索を開始します");
+        }
+
+        private bool IsSameActiveBleRole(string peerKey, bool localIsGo)
+        {
+            return _activeBleRoleIsGo == localIsGo &&
+                   string.Equals(_activeBleRolePeerKey, peerKey, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private void SetActiveBleRole(string peerKey, bool localIsGo)
+        {
+            _activeBleRolePeerKey = peerKey;
+            _activeBleRoleIsGo = localIsGo;
+
+            if (localIsGo)
+            {
+                _isClientWiFiDirectScanScheduled = false;
+            }
         }
 
         private void OnConnectionRequested(PeerInfo peer)
