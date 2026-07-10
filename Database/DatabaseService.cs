@@ -2,6 +2,7 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using direct_module.Services;
 
 namespace direct_module.Database
 {
@@ -81,17 +82,7 @@ CREATE TABLE IF NOT EXISTS ChatMessages
 
         private static string ResolveDatabasePath()
         {
-            string userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-            string localAppData = string.IsNullOrWhiteSpace(userProfile)
-                ? ""
-                : Path.Combine(userProfile, "AppData", "Local");
-
-            if (string.IsNullOrWhiteSpace(localAppData))
-            {
-                localAppData = Environment.GetEnvironmentVariable("LOCALAPPDATA") ?? "";
-            }
-
-            return Path.Combine(localAppData, "direct_module", "chat.db");
+            return Path.Combine(AppStoragePathService.ResolveAppDataDirectory(), "chat.db");
         }
 
         private static void MigrateLegacyDatabaseIfNeeded(string newDbPath)

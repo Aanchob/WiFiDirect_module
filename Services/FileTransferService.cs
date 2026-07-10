@@ -51,7 +51,8 @@ namespace direct_module.Services
         public void EnsureStorageReady()
         {
             EnsureAttachmentsDirectory();
-            LogReceived?.Invoke($"Attachments directory ready: {_attachmentsDirectory}");
+            LogReceived?.Invoke($"Attachments directory resolved: {_attachmentsDirectory}");
+            LogReceived?.Invoke($"Attachments directory exists: {Directory.Exists(_attachmentsDirectory)}");
             CleanupTemporaryFiles();
         }
 
@@ -350,13 +351,7 @@ namespace direct_module.Services
 
         private static string ResolveAttachmentsDirectory()
         {
-            string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-            if (string.IsNullOrWhiteSpace(localAppData))
-            {
-                localAppData = AppContext.BaseDirectory;
-            }
-
-            return Path.Combine(localAppData, "direct_module", "Attachments");
+            return Path.Combine(AppStoragePathService.ResolveAppDataDirectory(), "Attachments");
         }
 
         private static string ResolveDownloadsDirectory()
