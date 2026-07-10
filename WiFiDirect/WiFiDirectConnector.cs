@@ -52,7 +52,12 @@ namespace direct_module.WiFiDirect
                     return;
                 }
 
-                WiFiDirectDevice? device = await CreateDeviceFromIdAsync(peer.DeviceId, "FromIdAsync", "Target", preferClientRole: true);
+                WiFiDirectDevice? device = await CreateDeviceFromIdAsync(
+                    peer.DeviceId,
+                    "FromIdAsync",
+                    "Target",
+                    preferClientRole: true,
+                    pairingProcedure: WiFiDirectPairingProcedure.Invitation);
 
                 if (device == null)
                 {
@@ -79,7 +84,16 @@ namespace direct_module.WiFiDirect
                 try
                 {
                     LogReceived?.Invoke($"Wi-Fi Direct接続試行: Attempt={attempt}/{ConnectRetryCount}");
-                    WiFiDirectDevice? device = await CreateDeviceFromIdAsync(peer.DeviceId, "FromIdAsync", "Target", preferClientRole: true);
+                    WiFiDirectPairingProcedure pairingProcedure = attempt <= ConnectRetryCount / 2
+                        ? WiFiDirectPairingProcedure.GroupOwnerNegotiation
+                        : WiFiDirectPairingProcedure.Invitation;
+
+                    WiFiDirectDevice? device = await CreateDeviceFromIdAsync(
+                        peer.DeviceId,
+                        "FromIdAsync",
+                        "Target",
+                        preferClientRole: true,
+                        pairingProcedure: pairingProcedure);
 
                     if (device == null)
                     {
@@ -170,7 +184,8 @@ namespace direct_module.WiFiDirect
             string deviceId,
             string operationName,
             string logPrefix,
-            bool preferClientRole = false)
+            bool preferClientRole = false,
+            WiFiDirectPairingProcedure? pairingProcedure = null)
         {
             bool completed = false;
 
@@ -187,14 +202,21 @@ namespace direct_module.WiFiDirect
             try
             {
                 WiFiDirectDevice? device;
-                if (preferClientRole)
+                if (preferClientRole || pairingProcedure.HasValue)
                 {
                     var parameters = new WiFiDirectConnectionParameters
                     {
-                        GroupOwnerIntent = 0
+                        GroupOwnerIntent = preferClientRole ? (short)0 : (short)7
                     };
 
-                    LogReceived?.Invoke("Wi-Fi Direct connection parameters: GroupOwnerIntent=0");
+                    parameters.PreferenceOrderedConfigurationMethods.Add(WiFiDirectConfigurationMethod.PushButton);
+
+                    if (pairingProcedure.HasValue)
+                    {
+                        parameters.PreferredPairingProcedure = pairingProcedure.Value;
+                    }
+
+                    LogReceived?.Invoke($"Wi-Fi Direct connection parameters: GroupOwnerIntent={parameters.GroupOwnerIntent}, PairingProcedure={parameters.PreferredPairingProcedure}, Config=PushButton");
                     device = await WiFiDirectDevice.FromIdAsync(deviceId, parameters);
                 }
                 else

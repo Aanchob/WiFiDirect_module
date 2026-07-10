@@ -38,6 +38,7 @@ namespace direct_module.WiFiDirect
                 _publisher.Advertisement.ListenStateDiscoverability =
                     WiFiDirectAdvertisementListenStateDiscoverability.Normal;
                 _publisher.Advertisement.IsAutonomousGroupOwnerEnabled = autonomousGroupOwner;
+                _publisher.Advertisement.SupportedConfigurationMethods.Add(WiFiDirectConfigurationMethod.PushButton);
 
                 TryAddAppInformationElement(
                     _publisher.Advertisement,

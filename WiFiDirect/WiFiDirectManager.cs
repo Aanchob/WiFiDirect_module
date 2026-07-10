@@ -1,5 +1,6 @@
 using direct_module.WiFiDirect.Models;
 using System;
+using System.Collections.Generic;
 using System.Threading.Tasks;
 using Windows.Devices.WiFiDirect;
 
@@ -11,6 +12,7 @@ namespace direct_module.WiFiDirect
         private readonly WiFiDirectAdvertiser _advertiser;
         private readonly WiFiDirectConnector _connector;
         private readonly WiFiDirectScanner _scanner;
+        private readonly List<WiFiDirectSession> _sessions = new();
 
         public event Action<string>? LogReceived;
         public event Action<PeerInfo>? ConnectionRequested;
@@ -80,7 +82,19 @@ namespace direct_module.WiFiDirect
             LogReceived?.Invoke("Manager: Wi-Fi Direct 停止開始");
             _scanner.Stop();
             _advertiser.Stop();
+            foreach (WiFiDirectSession session in _sessions)
+            {
+                session.Dispose();
+            }
+
+            _sessions.Clear();
             LogReceived?.Invoke("Manager: Wi-Fi Direct 停止完了");
+        }
+
+        public void StopAdvertisement()
+        {
+            LogReceived?.Invoke("Manager: Wi-Fi Direct Advertisement stop requested");
+            _advertiser.Stop();
         }
 
         public async Task StartScanAsync()
@@ -141,6 +155,7 @@ namespace direct_module.WiFiDirect
 
         private void OnConnectorConnected(WiFiDirectSession session)
         {
+            _sessions.Add(session);
             LogReceived?.Invoke($"Manager: 接続完了 {session.Peer.DisplayName}");
             Connected?.Invoke(session.Peer);
         }

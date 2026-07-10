@@ -371,6 +371,7 @@ namespace direct_module
                 RefreshPeerDisplay(peer);
 
                 AddLog($"Wi-Fi Direct接続開始: {peer.DisplayText}");
+                _manager.StopAdvertisement();
                 _manager.StopScan();
                 await System.Threading.Tasks.Task.Delay(WiFiDirectScanRestartDelay);
 
@@ -732,6 +733,7 @@ namespace direct_module
 
             SetActiveBleRole(peerKey, localIsGo: false);
             _isClientWiFiDirectScanScheduled = true;
+            _manager.StopAdvertisement();
 
             if (_isAutonomousGoAdvertisementEnabled)
             {
