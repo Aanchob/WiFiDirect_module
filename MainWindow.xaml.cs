@@ -49,12 +49,15 @@ namespace direct_module
         private readonly WiFiDirectManager _manager;
         private readonly TcpServer _tcpServer = new();
         private readonly ChatConnectionManager _chatConnectionManager = new();
+        private readonly ChatMessageRouter _chatMessageRouter;
+        private readonly ChatMessageFactory _chatMessageFactory;
         private readonly List<string> _logLines = new();
         private readonly Guid _localSessionId = Guid.NewGuid();
         private readonly DatabaseService? _databaseService = null;
         private readonly ChatHistoryService? _chatHistoryService = null;
         private readonly ConnectionRoleService _connectionRoleService;
         private readonly PeerConnectionStateService _peerConnectionStateService;
+        private readonly PeerRegistryService _peerRegistryService = new();
         private readonly FileTransferService _fileTransferService = new();
         private readonly SemaphoreSlim _fileTransferReceiveGate = new(1, 1);
         private bool _isAutonomousGoAdvertisementEnabled;
@@ -67,6 +70,8 @@ namespace direct_module
         public MainWindow()
         {
             InitializeComponent();
+            _chatMessageRouter = new ChatMessageRouter(_chatConnectionManager);
+            _chatMessageFactory = new ChatMessageFactory(LocalPeerId, Environment.MachineName, GetLocalShortSessionId());
             _connectionRoleService = new ConnectionRoleService(GetLocalShortSessionId(), GetLocalRoleKey());
             _peerConnectionStateService = new PeerConnectionStateService(_connectionRoleService);
             Title = "Hide Chat";
@@ -137,12 +142,14 @@ namespace direct_module
 
         private void AddGroupChatPeer()
         {
-            PeerList.Items.Add(new PeerInfo
+            var groupPeer = new PeerInfo
             {
                 DisplayName = "グループチャット",
                 IsGroupChat = true,
                 StatusText = "接続中の相手全員に送信"
-            });
+            };
+            _peerRegistryService.AddSpecialPeer(groupPeer);
+            PeerList.Items.Add(groupPeer);
         }
 
         private void ResizeWindow(int width, int height)
@@ -242,21 +249,13 @@ namespace direct_module
                     return;
                 }
 
-                var message = new ChatMessage
-                {
-                    Type = "chat",
-                    SenderId = LocalPeerId,
-                    SenderName = Environment.MachineName,
-                    ShortSessionId = GetLocalShortSessionId(),
-                    Body = body
-                };
+                bool isGroup = IsGroupChatSelected();
+                ChatMessage message = _chatMessageFactory.CreateChat(body, isGroup);
 
                 _chatConnectionManager.MarkMessageSeen(message.MessageId);
 
-                if (IsGroupChatSelected())
+                if (isGroup)
                 {
-                    message.IsGroup = true;
-                    message.ConversationId = "group";
                     await SendNetworkMessageAsync(message, true, null);
                     AddChatMessage($"自分: {body}");
                     SaveChatMessageSafely(message, true, null, null);
@@ -893,32 +892,11 @@ namespace direct_module
 
         private async System.Threading.Tasks.Task SendNetworkMessageAsync(ChatMessage message, bool isGroup, ChatConnection? peerConnection)
         {
-            if (isGroup)
-            {
-                if (_chatRole == ChatRole.Host)
-                {
-                    await _chatConnectionManager.BroadcastAsync(message);
-                    return;
-                }
-
-                ChatConnection? hostConnection = _chatConnectionManager.Connections
-                    .FirstOrDefault(connection => connection.IsConnected && connection.IsReady);
-
-                if (hostConnection == null)
-                {
-                    throw new InvalidOperationException("Hostへの接続がありません。");
-                }
-
-                await hostConnection.SendAsync(message);
-                return;
-            }
-
-            if (peerConnection == null || !peerConnection.IsConnected || !peerConnection.IsReady)
-            {
-                throw new InvalidOperationException("送信先の接続が準備できていません。");
-            }
-
-            await peerConnection.SendAsync(message);
+            await _chatMessageRouter.SendAsync(
+                message,
+                isGroup,
+                _chatRole == ChatRole.Host,
+                peerConnection);
         }
 
         private async System.Threading.Tasks.Task<ChatConnection?> GetOrCreateSelectedPeerConnectionAsync()
@@ -1418,47 +1396,22 @@ namespace direct_module
 
         private PeerInfo? FindPeerByShortSessionId(string shortSessionId)
         {
-            if (string.IsNullOrWhiteSpace(shortSessionId))
-            {
-                return null;
-            }
-
-            return PeerList.Items
-                .Cast<PeerInfo>()
-                .FirstOrDefault(peer =>
-                    string.Equals(peer.ShortSessionId, shortSessionId, StringComparison.OrdinalIgnoreCase));
+            return _peerRegistryService.FindByShortSessionId(shortSessionId);
         }
 
         private PeerInfo? FindPeerByRemoteIpOrName(string remoteIpAddress, string displayName)
         {
-            return PeerList.Items
-                .Cast<PeerInfo>()
-                .FirstOrDefault(peer =>
-                    (!string.IsNullOrWhiteSpace(remoteIpAddress) &&
-                     string.Equals(peer.RemoteIpAddress, remoteIpAddress, StringComparison.OrdinalIgnoreCase)) ||
-                    (!string.IsNullOrWhiteSpace(displayName) &&
-                     string.Equals(peer.DisplayName, displayName, StringComparison.OrdinalIgnoreCase)));
+            return _peerRegistryService.FindByRemoteIpOrName(remoteIpAddress, displayName);
         }
 
         private PeerInfo? FindPeerByPeerId(string peerId)
         {
-            if (string.IsNullOrWhiteSpace(peerId))
-            {
-                return null;
-            }
-
-            return PeerList.Items
-                .Cast<PeerInfo>()
-                .FirstOrDefault(peer =>
-                    string.Equals(PeerIdentityService.GetConnectionId(peer), peerId, StringComparison.OrdinalIgnoreCase));
+            return _peerRegistryService.FindByPeerId(peerId);
         }
 
         private PeerInfo? FindPeerForHello(ChatMessage message, ChatConnection sourceConnection)
         {
-            return FindPeerByShortSessionId(message.ShortSessionId)
-                ?? FindPeerByRemoteIpOrName(sourceConnection.RemoteIpAddress, "")
-                ?? FindPeerByPeerId(sourceConnection.PeerId)
-                ?? FindPeerByRemoteIpOrName("", message.SenderName);
+            return _peerRegistryService.FindForHello(message, sourceConnection);
         }
 
         private static bool IsHelloMismatch(PeerInfo peer, string shortSessionId)
@@ -1530,10 +1483,7 @@ namespace direct_module
 
         private PeerInfo? FindPeerForConnection(ChatConnection connection)
         {
-            return FindPeerByPeerId(connection.PeerId)
-                ?? FindPeerByShortSessionId(connection.ShortSessionId)
-                ?? FindPeerByRemoteIpOrName(connection.RemoteIpAddress, "")
-                ?? FindPeerByRemoteIpOrName("", connection.PeerName);
+            return _peerRegistryService.FindForConnection(connection);
         }
 
         private PeerInfo? FindPeerForTcpRoleDecision(PeerInfo connectedPeer)
@@ -1801,6 +1751,20 @@ namespace direct_module
 
         private PeerInfo AddOrMergePeer(PeerInfo incoming)
         {
+            PeerRegistrationResult registration = _peerRegistryService.Register(incoming);
+            if (!registration.CollectionChanged)
+            {
+                PeerInfo registeredPeer = registration.Peer;
+                if (registration.Kind != PeerRegistrationKind.IgnoredPendingRequest)
+                {
+                    _peerConnectionStateService.UpdateConnectAvailability(registeredPeer);
+                    RefreshPeerDisplay(registeredPeer);
+                    AddLog($"Peer統合: {registration.Kind} {registration.MatchReason} -> {registeredPeer.DisplayText}", LogLevel.Success);
+                }
+
+                return registeredPeer;
+            }
+
             if (incoming.DeviceId.Contains("_PendingRequest", StringComparison.OrdinalIgnoreCase))
             {
                 AddLog($"PendingRequestはPeerListに追加しません: {incoming.DisplayName}", LogLevel.Debug);
@@ -1893,39 +1857,20 @@ namespace direct_module
 
         private void ClearStaleWiFiDirectPeers()
         {
-            int removed = 0;
-            var peers = PeerList.Items.Cast<PeerInfo>().ToList();
-
-            foreach (PeerInfo peer in peers)
+            IReadOnlyList<PeerInfo> changedPeers = _peerRegistryService.RemoveStaleWiFiDirectPeers();
+            foreach (PeerInfo peer in changedPeers)
             {
-                if (peer.IsGroupChat)
+                if (_peerRegistryService.Peers.Contains(peer))
                 {
-                    continue;
-                }
-
-                if (!peer.DiscoveredByWiFiDirect || peer.IsConnected)
-                {
-                    continue;
-                }
-
-                if (peer.DiscoveredByBle)
-                {
-                    peer.DiscoveredByWiFiDirect = false;
-                    peer.WiFiDirectName = "";
-                    peer.DeviceId = "";
-                    peer.DeviceKind = "";
-                    peer.IsEnabled = null;
                     RefreshPeerDisplay(peer);
                 }
                 else
                 {
                     PeerList.Items.Remove(peer);
                 }
-
-                removed++;
             }
 
-            AddLog($"古いWi-Fi Direct候補を削除: {removed}件");
+            AddLog($"古いWi-Fi Direct候補を削除: {changedPeers.Count}件");
             UpdatePeerCount();
             UpdateSelectedPeerDetails(PeerList.SelectedItem as PeerInfo);
         }
