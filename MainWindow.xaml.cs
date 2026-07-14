@@ -11,6 +11,7 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
@@ -57,9 +58,11 @@ namespace direct_module
         private readonly ChatHistoryService? _chatHistoryService = null;
         private readonly ConnectionRoleService _connectionRoleService;
         private readonly PeerConnectionStateService _peerConnectionStateService;
-        private readonly PeerRegistryService _peerRegistryService = new();
+        private readonly PeerRegistryService _peerRegistryService;
         private readonly FileTransferService _fileTransferService = new();
         private readonly SemaphoreSlim _fileTransferReceiveGate = new(1, 1);
+        private readonly ConcurrentDictionary<string, PeerInfo> _pendingIncomingWiFiDirectPeers =
+            new(StringComparer.OrdinalIgnoreCase);
         private bool _isAutonomousGoAdvertisementEnabled;
         private string _activeBleRolePeerKey = "";
         private bool? _activeBleRoleIsGo;
@@ -73,6 +76,7 @@ namespace direct_module
             _chatMessageRouter = new ChatMessageRouter(_chatConnectionManager);
             _chatMessageFactory = new ChatMessageFactory(LocalPeerId, Environment.MachineName, GetLocalShortSessionId());
             _connectionRoleService = new ConnectionRoleService(GetLocalShortSessionId(), GetLocalRoleKey());
+            _peerRegistryService = new PeerRegistryService(_connectionRoleService);
             _peerConnectionStateService = new PeerConnectionStateService(_connectionRoleService);
             Title = "Hide Chat";
             ResizeWindow(1440, 920);
@@ -231,13 +235,14 @@ namespace direct_module
                 return;
             }
 
-            if (peer.DeviceId.Contains("_PendingRequest", StringComparison.OrdinalIgnoreCase))
+            string connectionDeviceId = peer.WiFiDirectDeviceIdForConnection;
+            if (connectionDeviceId.Contains("_PendingRequest", StringComparison.OrdinalIgnoreCase))
             {
                 AddLog("_PendingRequest付きDeviceIdのため通常接続を中止します", LogLevel.Error);
                 return;
             }
 
-            if (string.IsNullOrWhiteSpace(peer.DeviceId))
+            if (string.IsNullOrWhiteSpace(connectionDeviceId))
             {
                 AddLog("選択中PeerにWi-Fi Direct DeviceIdがありません", LogLevel.Error);
                 return;
@@ -307,7 +312,7 @@ namespace direct_module
 
             if (HasUsableWiFiDirectCandidate(peer))
             {
-                AddLog($"Wi-Fi Direct candidate is already available. Reusing DeviceId={peer.DeviceId}", LogLevel.Debug);
+                AddLog($"Wi-Fi Direct candidate is already available. Reusing DeviceId={peer.WiFiDirectDeviceIdForConnection}", LogLevel.Debug);
                 _manager.StopScan();
                 await System.Threading.Tasks.Task.Delay(WiFiDirectScanRestartDelay);
                 return true;
@@ -326,7 +331,7 @@ namespace direct_module
 
             if (await WaitForWiFiDirectCandidateAsync(peer, WiFiDirectCandidateRefreshTimeout))
             {
-                AddLog($"Wi-Fi Direct候補再取得: Peer={peer.DisplayName}, DeviceId={peer.DeviceId}", LogLevel.Success);
+                AddLog($"Wi-Fi Direct候補再取得: Peer={peer.DisplayName}, DeviceId={peer.WiFiDirectDeviceIdForConnection}", LogLevel.Success);
                 _manager.StopScan();
                 await System.Threading.Tasks.Task.Delay(WiFiDirectScanRestartDelay);
                 return true;
@@ -340,6 +345,13 @@ namespace direct_module
             peer.DiscoveredByWiFiDirect = false;
             peer.WiFiDirectName = "";
             peer.DeviceId = "";
+            peer.PendingWiFiDirectDeviceId = "";
+            peer.PendingWiFiDirectName = "";
+            peer.PendingWiFiDirectDeviceKind = "";
+            peer.PendingWiFiDirectIsEnabled = null;
+            peer.MatchState = PeerMatchState.Unmatched;
+            peer.MatchScore = 0;
+            peer.MatchReason = "";
             peer.DeviceKind = "";
             peer.IsEnabled = null;
             peer.IsConnected = false;
@@ -368,8 +380,8 @@ namespace direct_module
         private static bool HasUsableWiFiDirectCandidate(PeerInfo peer)
         {
             return peer.DiscoveredByWiFiDirect &&
-                   !string.IsNullOrWhiteSpace(peer.DeviceId) &&
-                   !peer.DeviceId.Contains("_PendingRequest", StringComparison.OrdinalIgnoreCase);
+                   !string.IsNullOrWhiteSpace(peer.WiFiDirectDeviceIdForConnection) &&
+                   !peer.WiFiDirectDeviceIdForConnection.Contains("_PendingRequest", StringComparison.OrdinalIgnoreCase);
         }
 
         private static bool IsTransientWiFiDirectStatus(string statusText)
@@ -524,6 +536,13 @@ namespace direct_module
 
         private void OnWiFiDirectConnected(PeerInfo peer)
         {
+            bool isIncomingRequest = peer.IsIncomingConnectionRequest ||
+                peer.DeviceId.Contains("_PendingRequest", StringComparison.OrdinalIgnoreCase);
+            if (isIncomingRequest && !string.IsNullOrWhiteSpace(peer.RemoteIpAddress))
+            {
+                _pendingIncomingWiFiDirectPeers[peer.RemoteIpAddress] = peer;
+            }
+
             DispatcherQueue.TryEnqueue(async () =>
             {
                 peer.IsConnectingWiFiDirect = false;
@@ -533,7 +552,17 @@ namespace direct_module
                 }
 
                 AddLog($"Wi-Fi Direct接続完了通知: {peer.DisplayText}", LogLevel.Success);
-                AddOrMergePeer(peer);
+                if (isIncomingRequest)
+                {
+                    peer.MatchState = PeerMatchState.Provisional;
+                    peer.MatchScore = 0;
+                    peer.MatchReason = "ConnectionRequested受信。HELLO確認待ち";
+                    AddLog("GO側ConnectionRequested候補はBLE Peerへ自動統合せずHELLO確認を待ちます", LogLevel.Debug);
+                }
+                else
+                {
+                    AddOrMergePeer(peer);
+                }
                 await EnsureTcpServerStartedAsync("Wi-Fi Direct接続完了");
 
                 PeerInfo effectivePeer = FindPeerForTcpRoleDecision(peer) ?? peer;
@@ -971,6 +1000,12 @@ namespace direct_module
         private async System.Threading.Tasks.Task HandleHelloMessageAsync(ChatMessage message, ChatConnection sourceConnection)
         {
             string shortSessionId = message.ShortSessionId ?? "";
+            string originalPeerId = sourceConnection.PeerId;
+            string originalShortSessionId = sourceConnection.ShortSessionId;
+            PeerInfo? provisionalPeer = _peerRegistryService.FindProvisionalForConnection(
+                sourceConnection.RemoteIpAddress,
+                originalPeerId,
+                originalShortSessionId);
             AddLog("SelectedItemには依存せずHELLO判定します", LogLevel.Debug);
             AddLog($"TCP HELLO受信: shortSessionId={shortSessionId}");
 
@@ -991,7 +1026,20 @@ namespace direct_module
 
             AddLog($"PeerごとのHELLO確認開始: {message.SenderName} / {sourceConnection.RemoteIpAddress}");
 
-            PeerInfo? matchedPeer = FindPeerForHello(message, sourceConnection);
+            if (provisionalPeer != null && !IsHelloIdentityConfirmed(provisionalPeer, message))
+            {
+                PeerMergeService.RejectProvisional(provisionalPeer, "HELLO識別情報不一致");
+                provisionalPeer.StatusText = "HELLO不一致";
+                sourceConnection.IsHelloVerified = false;
+                sourceConnection.IsReady = false;
+                RefreshPeerDisplay(provisionalPeer);
+                AddLog("HELLO不一致のため仮紐付け解除", LogLevel.Error);
+                UpdateSendButtonState();
+                sourceConnection.Close();
+                return;
+            }
+
+            PeerInfo? matchedPeer = provisionalPeer ?? FindPeerForHello(message, sourceConnection);
             if (matchedPeer == null)
             {
                 AddLog("HELLOのShortSessionIdに一致するPeerInfoが見つかりません", LogLevel.Debug);
@@ -1002,28 +1050,28 @@ namespace direct_module
                         : message.SenderName,
                     RemoteIpAddress = sourceConnection.RemoteIpAddress
                 };
-                _peerConnectionStateService.UpdateConnectAvailability(matchedPeer);
-                PeerList.Items.Add(matchedPeer);
+                matchedPeer = AddOrMergePeer(matchedPeer);
                 AddLog("BLE情報なしのためHELLO情報でPeerInfoを更新");
             }
 
-            if (IsHelloMismatch(matchedPeer, shortSessionId))
+            if (IsHelloMismatch(matchedPeer, message))
             {
+                PeerMergeService.RejectProvisional(matchedPeer, "HELLO ShortSessionId不一致");
                 matchedPeer.StatusText = "HELLO不一致";
-                matchedPeer.IsHelloVerified = false;
-                matchedPeer.IsChatReady = false;
                 sourceConnection.IsHelloVerified = false;
                 sourceConnection.IsReady = false;
                 RefreshPeerDisplay(matchedPeer);
-                AddLog("PeerごとのHELLO確認失敗: ShortSessionId不一致", LogLevel.Error);
+                AddLog("PeerごとのHELLO確認失敗: ShortSessionIdまたはPeerId不一致", LogLevel.Error);
                 AddLog("HELLO確認失敗: BLE Peerと接続先が不一致", LogLevel.Error);
+                AddLog("HELLO不一致のため仮紐付け解除", LogLevel.Error);
                 UpdateSendButtonState();
                 sourceConnection.Close();
                 return;
             }
 
+            ApplyPendingIncomingWiFiDirectCandidate(matchedPeer, sourceConnection.RemoteIpAddress);
             ApplyHelloToPeer(matchedPeer, message, sourceConnection);
-            AddLog($"HELLO確認後にPeerを確定紐付け: {matchedPeer.DisplayName}", LogLevel.Success);
+            AddLog($"HELLO確認後にPeerを正式統合: {matchedPeer.DisplayName}", LogLevel.Success);
             AddLog($"ChatConnectionとPeerInfoを紐付けました: {matchedPeer.DisplayName}");
             AddLog($"PeerごとのHELLO確認成功: {matchedPeer.DisplayName}", LogLevel.Success);
             AddLog("HELLO確認成功: BLE Peerと接続先が一致", LogLevel.Success);
@@ -1052,11 +1100,50 @@ namespace direct_module
             return _peerRegistryService.FindForHello(message, sourceConnection);
         }
 
-        private static bool IsHelloMismatch(PeerInfo peer, string shortSessionId)
+        private static bool IsHelloMismatch(PeerInfo peer, ChatMessage message)
         {
-            return !string.IsNullOrWhiteSpace(peer.ShortSessionId) &&
-                   !string.IsNullOrWhiteSpace(shortSessionId) &&
-                   !string.Equals(peer.ShortSessionId, shortSessionId, StringComparison.OrdinalIgnoreCase);
+            bool shortSessionMismatch = !string.IsNullOrWhiteSpace(peer.ShortSessionId) &&
+                !string.IsNullOrWhiteSpace(message.ShortSessionId) &&
+                !string.Equals(peer.ShortSessionId, message.ShortSessionId, StringComparison.OrdinalIgnoreCase);
+            bool peerIdMismatch = !string.IsNullOrWhiteSpace(peer.PeerId) &&
+                !string.IsNullOrWhiteSpace(message.SenderId) &&
+                !string.Equals(peer.PeerId, message.SenderId, StringComparison.OrdinalIgnoreCase);
+            return shortSessionMismatch || peerIdMismatch;
+        }
+
+        private static bool IsHelloIdentityConfirmed(PeerInfo peer, ChatMessage message)
+        {
+            if (IsHelloMismatch(peer, message))
+            {
+                return false;
+            }
+
+            bool shortSessionMatch = !string.IsNullOrWhiteSpace(peer.ShortSessionId) &&
+                !string.IsNullOrWhiteSpace(message.ShortSessionId) &&
+                string.Equals(peer.ShortSessionId, message.ShortSessionId, StringComparison.OrdinalIgnoreCase);
+            bool peerIdMatch = !string.IsNullOrWhiteSpace(peer.PeerId) &&
+                !string.IsNullOrWhiteSpace(message.SenderId) &&
+                string.Equals(peer.PeerId, message.SenderId, StringComparison.OrdinalIgnoreCase);
+            return shortSessionMatch || peerIdMatch;
+        }
+
+        private void ApplyPendingIncomingWiFiDirectCandidate(PeerInfo peer, string remoteIpAddress)
+        {
+            if (string.IsNullOrWhiteSpace(remoteIpAddress) ||
+                !_pendingIncomingWiFiDirectPeers.TryRemove(remoteIpAddress, out PeerInfo? candidate))
+            {
+                return;
+            }
+
+            peer.DiscoveredByWiFiDirect = true;
+            peer.PendingWiFiDirectDeviceId = candidate.DeviceId;
+            peer.PendingWiFiDirectName = candidate.WiFiDirectName;
+            peer.PendingWiFiDirectDeviceKind = candidate.DeviceKind;
+            peer.PendingWiFiDirectIsEnabled = candidate.IsEnabled;
+            peer.IsConnected |= candidate.IsConnected;
+            peer.MatchState = PeerMatchState.Provisional;
+            peer.MatchReason = "ConnectionRequested候補をHELLOで確認";
+            AddLog($"ConnectionRequested候補をHELLO Peerへ仮適用: Wi-Fi={candidate.WiFiDirectName}", LogLevel.Debug);
         }
 
         private void ApplyHelloToPeer(PeerInfo peer, ChatMessage message, ChatConnection sourceConnection)
@@ -1072,7 +1159,13 @@ namespace direct_module
                 peer.MatchKey = message.ShortSessionId;
             }
 
+            if (!string.IsNullOrWhiteSpace(message.SenderId))
+            {
+                peer.PeerId = message.SenderId;
+            }
+
             peer.RemoteIpAddress = sourceConnection.RemoteIpAddress;
+            PeerMergeService.ConfirmAfterHello(peer, "HELLO ShortSessionId確認成功");
             peer.IsTcpConnected = sourceConnection.IsConnected;
             peer.IsHelloVerified = true;
             peer.IsChatReady = sourceConnection.IsConnected && sourceConnection.IsReceiveLoopStarted;
@@ -1097,6 +1190,11 @@ namespace direct_module
         {
             DispatcherQueue.TryEnqueue(() =>
             {
+                if (!string.IsNullOrWhiteSpace(connection.RemoteIpAddress))
+                {
+                    _pendingIncomingWiFiDirectPeers.TryRemove(connection.RemoteIpAddress, out _);
+                }
+
                 PeerInfo? peer = FindPeerForConnection(connection);
                 if (peer != null)
                 {
@@ -1132,7 +1230,6 @@ namespace direct_module
             }
 
             return FindPeerByRemoteIpOrName(connectedPeer.RemoteIpAddress, "")
-                ?? FindPeerByRemoteIpOrName("", connectedPeer.DisplayName)
                 ?? FindPeerByPeerId(PeerIdentityService.GetConnectionId(connectedPeer));
         }
 
@@ -1193,8 +1290,8 @@ namespace direct_module
             {
                 await EnsureTcpServerStartedAsync("手動再接続");
 
-                if (!string.IsNullOrWhiteSpace(peer.DeviceId) &&
-                    !peer.DeviceId.Contains("_PendingRequest", StringComparison.OrdinalIgnoreCase))
+                if (!string.IsNullOrWhiteSpace(peer.WiFiDirectDeviceIdForConnection) &&
+                    !peer.WiFiDirectDeviceIdForConnection.Contains("_PendingRequest", StringComparison.OrdinalIgnoreCase))
                 {
                     AddLog($"再接続中: Peer={peer.DisplayName}");
                     AddLog($"再接続処理を開始しました: Peer={peer.DisplayName}");
@@ -1285,108 +1382,59 @@ namespace direct_module
 
         private PeerInfo AddOrMergePeer(PeerInfo incoming)
         {
-            PeerRegistrationResult registration = _peerRegistryService.Register(incoming);
-            if (!registration.CollectionChanged)
-            {
-                PeerInfo registeredPeer = registration.Peer;
-                if (registration.Kind != PeerRegistrationKind.IgnoredPendingRequest)
-                {
-                    _peerConnectionStateService.UpdateConnectAvailability(registeredPeer);
-                    RefreshPeerDisplay(registeredPeer);
-                    AddLog($"Peer統合: {registration.Kind} {registration.MatchReason} -> {registeredPeer.DisplayText}", LogLevel.Success);
-                }
-
-                return registeredPeer;
-            }
-
-            if (incoming.DeviceId.Contains("_PendingRequest", StringComparison.OrdinalIgnoreCase))
-            {
-                AddLog($"PendingRequestはPeerListに追加しません: {incoming.DisplayName}", LogLevel.Debug);
-                return incoming;
-            }
-
             AddLog(
                 $"Peer照合開始: Name={incoming.DisplayName}, ShortSessionId={incoming.ShortSessionId}, DeviceIdあり={!string.IsNullOrWhiteSpace(incoming.DeviceId)}",
                 LogLevel.Debug);
+            PeerRegistrationResult registration = _peerRegistryService.Register(incoming);
+            PeerInfo registeredPeer = registration.Peer;
 
-            foreach (PeerInfo existing in PeerList.Items.Cast<PeerInfo>())
+            if (registration.Kind == PeerRegistrationKind.IgnoredPendingRequest)
             {
-                if (existing.IsGroupChat)
+                AddLog($"PendingRequestはPeerListに追加しません: {incoming.DisplayName}", LogLevel.Debug);
+                return registeredPeer;
+            }
+
+            if (registration.CollectionChanged)
+            {
+                _peerConnectionStateService.UpdateConnectAvailability(registeredPeer);
+                PeerList.Items.Add(registeredPeer);
+                UpdatePeerCount();
+                UpdateSelectedPeerDetails(PeerList.SelectedItem as PeerInfo);
+
+                if (registration.PartialNameCandidateDetected)
                 {
-                    continue;
+                    AddLog("名前部分一致候補ですが自動統合しません", LogLevel.Debug);
                 }
 
-                string matchReason = PeerMergeService.GetMatchReason(existing, incoming);
-                if (string.IsNullOrEmpty(matchReason))
+                if (registration.RoleConflictDetected)
                 {
-                    if (PeerMergeService.IsPartialNameMatchCandidate(existing, incoming))
-                    {
-                        if (IsBleWiFiDirectPartialNamePair(existing, incoming))
-                        {
-                            PeerMergeService.Merge(existing, incoming);
-                            _peerConnectionStateService.UpdateConnectAvailability(existing);
-                            RefreshPeerDisplay(existing);
-                            AddLog($"Peer統合: BLE/Wi-Fi Direct部分名一致 -> {existing.DisplayText}", LogLevel.Success);
-                            return existing;
-                        }
-
-                        AddLog($"Peer名の部分一致候補を検出しましたが、自動統合しません: {existing.DisplayName} / {incoming.DisplayName}", LogLevel.Debug);
-                    }
-
-                    continue;
+                    AddLog("Role矛盾のため候補から除外しました", LogLevel.Debug);
                 }
 
-                PeerMergeService.Merge(existing, incoming);
-                _peerConnectionStateService.UpdateConnectAvailability(existing);
-                RefreshPeerDisplay(existing);
+                if (registration.UnmergedCandidateCount == 1)
+                {
+                    AddLog("単一候補ですが自動統合しません", LogLevel.Debug);
+                }
 
-                LogLevel level = matchReason.StartsWith("注意:", StringComparison.Ordinal)
-                    ? LogLevel.Error
-                    : LogLevel.Success;
-
-                AddLog($"Peer統合: {matchReason} -> {existing.DisplayText}", level);
-                return existing;
+                AddLog($"確実な照合キーがないため別Peerとして保持: {incoming.DisplayName}", LogLevel.Debug);
+                AddLog($"Peer追加: {registeredPeer.DisplayText}");
+                return registeredPeer;
             }
 
-            var fallbackCandidates = PeerList.Items
-                .Cast<PeerInfo>()
-                .Where(existing => !existing.IsGroupChat)
-                .Where(existing => PeerMergeService.IsSingleCandidateFallback(existing, incoming))
-                .ToList();
-
-            if (fallbackCandidates.Count == 1)
+            _peerConnectionStateService.UpdateConnectAvailability(registeredPeer);
+            RefreshPeerDisplay(registeredPeer);
+            switch (registration.Kind)
             {
-                PeerInfo existing = fallbackCandidates[0];
-                PeerMergeService.Merge(existing, incoming);
-                _peerConnectionStateService.UpdateConnectAvailability(existing);
-                RefreshPeerDisplay(existing);
-
-                AddLog($"Peer統合: 注意: 単一BLE/Wi-Fi Direct候補として統合 ({existing.DisplayName} / {incoming.DisplayName}) -> {existing.DisplayText}", LogLevel.Error);
-                return existing;
+                case PeerRegistrationKind.Confirmed:
+                    AddLog($"強い識別子一致でPeer確定統合: Reason={registration.MatchReason}, Score={registration.MatchScore}", LogLevel.Success);
+                    break;
+                case PeerRegistrationKind.Provisional:
+                    AddLog($"Role整合候補: BLE={registeredPeer.BleName}, Wi-Fi={registeredPeer.PendingWiFiDirectName}", LogLevel.Debug);
+                    AddLog($"弱い条件のためPeerを仮紐付け: Score={registration.MatchScore}, Reason={registration.MatchReason}", LogLevel.Debug);
+                    break;
             }
 
-            if (fallbackCandidates.Count > 1)
-            {
-                AddLog($"Peer統合スキップ: BLE/Wi-Fi Direct候補が複数あるため自動統合しません Count={fallbackCandidates.Count}, Incoming={incoming.DisplayName}", LogLevel.Debug);
-            }
-
-            _peerConnectionStateService.UpdateConnectAvailability(incoming);
-            PeerList.Items.Add(incoming);
-            UpdatePeerCount();
-            UpdateSelectedPeerDetails(PeerList.SelectedItem as PeerInfo);
-            AddLog($"確実な照合キーがないため新規Peerとして追加: {incoming.DisplayName}", LogLevel.Debug);
-            AddLog($"Peer追加: {incoming.DisplayText}");
-            return incoming;
-        }
-
-        private static bool IsBleWiFiDirectPartialNamePair(PeerInfo existing, PeerInfo incoming)
-        {
-            return (existing.DiscoveredByBle &&
-                    !existing.DiscoveredByWiFiDirect &&
-                    incoming.DiscoveredByWiFiDirect) ||
-                   (incoming.DiscoveredByBle &&
-                    !incoming.DiscoveredByWiFiDirect &&
-                    existing.DiscoveredByWiFiDirect);
+            return registeredPeer;
         }
 
         private void ClearStaleWiFiDirectPeers()

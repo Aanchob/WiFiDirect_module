@@ -77,6 +77,7 @@ public class WiFiDirectListener
                 IsEnabled = deviceInfo.IsEnabled,
                 DiscoveredByBle = false,
                 DiscoveredByWiFiDirect = true,
+                IsIncomingConnectionRequest = true,
                 IsConnected = false
             };
 

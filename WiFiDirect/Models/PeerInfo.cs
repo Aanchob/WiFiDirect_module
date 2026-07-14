@@ -1,14 +1,26 @@
 namespace direct_module.WiFiDirect.Models;
 
+public enum PeerMatchState
+{
+    Unmatched,
+    Provisional,
+    Confirmed,
+    Rejected
+}
+
 public class PeerInfo
 {
     public string DisplayName { get; set; } = "";
 
     public string DeviceId { get; set; } = "";
 
+    public string PeerId { get; set; } = "";
+
     public bool DiscoveredByBle { get; set; }
 
     public bool DiscoveredByWiFiDirect { get; set; }
+
+    public bool IsIncomingConnectionRequest { get; set; }
 
     public string BleName { get; set; } = "";
 
@@ -16,9 +28,28 @@ public class PeerInfo
 
     public string MatchKey { get; set; } = "";
 
+    public string DchatInformation { get; set; } = "";
+
     public string ShortSessionId { get; set; } = "";
 
     public string RoleKey { get; set; } = "";
+
+    public PeerMatchState MatchState { get; set; } = PeerMatchState.Unmatched;
+
+    public string PendingWiFiDirectDeviceId { get; set; } = "";
+
+    public string PendingWiFiDirectName { get; set; } = "";
+
+    public string PendingWiFiDirectDeviceKind { get; set; } = "";
+
+    public bool? PendingWiFiDirectIsEnabled { get; set; }
+
+    public int MatchScore { get; set; }
+
+    public string MatchReason { get; set; } = "";
+
+    public string WiFiDirectDeviceIdForConnection =>
+        !string.IsNullOrWhiteSpace(DeviceId) ? DeviceId : PendingWiFiDirectDeviceId;
 
     public int TcpPort { get; set; }
 
@@ -85,7 +116,7 @@ public class PeerInfo
             string bleText = DiscoveredByBle ? "BLE:発見済み" : "BLE:未発見";
             string wifiText = IsConnectingWiFiDirect
                 ? "Wi-Fi Direct:接続中"
-                : !string.IsNullOrWhiteSpace(DeviceId)
+                : !string.IsNullOrWhiteSpace(WiFiDirectDeviceIdForConnection)
                 ? IsConnected ? "Wi-Fi Direct:接続済み" : "Wi-Fi Direct:DeviceIdあり"
                 : "Wi-Fi Direct:DeviceIdなし";
             string tcpText = StatusText == "エラー"
@@ -109,14 +140,24 @@ public class PeerInfo
             string bleNameText = !string.IsNullOrWhiteSpace(BleName)
                 ? $" / BLE名:{BleName}"
                 : "";
-            string wifiNameText = !string.IsNullOrWhiteSpace(WiFiDirectName)
-                ? $" / Wi-Fi名:{WiFiDirectName}"
+            string effectiveWiFiName = !string.IsNullOrWhiteSpace(WiFiDirectName)
+                ? WiFiDirectName
+                : PendingWiFiDirectName;
+            string wifiNameText = !string.IsNullOrWhiteSpace(effectiveWiFiName)
+                ? $" / Wi-Fi名:{effectiveWiFiName}"
                 : "";
             string kindText = !string.IsNullOrWhiteSpace(DeviceKind)
                 ? $" / Kind:{DeviceKind}"
                 : "";
+            string matchText = MatchState switch
+            {
+                PeerMatchState.Provisional => " / 照合:仮紐付け",
+                PeerMatchState.Confirmed => " / 照合:確認済み",
+                PeerMatchState.Rejected => " / 照合:不一致",
+                _ => " / 照合:未確認"
+            };
 
-            return $"{DisplayName} / {SourceText} / {bleText} / {wifiText} / {tcpText} / {helloText} / {statusText}{remoteIpText}{sessionText}{roleKeyText}{bleNameText}{wifiNameText}{kindText}";
+            return $"{DisplayName} / {SourceText} / {bleText} / {wifiText} / {tcpText} / {helloText} / {statusText}{remoteIpText}{sessionText}{roleKeyText}{bleNameText}{wifiNameText}{kindText}{matchText}";
         }
     }
 }

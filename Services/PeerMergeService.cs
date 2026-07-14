@@ -5,73 +5,14 @@ namespace direct_module.Services
 {
     public static class PeerMergeService
     {
-        public static string GetMatchReason(PeerInfo existing, PeerInfo incoming)
-        {
-            if (HasSameValue(existing.ShortSessionId, incoming.ShortSessionId))
-            {
-                return $"ShortSessionId一致 ({incoming.ShortSessionId})";
-            }
-
-            if (HasSameValue(existing.DeviceId, incoming.DeviceId))
-            {
-                return "DeviceId一致";
-            }
-
-            if (HasSameValue(existing.RemoteIpAddress, incoming.RemoteIpAddress))
-            {
-                return $"RemoteIpAddress一致 ({incoming.RemoteIpAddress})";
-            }
-
-            if (HasSameValue(existing.MatchKey, incoming.MatchKey))
-            {
-                return $"MatchKey一致 ({incoming.MatchKey})";
-            }
-
-            if (HasSameValue(existing.DisplayName, incoming.DisplayName))
-            {
-                return $"DisplayName完全一致 ({incoming.DisplayName})";
-            }
-
-            if (IsBleNamePrefixMatch(existing, incoming))
-            {
-                string bleName = GetBleName(existing, incoming);
-                string wifiName = GetWifiDirectName(existing, incoming);
-                return $"BLE名前頭一致 ({bleName} -> {wifiName})";
-            }
-
-            if (IsBleWiFiDirectPartialNameMatch(existing, incoming))
-            {
-                return $"注意: BLE/Wi-Fi Direct名の部分一致 ({existing.DisplayName} / {incoming.DisplayName})";
-            }
-
-            return "";
-        }
-
-        public static bool IsPartialNameMatchCandidate(PeerInfo existing, PeerInfo incoming)
-        {
-            string existingName = existing.DisplayName ?? "";
-            string incomingName = incoming.DisplayName ?? "";
-
-            return existingName.Length >= 4 &&
-                   incomingName.Length >= 4 &&
-                   !string.Equals(existingName, incomingName, StringComparison.OrdinalIgnoreCase) &&
-                   (existingName.Contains(incomingName, StringComparison.OrdinalIgnoreCase) ||
-                    incomingName.Contains(existingName, StringComparison.OrdinalIgnoreCase));
-        }
-
-        public static bool IsSingleCandidateFallback(PeerInfo existing, PeerInfo incoming)
-        {
-            return IsBleWiFiDirectPair(existing, incoming) &&
-                   !HasStableIdentityConflict(existing, incoming) &&
-                   HasAnyDiscoveryIdentity(existing) &&
-                   HasAnyDiscoveryIdentity(incoming);
-        }
-
-        public static void Merge(PeerInfo target, PeerInfo source)
+        public static void MergeConfirmed(
+            PeerInfo target,
+            PeerInfo source,
+            string reason,
+            int score)
         {
             if (!string.IsNullOrWhiteSpace(source.DisplayName) &&
-                (string.IsNullOrWhiteSpace(target.DisplayName) ||
-                 source.DisplayName.Length > target.DisplayName.Length))
+                (string.IsNullOrWhiteSpace(target.DisplayName) || source.DisplayName.Length > target.DisplayName.Length))
             {
                 target.DisplayName = source.DisplayName;
             }
@@ -82,22 +23,17 @@ namespace direct_module.Services
             CopyIfPresent(source.BleName, value => target.BleName = value);
             CopyIfPresent(source.WiFiDirectName, value => target.WiFiDirectName = value);
             CopyIfPresent(source.MatchKey, value => target.MatchKey = value);
+            CopyIfPresent(source.DchatInformation, value => target.DchatInformation = value);
             CopyIfPresent(source.ShortSessionId, value => target.ShortSessionId = value);
             CopyIfPresent(source.RoleKey, value => target.RoleKey = value);
             CopyIfPresent(source.DeviceId, value => target.DeviceId = value);
+            CopyIfPresent(source.PeerId, value => target.PeerId = value);
             CopyIfPresent(source.DeviceKind, value => target.DeviceKind = value);
             CopyIfPresent(source.IpAddress, value => target.IpAddress = value);
             CopyIfPresent(source.RemoteIpAddress, value => target.RemoteIpAddress = value);
 
-            if (source.TcpPort > 0)
-            {
-                target.TcpPort = source.TcpPort;
-            }
-
-            if (source.IsEnabled.HasValue)
-            {
-                target.IsEnabled = source.IsEnabled;
-            }
+            if (source.TcpPort > 0) target.TcpPort = source.TcpPort;
+            if (source.IsEnabled.HasValue) target.IsEnabled = source.IsEnabled;
 
             target.IsConnected |= source.IsConnected;
             target.IsPreparingChatTcp |= source.IsPreparingChatTcp;
@@ -105,111 +41,101 @@ namespace direct_module.Services
             target.IsHelloVerified |= source.IsHelloVerified;
             target.IsChatReady |= source.IsChatReady;
             CopyIfPresent(source.StatusText, value => target.StatusText = value);
+
+            ClearPending(target);
+            target.MatchState = PeerMatchState.Confirmed;
+            target.MatchScore = score;
+            target.MatchReason = reason;
         }
 
-        private static bool IsBleWiFiDirectPartialNameMatch(PeerInfo existing, PeerInfo incoming)
+        public static void ApplyProvisional(
+            PeerInfo target,
+            PeerInfo wifiCandidate,
+            string reason,
+            int score)
         {
-            return IsSingleCandidateFallback(existing, incoming) &&
-                   IsPartialNameMatchCandidate(existing, incoming);
+            target.DiscoveredByWiFiDirect = true;
+            target.PendingWiFiDirectDeviceId = wifiCandidate.DeviceId;
+            target.PendingWiFiDirectName = !string.IsNullOrWhiteSpace(wifiCandidate.WiFiDirectName)
+                ? wifiCandidate.WiFiDirectName
+                : wifiCandidate.DisplayName;
+            target.PendingWiFiDirectDeviceKind = wifiCandidate.DeviceKind;
+            target.PendingWiFiDirectIsEnabled = wifiCandidate.IsEnabled;
+            target.MatchState = PeerMatchState.Provisional;
+            target.MatchScore = score;
+            target.MatchReason = reason;
         }
 
-        private static bool IsBleWiFiDirectPair(PeerInfo existing, PeerInfo incoming)
+        public static void ApplyBleIdentityForProvisional(PeerInfo target, PeerInfo bleCandidate)
         {
-            return (existing.DiscoveredByBle && incoming.DiscoveredByWiFiDirect) ||
-                   (existing.DiscoveredByWiFiDirect && incoming.DiscoveredByBle);
+            target.DisplayName = bleCandidate.DisplayName;
+            target.DiscoveredByBle = true;
+            CopyIfPresent(bleCandidate.BleName, value => target.BleName = value);
+            CopyIfPresent(bleCandidate.ShortSessionId, value => target.ShortSessionId = value);
+            CopyIfPresent(bleCandidate.RoleKey, value => target.RoleKey = value);
+            CopyIfPresent(bleCandidate.MatchKey, value => target.MatchKey = value);
+            if (bleCandidate.TcpPort > 0) target.TcpPort = bleCandidate.TcpPort;
         }
 
-        private static bool HasStableIdentityConflict(PeerInfo existing, PeerInfo incoming)
+        public static void ConfirmAfterHello(PeerInfo peer, string reason)
         {
-            return HasDifferentValue(existing.ShortSessionId, incoming.ShortSessionId) ||
-                   HasDifferentValue(existing.DeviceId, incoming.DeviceId) ||
-                   HasDifferentValue(existing.RemoteIpAddress, incoming.RemoteIpAddress) ||
-                   HasDifferentValue(existing.MatchKey, incoming.MatchKey) ||
-                   HasDifferentValue(existing.RoleKey, incoming.RoleKey);
-        }
-
-        private static bool HasSameValue(string left, string right)
-        {
-            return !string.IsNullOrWhiteSpace(left) &&
-                   !string.IsNullOrWhiteSpace(right) &&
-                   string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
-        }
-
-        private static bool IsBleNamePrefixMatch(PeerInfo existing, PeerInfo incoming)
-        {
-            return IsBleNamePrefixMatchCore(existing, incoming) ||
-                   IsBleNamePrefixMatchCore(incoming, existing);
-        }
-
-        private static bool IsBleNamePrefixMatchCore(PeerInfo blePeer, PeerInfo wifiPeer)
-        {
-            if (!blePeer.DiscoveredByBle ||
-                blePeer.DiscoveredByWiFiDirect ||
-                !wifiPeer.DiscoveredByWiFiDirect ||
-                wifiPeer.DiscoveredByBle)
+            if (!string.IsNullOrWhiteSpace(peer.PendingWiFiDirectDeviceId) &&
+                !peer.PendingWiFiDirectDeviceId.Contains("_PendingRequest", StringComparison.OrdinalIgnoreCase))
             {
-                return false;
+                peer.DeviceId = peer.PendingWiFiDirectDeviceId;
             }
 
-            string bleName = GetPeerBleName(blePeer);
-            string wifiName = GetPeerWiFiDirectName(wifiPeer);
+            CopyIfPresent(peer.PendingWiFiDirectName, value => peer.WiFiDirectName = value);
+            CopyIfPresent(peer.PendingWiFiDirectDeviceKind, value => peer.DeviceKind = value);
+            if (peer.PendingWiFiDirectIsEnabled.HasValue)
+            {
+                peer.IsEnabled = peer.PendingWiFiDirectIsEnabled;
+            }
 
-            return bleName.Length >= 3 &&
-                   wifiName.Length > bleName.Length &&
-                   wifiName.StartsWith(bleName, StringComparison.OrdinalIgnoreCase);
+            ClearPending(peer);
+            peer.MatchState = PeerMatchState.Confirmed;
+            peer.MatchScore = 100;
+            peer.MatchReason = reason;
         }
 
-        private static string GetBleName(PeerInfo existing, PeerInfo incoming)
+        public static void RejectProvisional(PeerInfo peer, string reason)
         {
-            return existing.DiscoveredByBle && !existing.DiscoveredByWiFiDirect
-                ? GetPeerBleName(existing)
-                : GetPeerBleName(incoming);
+            ClearPending(peer);
+            peer.DiscoveredByWiFiDirect = !string.IsNullOrWhiteSpace(peer.DeviceId);
+            peer.IsConnected = false;
+            peer.IsConnectingWiFiDirect = false;
+            peer.IsTcpConnected = false;
+            peer.IsHelloVerified = false;
+            peer.IsChatReady = false;
+            peer.RemoteIpAddress = "";
+            peer.MatchState = PeerMatchState.Rejected;
+            peer.MatchScore = 0;
+            peer.MatchReason = reason;
         }
 
-        private static string GetWifiDirectName(PeerInfo existing, PeerInfo incoming)
+        public static void ClearProvisionalCandidate(PeerInfo peer)
         {
-            return existing.DiscoveredByWiFiDirect && !existing.DiscoveredByBle
-                ? GetPeerWiFiDirectName(existing)
-                : GetPeerWiFiDirectName(incoming);
+            ClearPending(peer);
+            peer.DiscoveredByWiFiDirect = !string.IsNullOrWhiteSpace(peer.DeviceId);
+            if (peer.MatchState == PeerMatchState.Provisional)
+            {
+                peer.MatchState = PeerMatchState.Unmatched;
+                peer.MatchScore = 0;
+                peer.MatchReason = "";
+            }
         }
 
-        private static string GetPeerBleName(PeerInfo peer)
+        private static void ClearPending(PeerInfo peer)
         {
-            return !string.IsNullOrWhiteSpace(peer.BleName)
-                ? peer.BleName
-                : peer.DisplayName;
-        }
-
-        private static string GetPeerWiFiDirectName(PeerInfo peer)
-        {
-            return !string.IsNullOrWhiteSpace(peer.WiFiDirectName)
-                ? peer.WiFiDirectName
-                : peer.DisplayName;
-        }
-
-        private static bool HasDifferentValue(string left, string right)
-        {
-            return !string.IsNullOrWhiteSpace(left) &&
-                   !string.IsNullOrWhiteSpace(right) &&
-                   !string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
-        }
-
-        private static bool HasAnyDiscoveryIdentity(PeerInfo peer)
-        {
-            return !string.IsNullOrWhiteSpace(peer.ShortSessionId) ||
-                   !string.IsNullOrWhiteSpace(peer.DeviceId) ||
-                   !string.IsNullOrWhiteSpace(peer.RemoteIpAddress) ||
-                   !string.IsNullOrWhiteSpace(peer.MatchKey) ||
-                   !string.IsNullOrWhiteSpace(peer.RoleKey) ||
-                   !string.IsNullOrWhiteSpace(peer.DisplayName);
+            peer.PendingWiFiDirectDeviceId = "";
+            peer.PendingWiFiDirectName = "";
+            peer.PendingWiFiDirectDeviceKind = "";
+            peer.PendingWiFiDirectIsEnabled = null;
         }
 
         private static void CopyIfPresent(string value, Action<string> apply)
         {
-            if (!string.IsNullOrWhiteSpace(value))
-            {
-                apply(value);
-            }
+            if (!string.IsNullOrWhiteSpace(value)) apply(value);
         }
     }
 }

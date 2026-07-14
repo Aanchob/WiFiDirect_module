@@ -17,9 +17,11 @@
   <ItemGroup>
     <ApplicationDefinition Remove="ui\**" />
     <Compile Remove="ui\**" />
+    <Compile Remove="Tests\**" />
     <Content Remove="ui\**" />
     <EmbeddedResource Remove="ui\**" />
     <None Remove="ui\**" />
+    <None Remove="Tests\**" />
     <Page Remove="ui\**" />
     <PRIResource Remove="ui\**" />
   </ItemGroup>

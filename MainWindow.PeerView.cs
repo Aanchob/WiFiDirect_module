@@ -67,11 +67,18 @@ namespace direct_module
             SelectedPeerAvatarText.Text = PeerDisplayService.CreateInitials(displayName);
             SelectedPeerNameText.Text = displayName;
             SelectedPeerStatusText.Text = status;
-            SelectedPeerSourceText.Text = $"{peer.SourceText} / TCP:{(peer.IsTcpConnected ? "接続済み" : peer.IsPreparingChatTcp ? "準備中" : "未接続")} / HELLO:{(peer.IsHelloVerified ? "確認済み" : "未確認")}";
+            string matchText = peer.MatchState switch
+            {
+                PeerMatchState.Provisional => "仮紐付け",
+                PeerMatchState.Confirmed => "確認済み",
+                PeerMatchState.Rejected => "不一致",
+                _ => "未確認"
+            };
+            SelectedPeerSourceText.Text = $"{peer.SourceText} / 照合:{matchText} / TCP:{(peer.IsTcpConnected ? "接続済み" : peer.IsPreparingChatTcp ? "準備中" : "未接続")} / HELLO:{(peer.IsHelloVerified ? "確認済み" : "未確認")}";
             SelectedPeerProgress.Value = PeerDisplayService.GetProgressValue(peer);
             SelectedPeerIpText.Text = $"Remote IP: {PeerDisplayService.GetDisplayValue(peer.RemoteIpAddress)}";
             SelectedPeerSessionText.Text = $"Session: {PeerDisplayService.GetDisplayValue(peer.ShortSessionId)}";
-            SelectedPeerDeviceText.Text = $"DeviceId: {PeerDisplayService.GetDisplayValue(peer.DeviceId)}";
+            SelectedPeerDeviceText.Text = $"DeviceId: {PeerDisplayService.GetDisplayValue(peer.WiFiDirectDeviceIdForConnection)}";
             SelectedPeerOnlineDot.Fill = new SolidColorBrush(peer.IsChatReady ? Colors.LimeGreen : peer.IsTcpConnected ? Colors.DeepSkyBlue : Colors.Gray);
         }
 

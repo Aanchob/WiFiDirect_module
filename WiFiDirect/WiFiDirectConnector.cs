@@ -18,9 +18,10 @@ namespace direct_module.WiFiDirect
 
         public async Task ConnectAsync(PeerInfo peer)
         {
+            string connectionDeviceId = peer.WiFiDirectDeviceIdForConnection;
             LogReceived?.Invoke("Wi-Fi Direct接続開始");
             LogReceived?.Invoke($"Target Name: {peer.DisplayName}");
-            LogReceived?.Invoke($"Target DeviceId: {peer.DeviceId}");
+            LogReceived?.Invoke($"Target DeviceId: {connectionDeviceId}");
             LogReceived?.Invoke($"Target Kind: {peer.DeviceKind}");
             LogReceived?.Invoke($"Target IsEnabled: {peer.IsEnabled}");
 
@@ -30,13 +31,13 @@ namespace direct_module.WiFiDirect
                 return;
             }
 
-            if (string.IsNullOrWhiteSpace(peer.DeviceId))
+            if (string.IsNullOrWhiteSpace(connectionDeviceId))
             {
                 LogReceived?.Invoke("Wi-Fi Direct接続失敗: DeviceId が空です");
                 return;
             }
 
-            if (IsPendingRequestDeviceId(peer.DeviceId))
+            if (IsPendingRequestDeviceId(connectionDeviceId))
             {
                 LogReceived?.Invoke("_PendingRequest付きDeviceIdのため通常接続を中止します");
                 LogReceived?.Invoke("このDeviceIdは受信要求Accept専用です");
@@ -47,13 +48,13 @@ namespace direct_module.WiFiDirect
 
             try
             {
-                if (await ConnectWithRetryAsync(peer))
+                if (await ConnectWithRetryAsync(peer, connectionDeviceId))
                 {
                     return;
                 }
 
                 WiFiDirectDevice? device = await CreateDeviceFromIdAsync(
-                    peer.DeviceId,
+                    connectionDeviceId,
                     "FromIdAsync",
                     "Target",
                     preferClientRole: true,
@@ -77,7 +78,7 @@ namespace direct_module.WiFiDirect
             }
         }
 
-        private async Task<bool> ConnectWithRetryAsync(PeerInfo peer)
+        private async Task<bool> ConnectWithRetryAsync(PeerInfo peer, string connectionDeviceId)
         {
             for (int attempt = 1; attempt <= ConnectRetryCount; attempt++)
             {
@@ -89,7 +90,7 @@ namespace direct_module.WiFiDirect
                         : WiFiDirectPairingProcedure.Invitation;
 
                     WiFiDirectDevice? device = await CreateDeviceFromIdAsync(
-                        peer.DeviceId,
+                        connectionDeviceId,
                         "FromIdAsync",
                         "Target",
                         preferClientRole: true,
@@ -144,7 +145,7 @@ namespace direct_module.WiFiDirect
                 return;
             }
 
-            if (!IsPendingRequestDeviceId(peer.DeviceId))
+            if (!peer.IsIncomingConnectionRequest && !IsPendingRequestDeviceId(peer.DeviceId))
             {
                 LogReceived?.Invoke("通常DeviceIdなのでAcceptIncomingConnectionAsyncでは処理しません");
                 return;
@@ -273,7 +274,7 @@ namespace direct_module.WiFiDirect
             LogReceived?.Invoke($"HResult: 0x{ex.HResult:X8}");
             LogReceived?.Invoke($"Message: {ex.Message}");
             LogReceived?.Invoke($"{prefix} Name: {peer.DisplayName}");
-            LogReceived?.Invoke($"{prefix} DeviceId: {peer.DeviceId}");
+            LogReceived?.Invoke($"{prefix} DeviceId: {peer.WiFiDirectDeviceIdForConnection}");
         }
 
         private static bool IsPendingRequestDeviceId(string deviceId)

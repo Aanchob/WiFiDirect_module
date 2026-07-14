@@ -167,7 +167,7 @@ namespace direct_module.WiFiDirect
         {
             _devices[device.Id] = device;
 
-            string shortSessionId = TryExtractShortSessionId(device);
+            (string shortSessionId, string dchatInformation) = TryExtractDchatIdentity(device);
             string displayName = string.IsNullOrWhiteSpace(device.Name)
                 ? "Unknown Wi-Fi Direct device"
                 : device.Name;
@@ -184,7 +184,7 @@ namespace direct_module.WiFiDirect
                 : $"Wi-Fi Direct InformationElement取得: ShortSessionId={shortSessionId}");
             if (string.IsNullOrWhiteSpace(shortSessionId))
             {
-                LogReceived?.Invoke("ShortSessionId取得不可のため名前照合にフォールバック");
+                LogReceived?.Invoke("ShortSessionId取得不可。名前だけでは正式統合しません");
             }
             LogReceived?.Invoke("IsEnabledで除外せずPeerFoundへ流します");
             LogReceived?.Invoke($"Wi-Fi Direct Candidate発見: Name={displayName}, DeviceId={device.Id}");
@@ -201,6 +201,7 @@ namespace direct_module.WiFiDirect
                 TcpPort = 0,
                 ShortSessionId = shortSessionId,
                 MatchKey = shortSessionId,
+                DchatInformation = dchatInformation,
                 IsConnected = false
             };
 
@@ -270,42 +271,46 @@ namespace direct_module.WiFiDirect
             _scanTimeoutCts = null;
         }
 
-        private string TryExtractShortSessionId(DeviceInformation device)
+        private (string ShortSessionId, string DchatInformation) TryExtractDchatIdentity(DeviceInformation device)
         {
             try
             {
                 foreach (var property in device.Properties)
                 {
-                    if (property.Value is string text && TryParseDchatPayload(text, out string sessionId))
+                    if (property.Value is string text && TryParseDchatPayload(text, out string sessionId, out string payload))
                     {
-                        return sessionId;
+                        return (sessionId, payload);
                     }
 
                     if (property.Value is IBuffer buffer)
                     {
                         string textFromBuffer = ReadBufferAsString(buffer);
-                        if (TryParseDchatPayload(textFromBuffer, out string sessionIdFromBuffer))
+                        if (TryParseDchatPayload(textFromBuffer, out string sessionIdFromBuffer, out string payloadFromBuffer))
                         {
-                            return sessionIdFromBuffer;
+                            return (sessionIdFromBuffer, payloadFromBuffer);
                         }
                     }
                 }
 
                 LogReceived?.Invoke("Wi-Fi Direct InformationElement読み取り不可: DeviceInformation.PropertiesにDCHATなし");
-                return "";
+                return ("", "");
             }
             catch (Exception ex)
             {
                 LogReceived?.Invoke("Wi-Fi Direct InformationElement読み取り失敗");
                 LogReceived?.Invoke($"例外名: {ex.GetType().Name}");
                 LogReceived?.Invoke($"Message: {ex.Message}");
-                return "";
+                return ("", "");
             }
         }
 
-        private static bool TryParseDchatPayload(string text, out string shortSessionId)
+        private static bool TryParseDchatPayload(
+            string text,
+            out string shortSessionId,
+            out string dchatInformation)
         {
             shortSessionId = "";
+            dchatInformation = "";
 
             if (string.IsNullOrWhiteSpace(text) || !text.Contains("DCHAT", StringComparison.OrdinalIgnoreCase))
             {
@@ -317,12 +322,14 @@ namespace direct_module.WiFiDirect
             if (parts.Length >= 3 && parts[0] == "DCHAT")
             {
                 shortSessionId = parts[2];
+                dchatInformation = string.Join('|', parts[0], parts[1], parts[2]);
                 return !string.IsNullOrWhiteSpace(shortSessionId);
             }
 
             if (parts.Length >= 2 && parts[0] == "DCHAT")
             {
                 shortSessionId = parts[1];
+                dchatInformation = string.Join('|', parts[0], parts[1]);
                 return !string.IsNullOrWhiteSpace(shortSessionId);
             }
 

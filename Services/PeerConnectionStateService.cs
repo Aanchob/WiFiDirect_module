@@ -17,10 +17,11 @@ namespace direct_module.Services
             peer.CanConnect =
                 peer.DiscoveredByBle &&
                 peer.DiscoveredByWiFiDirect &&
-                !string.IsNullOrWhiteSpace(peer.DeviceId) &&
-                !peer.DeviceId.Contains("_PendingRequest", StringComparison.OrdinalIgnoreCase) &&
+                !string.IsNullOrWhiteSpace(peer.WiFiDirectDeviceIdForConnection) &&
+                !peer.WiFiDirectDeviceIdForConnection.Contains("_PendingRequest", StringComparison.OrdinalIgnoreCase) &&
                 !string.IsNullOrWhiteSpace(peer.ShortSessionId) &&
                 !string.IsNullOrWhiteSpace(peer.RoleKey) &&
+                (peer.MatchState == PeerMatchState.Provisional || peer.MatchState == PeerMatchState.Confirmed) &&
                 _connectionRoleService.IsLocalClientForWifiDirect(peer) &&
                 !peer.IsConnectingWiFiDirect &&
                 !peer.IsConnected &&
@@ -36,7 +37,7 @@ namespace direct_module.Services
             return peer.DiscoveredByBle &&
                    peer.DiscoveredByWiFiDirect &&
                    !string.IsNullOrWhiteSpace(peer.RoleKey) &&
-                   (!string.IsNullOrWhiteSpace(peer.RemoteIpAddress) || !string.IsNullOrWhiteSpace(peer.DeviceId)) &&
+                   (!string.IsNullOrWhiteSpace(peer.RemoteIpAddress) || !string.IsNullOrWhiteSpace(peer.WiFiDirectDeviceIdForConnection)) &&
                    !peer.IsChatReady &&
                    !peer.IsConnectingWiFiDirect &&
                    !peer.IsPreparingChatTcp &&

@@ -10,36 +10,45 @@ namespace direct_module.Services
     {
         IgnoredPendingRequest,
         Added,
-        Merged,
-        MergedPartialName,
-        MergedSingleCandidate
+        Updated,
+        Confirmed,
+        Provisional
     }
 
     public sealed class PeerRegistrationResult
     {
         public PeerInfo Peer { get; init; } = null!;
+
         public PeerRegistrationKind Kind { get; init; }
+
         public string MatchReason { get; init; } = "";
-        public int AmbiguousCandidateCount { get; init; }
+
+        public int MatchScore { get; init; }
+
+        public int UnmergedCandidateCount { get; init; }
+
+        public bool PartialNameCandidateDetected { get; init; }
+
+        public bool RoleConflictDetected { get; init; }
+
         public bool CollectionChanged => Kind == PeerRegistrationKind.Added;
     }
 
-    /// <summary>
-    /// Owns peer identity lookup and discovery-result reconciliation.
-    /// UI-specific rendering and connection-state calculation remain with the caller.
-    /// </summary>
     public sealed class PeerRegistryService
     {
+        private readonly ConnectionRoleService _connectionRoleService;
         private readonly List<PeerInfo> _peers = new();
+
+        public PeerRegistryService(ConnectionRoleService connectionRoleService)
+        {
+            _connectionRoleService = connectionRoleService;
+        }
 
         public IReadOnlyList<PeerInfo> Peers => _peers;
 
         public void AddSpecialPeer(PeerInfo peer)
         {
-            if (!_peers.Contains(peer))
-            {
-                _peers.Add(peer);
-            }
+            if (!_peers.Contains(peer)) _peers.Add(peer);
         }
 
         public PeerInfo? FindByShortSessionId(string shortSessionId)
@@ -51,78 +60,160 @@ namespace direct_module.Services
 
         public PeerInfo? FindByRemoteIpOrName(string remoteIpAddress, string displayName)
         {
+            if (!string.IsNullOrWhiteSpace(remoteIpAddress))
+            {
+                return _peers.FirstOrDefault(peer =>
+                    string.Equals(peer.RemoteIpAddress, remoteIpAddress, StringComparison.OrdinalIgnoreCase));
+            }
+
+            if (string.IsNullOrWhiteSpace(displayName)) return null;
             return _peers.FirstOrDefault(peer =>
-                (!string.IsNullOrWhiteSpace(remoteIpAddress) &&
-                 string.Equals(peer.RemoteIpAddress, remoteIpAddress, StringComparison.OrdinalIgnoreCase)) ||
-                (!string.IsNullOrWhiteSpace(displayName) &&
-                 string.Equals(peer.DisplayName, displayName, StringComparison.OrdinalIgnoreCase)));
+                string.Equals(peer.DisplayName, displayName, StringComparison.OrdinalIgnoreCase));
         }
 
         public PeerInfo? FindByPeerId(string peerId)
         {
             if (string.IsNullOrWhiteSpace(peerId)) return null;
             return _peers.FirstOrDefault(peer =>
+                string.Equals(peer.PeerId, peerId, StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(PeerIdentityService.GetConnectionId(peer), peerId, StringComparison.OrdinalIgnoreCase));
         }
 
         public PeerInfo? FindForHello(ChatMessage message, ChatConnection connection)
         {
             return FindByShortSessionId(message.ShortSessionId)
-                ?? FindByRemoteIpOrName(connection.RemoteIpAddress, "")
-                ?? FindByPeerId(connection.PeerId)
-                ?? FindByRemoteIpOrName("", message.SenderName);
+                ?? FindByPeerId(message.SenderId)
+                ?? FindByRemoteIpOrName(connection.RemoteIpAddress, "");
+        }
+
+        public PeerInfo? FindProvisionalForConnection(
+            string remoteIpAddress,
+            string originalPeerId,
+            string originalShortSessionId)
+        {
+            return _peers.FirstOrDefault(peer =>
+                peer.MatchState == PeerMatchState.Provisional &&
+                ((!string.IsNullOrWhiteSpace(remoteIpAddress) &&
+                  string.Equals(peer.RemoteIpAddress, remoteIpAddress, StringComparison.OrdinalIgnoreCase)) ||
+                 (!string.IsNullOrWhiteSpace(originalShortSessionId) &&
+                  string.Equals(peer.ShortSessionId, originalShortSessionId, StringComparison.OrdinalIgnoreCase)) ||
+                 (!string.IsNullOrWhiteSpace(originalPeerId) &&
+                  string.Equals(PeerIdentityService.GetConnectionId(peer), originalPeerId, StringComparison.OrdinalIgnoreCase))));
         }
 
         public PeerInfo? FindForConnection(ChatConnection connection)
         {
             return FindByPeerId(connection.PeerId)
                 ?? FindByShortSessionId(connection.ShortSessionId)
-                ?? FindByRemoteIpOrName(connection.RemoteIpAddress, "")
-                ?? FindByRemoteIpOrName("", connection.PeerName);
+                ?? FindByRemoteIpOrName(connection.RemoteIpAddress, "");
         }
 
         public PeerRegistrationResult Register(PeerInfo incoming)
         {
-            if (incoming.DeviceId.Contains("_PendingRequest", StringComparison.OrdinalIgnoreCase))
+            if (incoming.IsIncomingConnectionRequest ||
+                incoming.DeviceId.Contains("_PendingRequest", StringComparison.OrdinalIgnoreCase))
             {
                 return Result(incoming, PeerRegistrationKind.IgnoredPendingRequest);
             }
 
-            foreach (PeerInfo existing in _peers.Where(peer => !peer.IsGroupChat))
+            PeerInfo? sameInstance = _peers.FirstOrDefault(peer => ReferenceEquals(peer, incoming));
+            if (sameInstance != null)
             {
-                string reason = PeerMergeService.GetMatchReason(existing, incoming);
-                if (!string.IsNullOrEmpty(reason))
-                {
-                    PeerMergeService.Merge(existing, incoming);
-                    return Result(existing, PeerRegistrationKind.Merged, reason);
-                }
-
-                if (PeerMergeService.IsPartialNameMatchCandidate(existing, incoming) &&
-                    IsBleWiFiDirectPartialNamePair(existing, incoming))
-                {
-                    PeerMergeService.Merge(existing, incoming);
-                    return Result(existing, PeerRegistrationKind.MergedPartialName);
-                }
+                return Result(sameInstance, PeerRegistrationKind.Updated);
             }
 
-            List<PeerInfo> fallbackCandidates = _peers
+            PeerInfo? existingProvisional = _peers.FirstOrDefault(peer =>
+                peer.MatchState == PeerMatchState.Provisional &&
+                !string.IsNullOrWhiteSpace(peer.PendingWiFiDirectDeviceId) &&
+                string.Equals(
+                    peer.PendingWiFiDirectDeviceId,
+                    incoming.DeviceId,
+                    StringComparison.OrdinalIgnoreCase));
+            if (existingProvisional != null)
+            {
+                PeerMergeService.ApplyProvisional(
+                    existingProvisional,
+                    incoming,
+                    existingProvisional.MatchReason,
+                    existingProvisional.MatchScore);
+                return Result(
+                    existingProvisional,
+                    PeerRegistrationKind.Provisional,
+                    existingProvisional.MatchReason,
+                    existingProvisional.MatchScore);
+            }
+
+            var evaluations = _peers
                 .Where(peer => !peer.IsGroupChat)
-                .Where(peer => PeerMergeService.IsSingleCandidateFallback(peer, incoming))
+                .Select(peer => new
+                {
+                    Peer = peer,
+                    Evaluation = PeerMatchService.Evaluate(peer, incoming, IsRoleCompatible(peer, incoming))
+                })
                 .ToList();
 
-            if (fallbackCandidates.Count == 1)
+            var confirmed = evaluations
+                .Where(item => item.Evaluation.State == PeerMatchState.Confirmed)
+                .OrderByDescending(item => item.Evaluation.Score)
+                .FirstOrDefault();
+            if (confirmed != null)
             {
-                PeerInfo existing = fallbackCandidates[0];
-                PeerMergeService.Merge(existing, incoming);
-                return Result(existing, PeerRegistrationKind.MergedSingleCandidate);
+                PeerMergeService.MergeConfirmed(
+                    confirmed.Peer,
+                    incoming,
+                    confirmed.Evaluation.Reason,
+                    confirmed.Evaluation.Score);
+                return Result(
+                    confirmed.Peer,
+                    PeerRegistrationKind.Confirmed,
+                    confirmed.Evaluation.Reason,
+                    confirmed.Evaluation.Score);
             }
 
+            var provisional = evaluations
+                .Where(item => item.Evaluation.State == PeerMatchState.Provisional)
+                .ToList();
+            if (provisional.Count == 1)
+            {
+                PeerInfo target = provisional[0].Peer;
+                PeerInfo wifiCandidate = incoming.DiscoveredByWiFiDirect
+                    ? incoming
+                    : CreateWiFiCandidateSnapshot(target);
+                if (incoming.DiscoveredByBle && !target.DiscoveredByBle)
+                {
+                    PeerMergeService.ApplyBleIdentityForProvisional(target, incoming);
+                    target.DeviceId = "";
+                    target.WiFiDirectName = "";
+                    target.DeviceKind = "";
+                    target.IsEnabled = null;
+                }
+
+                PeerMatchEvaluation evaluation = provisional[0].Evaluation;
+                PeerMergeService.ApplyProvisional(target, wifiCandidate, evaluation.Reason, evaluation.Score);
+                return Result(
+                    target,
+                    PeerRegistrationKind.Provisional,
+                    evaluation.Reason,
+                    evaluation.Score);
+            }
+
+            int unmergedCandidateCount = evaluations.Count(item =>
+                PeerMatchService.IsBleWiFiDirectPair(item.Peer, incoming) &&
+                !item.Evaluation.HasStableIdentityConflict);
+            bool partialNameDetected = evaluations.Any(item => item.Evaluation.IsPartialNameCandidate);
+            bool roleConflictDetected = evaluations.Any(item => item.Evaluation.IsRoleConflict);
+
+            incoming.MatchState = PeerMatchState.Unmatched;
+            incoming.MatchScore = 0;
+            incoming.MatchReason = "強い照合キーなし";
             _peers.Add(incoming);
             return new PeerRegistrationResult
             {
                 Peer = incoming,
                 Kind = PeerRegistrationKind.Added,
-                AmbiguousCandidateCount = fallbackCandidates.Count
+                UnmergedCandidateCount = unmergedCandidateCount,
+                PartialNameCandidateDetected = partialNameDetected,
+                RoleConflictDetected = roleConflictDetected
             };
         }
 
@@ -131,11 +222,17 @@ namespace direct_module.Services
             var changed = new List<PeerInfo>();
             foreach (PeerInfo peer in _peers.ToList())
             {
-                if (peer.IsGroupChat || !peer.DiscoveredByWiFiDirect || peer.IsConnected) continue;
+                if (peer.IsGroupChat || !peer.DiscoveredByWiFiDirect) continue;
+
+                bool activeProvisional = peer.MatchState == PeerMatchState.Provisional &&
+                    (peer.IsConnectingWiFiDirect || peer.IsConnected || peer.IsPreparingChatTcp || peer.IsTcpConnected);
+                bool confirmedReconnectTarget = peer.MatchState == PeerMatchState.Confirmed &&
+                    (!string.IsNullOrWhiteSpace(peer.DeviceId) || !string.IsNullOrWhiteSpace(peer.RemoteIpAddress));
+                if (activeProvisional || confirmedReconnectTarget) continue;
 
                 if (peer.DiscoveredByBle)
                 {
-                    peer.DiscoveredByWiFiDirect = false;
+                    PeerMergeService.ClearProvisionalCandidate(peer);
                     peer.WiFiDirectName = "";
                     peer.DeviceId = "";
                     peer.DeviceKind = "";
@@ -151,13 +248,43 @@ namespace direct_module.Services
             return changed;
         }
 
-        private static PeerRegistrationResult Result(PeerInfo peer, PeerRegistrationKind kind, string reason = "")
-            => new() { Peer = peer, Kind = kind, MatchReason = reason };
-
-        private static bool IsBleWiFiDirectPartialNamePair(PeerInfo existing, PeerInfo incoming)
+        private bool IsRoleCompatible(PeerInfo existing, PeerInfo incoming)
         {
-            return (existing.DiscoveredByBle && !existing.DiscoveredByWiFiDirect && incoming.DiscoveredByWiFiDirect) ||
-                   (incoming.DiscoveredByBle && !incoming.DiscoveredByWiFiDirect && existing.DiscoveredByWiFiDirect);
+            if (!PeerMatchService.IsBleWiFiDirectPair(existing, incoming)) return false;
+            PeerInfo blePeer = existing.DiscoveredByBle ? existing : incoming;
+            return ConnectionRoleService.HasRoleKey(blePeer) &&
+                   _connectionRoleService.IsLocalClientForWifiDirect(blePeer);
+        }
+
+        private static PeerInfo CreateWiFiCandidateSnapshot(PeerInfo peer)
+        {
+            return new PeerInfo
+            {
+                DisplayName = peer.DisplayName,
+                WiFiDirectName = peer.WiFiDirectName,
+                DeviceId = peer.DeviceId,
+                DeviceKind = peer.DeviceKind,
+                IsEnabled = peer.IsEnabled,
+                DiscoveredByWiFiDirect = true,
+                DchatInformation = peer.DchatInformation,
+                ShortSessionId = peer.ShortSessionId,
+                MatchKey = peer.MatchKey
+            };
+        }
+
+        private static PeerRegistrationResult Result(
+            PeerInfo peer,
+            PeerRegistrationKind kind,
+            string reason = "",
+            int score = 0)
+        {
+            return new PeerRegistrationResult
+            {
+                Peer = peer,
+                Kind = kind,
+                MatchReason = reason,
+                MatchScore = score
+            };
         }
     }
 }

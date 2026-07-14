@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\..\WiFiDirect\Models\PeerInfo.cs" Link="PeerInfo.cs" />
+    <Compile Include="..\..\Services\PeerMatchService.cs" Link="PeerMatchService.cs" />
+    <Compile Include="..\..\Services\PeerMergeService.cs" Link="PeerMergeService.cs" />
+    <Compile Include="..\..\Services\PeerRegistryService.cs" Link="PeerRegistryService.cs" />
+    <Compile Include="..\..\Services\ConnectionRoleService.cs" Link="ConnectionRoleService.cs" />
+    <Compile Include="..\..\Services\PeerIdentityService.cs" Link="PeerIdentityService.cs" />
+  </ItemGroup>
+</Project>
