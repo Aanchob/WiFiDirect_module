@@ -236,7 +236,11 @@ namespace direct_module.Database
             ExecuteNonQuery(connection,
                 "UPDATE ChatMessages " +
                 "SET MessageId = 'legacy:' || Id || ':' || lower(hex(randomblob(16))) " +
-                "WHERE substr(MessageId, 1, 9) <> 'dpapi:v1:' AND " +
+                // Only normalize rows that have not entered the protected lookup
+                // scheme yet.  Rewriting an invalid identifier on a protected row
+                // here would erase the evidence needed below to distinguish a
+                // recoverable damaged row from a mismatched (tampered) token.
+                "WHERE MessageLookupKey = '' AND substr(MessageId, 1, 9) <> 'dpapi:v1:' AND " +
                 "(typeof(MessageId) <> 'text' OR trim(MessageId) = '' OR length(MessageId) > 128 " +
                 "OR Id NOT IN " +
                 "(SELECT MIN(Id) FROM ChatMessages " +
@@ -552,7 +556,8 @@ namespace direct_module.Database
                                 newStoredMessageId,
                                 newStoredConversationId,
                                 expectedMessageToken,
-                                expectedConversationToken));
+                                expectedConversationToken,
+                                recoveredMessageId || recoveredConversationId));
                         }
                     }
 
@@ -616,6 +621,14 @@ namespace direct_module.Database
                             {
                                 throw new HistoryProtectionUnavailableException(
                                     "A history lookup row changed concurrently; migration was rolled back.");
+                            }
+
+                            if (update.ScrubSensitiveValues)
+                            {
+                                ScrubUnreadableHistoryValues(
+                                    connection,
+                                    transaction,
+                                    update.Original.Id);
                             }
                         }
                         transaction.Commit();
@@ -728,6 +741,43 @@ namespace direct_module.Database
             }
             transaction.Commit();
             return true;
+        }
+
+        private static void ScrubUnreadableHistoryValues(
+            SqliteConnection connection,
+            SqliteTransaction transaction,
+            long rowId)
+        {
+            // Once either protected identifier is unreadable, plaintext values in
+            // the same row cannot be trusted as legacy data.  Replace them instead
+            // of encrypting attacker-controlled text during the legacy migration.
+            using SqliteCommand scrub = connection.CreateCommand();
+            scrub.Transaction = transaction;
+            scrub.CommandText =
+                """
+                UPDATE ChatMessages
+                SET MessageType = @MessageType,
+                    SenderId = @Empty,
+                    SenderName = @Unreadable,
+                    ReceiverId = @Empty,
+                    ReceiverName = @Unreadable,
+                    Message = @Unreadable,
+                    IsMine = @False,
+                    IsGroup = @False,
+                    FileId = NULL,
+                    FileName = NULL,
+                    LocalFilePath = NULL,
+                    FileSize = NULL
+                WHERE Id = @Id;
+                """;
+            scrub.Parameters.AddWithValue("@MessageType", UserDataProtection.ProtectString("unreadable"));
+            scrub.Parameters.AddWithValue("@Empty", UserDataProtection.ProtectString(""));
+            scrub.Parameters.AddWithValue(
+                "@Unreadable",
+                UserDataProtection.ProtectString("[unreadable history]"));
+            scrub.Parameters.AddWithValue("@False", UserDataProtection.ProtectString("0"));
+            scrub.Parameters.AddWithValue("@Id", rowId);
+            scrub.ExecuteNonQuery();
         }
 
         private static bool HistoryLookupRowAlreadyConvergedOrRemoved(
@@ -2180,7 +2230,8 @@ namespace direct_module.Database
             string StoredMessageId,
             string StoredConversationId,
             string MessageLookupKey,
-            string ConversationLookupKey);
+            string ConversationLookupKey,
+            bool ScrubSensitiveValues);
 
         private sealed record LegacyAttachmentPathRow(
             long Id,
