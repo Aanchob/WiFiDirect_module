@@ -33,6 +33,15 @@ namespace direct_module.Network
 
         public Task StartAsync(int port) => StartAsync(port, CancellationToken.None);
 
+        public async Task RestartAsync(int port, CancellationToken cancellationToken)
+        {
+            // A Wi-Fi Direct session creates (or replaces) a virtual network
+            // adapter after discovery has already started. Rebind so the listener
+            // is registered on the newly available interface as well.
+            Stop();
+            await StartAsync(port, cancellationToken).ConfigureAwait(false);
+        }
+
         public async Task StartAsync(int port, CancellationToken cancellationToken)
         {
             if (port is <= 0 or > 65535) throw new ArgumentOutOfRangeException(nameof(port));

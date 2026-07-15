@@ -901,7 +901,7 @@ namespace direct_module
 
                     AddLog($"Wi-Fi Direct接続完了通知: {peer.DisplayText}", LogLevel.Success);
                     AddOrMergePeer(peer);
-                    await EnsureTcpServerStartedAsync("Wi-Fi Direct接続完了");
+                    await RebindTcpServerAfterWiFiDirectConnectionAsync();
 
                     PeerInfo effectivePeer = FindPeerForTcpRoleDecision(peer) ?? peer;
                     if (session.Direction == WiFiDirectConnectionDirection.Outgoing)
@@ -2260,6 +2260,15 @@ namespace direct_module
 
             AddLog($"TCP待ち受け開始: Port={LocalTcpPort}, Reason={reason}");
             await _tcpServer.StartAsync(LocalTcpPort, _windowLifetimeCancellation.Token);
+        }
+
+        private async System.Threading.Tasks.Task RebindTcpServerAfterWiFiDirectConnectionAsync()
+        {
+            if (!EnsureLocalIdentityReadyForNetworking()) return;
+
+            AddLog($"Wi-Fi Directネットワーク確立後にTCP待ち受けを再設定します: Port={LocalTcpPort}");
+            await _tcpServer.RestartAsync(LocalTcpPort, _windowLifetimeCancellation.Token);
+            AddLog($"Wi-Fi Direct側のTCP待ち受け再設定完了: Port={LocalTcpPort}", LogLevel.Success);
         }
 
         private static int GetPeerTcpPort(PeerInfo peer)
