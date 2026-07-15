@@ -1,0 +1,57 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <PlatformTarget>x64</PlatformTarget>
+    <Platforms>x64</Platforms>
+    <OutputType>Library</OutputType>
+    <IsTestProject>true</IsTestProject>
+    <IsPackable>false</IsPackable>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <TestingPlatformDotnetTestSupport>false</TestingPlatformDotnetTestSupport>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Non-.cs suffixes keep the WinUI application's default glob from compiling tests. -->
+    <Compile Include="*.source" />
+    <Compile Include="..\..\Crypto\AesGcmMessageCrypto.cs" Link="Product\Crypto\AesGcmMessageCrypto.cs" />
+    <Compile Include="..\..\Crypto\ChatSessionKeyDerivation.cs" Link="Product\Crypto\ChatSessionKeyDerivation.cs" />
+    <Compile Include="..\..\Crypto\EcdhService.cs" Link="Product\Crypto\EcdhService.cs" />
+    <Compile Include="..\..\Crypto\EcdsaChatIdentity.cs" Link="Product\Crypto\EcdsaChatIdentity.cs" />
+    <Compile Include="..\..\Crypto\IMessageCrypto.cs" Link="Product\Crypto\IMessageCrypto.cs" />
+    <Compile Include="..\..\Crypto\NoOpMessageCrypto.cs" Link="Product\Crypto\NoOpMessageCrypto.cs" />
+    <Compile Include="..\..\Discovery\BleAdvertisementPayload.cs" Link="Product\Discovery\BleAdvertisementPayload.cs" />
+    <Compile Include="..\..\Database\ChatRepository.cs" Link="Product\Database\ChatRepository.cs" />
+    <Compile Include="..\..\Database\DatabaseService.cs" Link="Product\Database\DatabaseService.cs" />
+    <Compile Include="..\..\Database\HistoryTimestampPolicy.cs" Link="Product\Database\HistoryTimestampPolicy.cs" />
+    <Compile Include="..\..\Database\UserDataProtection.cs" Link="Product\Database\UserDataProtection.cs" />
+    <Compile Include="..\..\Network\ChatMessage.cs" Link="Product\Network\ChatMessage.cs" />
+    <Compile Include="..\..\Network\ChatMessageRateLimiter.cs" Link="Product\Network\ChatMessageRateLimiter.cs" />
+    <Compile Include="..\..\Network\ChatMessageValidator.cs" Link="Product\Network\ChatMessageValidator.cs" />
+    <Compile Include="..\..\Network\ChatConnection.cs" Link="Product\Network\ChatConnection.cs" />
+    <Compile Include="..\..\Services\ChatHistoryService.cs" Link="Product\Services\ChatHistoryService.cs" />
+    <Compile Include="..\..\Services\ConnectionRoleService.cs" Link="Product\Services\ConnectionRoleService.cs" />
+    <Compile Include="..\..\Services\FileTransferService.cs" Link="Product\Services\FileTransferService.cs" />
+    <Compile Include="..\..\Services\LocalIdentityService.cs" Link="Product\Services\LocalIdentityService.cs" />
+    <Compile Include="..\..\Services\PeerIdentityService.cs" Link="Product\Services\PeerIdentityService.cs" />
+    <Compile Include="..\..\Services\PeerMergeService.cs" Link="Product\Services\PeerMergeService.cs" />
+    <Compile Include="..\..\Services\PeerRegistryService.cs" Link="Product\Services\PeerRegistryService.cs" />
+    <Compile Include="..\..\WiFiDirect\Models\ChatMessage.cs" Link="Product\Models\ChatMessage.cs" />
+    <Compile Include="..\..\WiFiDirect\Models\PeerInfo.cs" Link="Product\WiFiDirect\PeerInfo.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.10" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.8.1" />
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="3.0.3" />
+    <PackageReference Include="xunit.v3" Version="3.2.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.5">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+
+</Project>

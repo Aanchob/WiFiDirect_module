@@ -23,7 +23,7 @@ namespace direct_module.Services
             ShortSessionId = _shortSessionId,
             Body = body,
             IsGroup = isGroup,
-            ConversationId = isGroup ? "group" : ""
+            ConversationId = isGroup ? PeerIdentityService.DefaultGroupConversationId : ""
         };
     }
 }

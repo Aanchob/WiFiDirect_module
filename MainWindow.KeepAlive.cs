@@ -1,4 +1,5 @@
 using System;
+using System.Threading;
 using direct_module.Network;
 
 namespace direct_module
@@ -9,7 +10,7 @@ namespace direct_module
         {
             try
             {
-                AddLog($"PING受信: Peer={GetConnectionPeerName(sourceConnection)}", LogLevel.Debug);
+                EnqueueLog($"PING受信: Peer={GetConnectionPeerName(sourceConnection)}", LogLevel.Debug);
 
                 var pong = new ChatMessage
                 {
@@ -20,26 +21,34 @@ namespace direct_module
                     Body = ""
                 };
 
-                await sourceConnection.SendAsync(pong);
-                AddLog($"PONG送信: Peer={GetConnectionPeerName(sourceConnection)}", LogLevel.Debug);
+                using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(
+                    sourceConnection.LifetimeToken,
+                    _windowLifetimeCancellation.Token);
+                await sourceConnection.SendAsync(pong, cancellation.Token);
+                EnqueueLog($"PONG送信: Peer={GetConnectionPeerName(sourceConnection)}", LogLevel.Debug);
+            }
+            catch (OperationCanceledException) when (
+                _windowLifetimeCancellation.IsCancellationRequested ||
+                sourceConnection.LifetimeToken.IsCancellationRequested)
+            {
             }
             catch (Exception ex)
             {
-                AddLog($"PONG送信失敗: Peer={GetConnectionPeerName(sourceConnection)}", LogLevel.Error);
-                AddLog($"例外名: {ex.GetType().Name}", LogLevel.Error);
-                AddLog($"HResult: 0x{ex.HResult:X8}", LogLevel.Error);
-                AddLog($"Message: {ex.Message}", LogLevel.Error);
+                EnqueueLog($"PONG送信失敗: Peer={GetConnectionPeerName(sourceConnection)}", LogLevel.Error);
+                EnqueueLog($"例外名: {ex.GetType().Name}", LogLevel.Error);
+                EnqueueLog($"HResult: 0x{ex.HResult:X8}", LogLevel.Error);
+                EnqueueLog($"Message: {ex.Message}", LogLevel.Error);
             }
         }
 
         private void HandlePongMessage(ChatMessage message, ChatConnection sourceConnection)
         {
-            sourceConnection.LastPongAt = DateTime.Now;
+            sourceConnection.LastPongAt = DateTime.UtcNow;
             sourceConnection.LastResponseAt = sourceConnection.LastPongAt;
             sourceConnection.IsPingWaiting = false;
 
-            AddLog($"PONG受信: Peer={GetConnectionPeerName(sourceConnection)}", LogLevel.Debug);
-            AddLog($"接続確認成功: Peer={GetConnectionPeerName(sourceConnection)}", LogLevel.Success);
+            EnqueueLog($"PONG受信: Peer={GetConnectionPeerName(sourceConnection)}", LogLevel.Debug);
+            EnqueueLog($"接続確認成功: Peer={GetConnectionPeerName(sourceConnection)}", LogLevel.Success);
         }
 
         private async System.Threading.Tasks.Task SendPingAfterHelloAsync(ChatConnection connection)

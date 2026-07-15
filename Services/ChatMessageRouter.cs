@@ -1,5 +1,6 @@
 using System;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using direct_module.Network;
 
@@ -11,29 +12,25 @@ namespace direct_module.Services
 
         public ChatMessageRouter(ChatConnectionManager connections) => _connections = connections;
 
-        public async Task SendAsync(ChatMessage message, bool isGroup, bool localIsHost, ChatConnection? directConnection)
+        public async Task<BroadcastResult?> SendAsync(
+            ChatMessage message,
+            bool isGroup,
+            ChatConnection? directConnection,
+            CancellationToken cancellationToken = default)
         {
             if (!isGroup)
             {
                 if (directConnection == null || !directConnection.IsConnected || !directConnection.IsReady)
                     throw new InvalidOperationException("The destination connection is not ready.");
 
-                await directConnection.SendAsync(message);
-                return;
+                await directConnection.SendAsync(message, cancellationToken);
+                return null;
             }
 
-            if (localIsHost)
-            {
-                await _connections.BroadcastAsync(message);
-                return;
-            }
+            if (!_connections.Connections.Any(connection => connection.IsConnected && connection.IsReady))
+                throw new InvalidOperationException("There are no ready group recipients.");
 
-            ChatConnection? host = _connections.Connections
-                .FirstOrDefault(connection => connection.IsConnected && connection.IsReady);
-            if (host == null)
-                throw new InvalidOperationException("There is no ready connection to the host.");
-
-            await host.SendAsync(message);
+            return await _connections.BroadcastAsync(message, cancellationToken);
         }
     }
 }

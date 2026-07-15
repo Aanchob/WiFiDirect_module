@@ -1,0 +1,78 @@
+using direct_module.Services;
+using direct_module.WiFiDirect.Models;
+using Xunit;
+
+namespace direct_module.CoreTests;
+
+public sealed class PeerBoundaryTests
+{
+    [Fact]
+    public void NonProtocolLengthDiscoveryIdentityIsNeverUsedForRoleOrAmbiguityResolution()
+    {
+        const string oversizedIdentity = "11223344556677889900AABBCCDDEEFF";
+        var first = new PeerInfo
+        {
+            DisplayName = "first",
+            MatchKey = oversizedIdentity,
+            ShortSessionId = oversizedIdentity[..4],
+            RoleKey = oversizedIdentity[..8],
+            DeviceId = "device-1",
+            LastSeenAtUtc = DateTimeOffset.UtcNow
+        };
+        var second = new PeerInfo
+        {
+            DisplayName = "second",
+            MatchKey = oversizedIdentity,
+            ShortSessionId = oversizedIdentity[..4],
+            RoleKey = oversizedIdentity[..8],
+            DeviceId = "device-2",
+            LastSeenAtUtc = DateTimeOffset.UtcNow.AddSeconds(1)
+        };
+
+        Assert.False(ConnectionRoleService.HasRoleKey(first));
+
+        var registry = new PeerRegistryService();
+        Assert.Equal(PeerRegistrationKind.Added, registry.Register(first).Kind);
+        Assert.Equal(PeerRegistrationKind.Added, registry.Register(second).Kind);
+        Assert.Null(registry.FindByShortSessionId(first.ShortSessionId));
+    }
+
+    [Fact]
+    public void MalformedPeerIdCannotMergePeersOrBecomeAConnectionIdentity()
+    {
+        var first = new PeerInfo
+        {
+            PeerId = "peer:not-a-guid",
+            DisplayName = "first",
+            MatchKey = "111111111111111111111111",
+            DeviceId = "device-1"
+        };
+        var second = new PeerInfo
+        {
+            PeerId = "peer:not-a-guid",
+            DisplayName = "second",
+            MatchKey = "222222222222222222222222",
+            DeviceId = "device-2"
+        };
+
+        var registry = new PeerRegistryService();
+        Assert.Equal(PeerRegistrationKind.Added, registry.Register(first).Kind);
+        Assert.Equal(PeerRegistrationKind.Added, registry.Register(second).Kind);
+        Assert.Equal(2, registry.Peers.Count(peer => !peer.IsGroupChat));
+        Assert.Equal(string.Empty, first.PeerId);
+        Assert.Equal(string.Empty, second.PeerId);
+        Assert.Null(registry.FindByPeerId("peer:not-a-guid"));
+        Assert.Equal("device-1", PeerIdentityService.GetConnectionId(first));
+    }
+
+    [Fact]
+    public void StablePeerIdIsCanonicalizedBeforeUseAsAConnectionIdentity()
+    {
+        const string upper = "PEER:00112233445566778899AABBCCDDEEFF";
+        var peer = new PeerInfo { PeerId = upper, DeviceId = "fallback" };
+
+        Assert.Equal(
+            "peer:00112233445566778899aabbccddeeff",
+            PeerIdentityService.GetConnectionId(peer));
+    }
+}

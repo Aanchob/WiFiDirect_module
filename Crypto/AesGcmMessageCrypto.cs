@@ -1,4 +1,5 @@
 using System;
+using System.Buffers.Binary;
 using System.Security.Cryptography;
 
 namespace direct_module.Crypto
@@ -6,103 +7,103 @@ namespace direct_module.Crypto
     public sealed class AesGcmMessageCrypto : IMessageCrypto, IDisposable
     {
         public const int KeySizeBytes = 32;
+        public const int SequenceSizeBytes = sizeof(ulong);
         public const int NonceSizeBytes = 12;
         public const int TagSizeBytes = 16;
-        private const int MinimumPayloadSize = NonceSizeBytes + TagSizeBytes;
+        public const int OverheadSizeBytes = SequenceSizeBytes + NonceSizeBytes + TagSizeBytes;
 
-        private readonly byte[] _key;
+        private readonly object _gate = new();
+        private readonly byte[] _sendKey;
+        private readonly byte[] _receiveKey;
+        private ulong _nextSendSequence;
+        private ulong _nextReceiveSequence;
         private bool _disposed;
 
-        public AesGcmMessageCrypto(byte[] key)
+        public AesGcmMessageCrypto(byte[] sendKey, byte[] receiveKey)
         {
-            if (key == null || key.Length != KeySizeBytes)
-            {
-                throw new ArgumentException(
-                    "AES-256では32バイトの鍵が必要です。",
-                    nameof(key));
-            }
-
-            _key = (byte[])key.Clone();
+            if (sendKey == null || sendKey.Length != KeySizeBytes)
+                throw new ArgumentException("AES-256 requires a 32-byte send key.", nameof(sendKey));
+            if (receiveKey == null || receiveKey.Length != KeySizeBytes)
+                throw new ArgumentException("AES-256 requires a 32-byte receive key.", nameof(receiveKey));
+            if (CryptographicOperations.FixedTimeEquals(sendKey, receiveKey))
+                throw new ArgumentException("Send and receive keys must be direction-specific.", nameof(receiveKey));
+            _sendKey = (byte[])sendKey.Clone();
+            _receiveKey = (byte[])receiveKey.Clone();
         }
 
         public byte[] Encrypt(byte[] plainBytes)
         {
-            ThrowIfDisposed();
-
-            if (plainBytes == null)
+            ArgumentNullException.ThrowIfNull(plainBytes);
+            lock (_gate)
             {
-                throw new ArgumentNullException(nameof(plainBytes));
+                ThrowIfDisposed();
+                if (_nextSendSequence == ulong.MaxValue)
+                    throw new CryptographicException("The encrypted message sequence was exhausted.");
+
+                byte[] encryptedBytes = new byte[checked(OverheadSizeBytes + plainBytes.Length)];
+                Span<byte> sequenceBytes = encryptedBytes.AsSpan(0, SequenceSizeBytes);
+                Span<byte> nonce = encryptedBytes.AsSpan(SequenceSizeBytes, NonceSizeBytes);
+                Span<byte> tag = encryptedBytes.AsSpan(SequenceSizeBytes + NonceSizeBytes, TagSizeBytes);
+                Span<byte> cipherText = encryptedBytes.AsSpan(OverheadSizeBytes);
+                BinaryPrimitives.WriteUInt64LittleEndian(sequenceBytes, _nextSendSequence);
+                RandomNumberGenerator.Fill(nonce);
+
+                using var aes = new AesGcm(_sendKey, TagSizeBytes);
+                aes.Encrypt(nonce, plainBytes, cipherText, tag, sequenceBytes);
+                _nextSendSequence++;
+                return encryptedBytes;
             }
-
-            byte[] nonce = RandomNumberGenerator.GetBytes(NonceSizeBytes);
-            byte[] cipherText = new byte[plainBytes.Length];
-            byte[] tag = new byte[TagSizeBytes];
-
-            using var aes = new AesGcm(_key, TagSizeBytes);
-            aes.Encrypt(nonce, plainBytes, cipherText, tag);
-
-            byte[] encryptedBytes = new byte[MinimumPayloadSize + cipherText.Length];
-            Buffer.BlockCopy(nonce, 0, encryptedBytes, 0, nonce.Length);
-            Buffer.BlockCopy(tag, 0, encryptedBytes, nonce.Length, tag.Length);
-            Buffer.BlockCopy(
-                cipherText,
-                0,
-                encryptedBytes,
-                MinimumPayloadSize,
-                cipherText.Length);
-
-            return encryptedBytes;
         }
 
         public byte[] Decrypt(byte[] encryptedBytes)
         {
-            ThrowIfDisposed();
+            ArgumentNullException.ThrowIfNull(encryptedBytes);
+            if (encryptedBytes.Length < OverheadSizeBytes)
+                throw new ArgumentException("The encrypted payload is truncated.", nameof(encryptedBytes));
 
-            if (encryptedBytes == null || encryptedBytes.Length < MinimumPayloadSize)
+            lock (_gate)
             {
-                throw new ArgumentException(
-                    "暗号データが不正です。",
-                    nameof(encryptedBytes));
+                ThrowIfDisposed();
+                ReadOnlySpan<byte> sequenceBytes = encryptedBytes.AsSpan(0, SequenceSizeBytes);
+                ulong sequence = BinaryPrimitives.ReadUInt64LittleEndian(sequenceBytes);
+                if (sequence != _nextReceiveSequence)
+                    throw new CryptographicException("An encrypted message was replayed or arrived out of sequence.");
+                if (_nextReceiveSequence == ulong.MaxValue)
+                    throw new CryptographicException("The encrypted message sequence was exhausted.");
+
+                ReadOnlySpan<byte> nonce = encryptedBytes.AsSpan(SequenceSizeBytes, NonceSizeBytes);
+                ReadOnlySpan<byte> tag = encryptedBytes.AsSpan(SequenceSizeBytes + NonceSizeBytes, TagSizeBytes);
+                ReadOnlySpan<byte> cipherText = encryptedBytes.AsSpan(OverheadSizeBytes);
+                byte[] plainBytes = new byte[cipherText.Length];
+                try
+                {
+                    using var aes = new AesGcm(_receiveKey, TagSizeBytes);
+                    aes.Decrypt(nonce, cipherText, tag, plainBytes, sequenceBytes);
+                    _nextReceiveSequence++;
+                    return plainBytes;
+                }
+                catch
+                {
+                    CryptographicOperations.ZeroMemory(plainBytes);
+                    throw;
+                }
             }
-
-            byte[] nonce = new byte[NonceSizeBytes];
-            byte[] tag = new byte[TagSizeBytes];
-            byte[] cipherText = new byte[encryptedBytes.Length - MinimumPayloadSize];
-
-            Buffer.BlockCopy(encryptedBytes, 0, nonce, 0, nonce.Length);
-            Buffer.BlockCopy(encryptedBytes, nonce.Length, tag, 0, tag.Length);
-            Buffer.BlockCopy(
-                encryptedBytes,
-                MinimumPayloadSize,
-                cipherText,
-                0,
-                cipherText.Length);
-
-            byte[] plainBytes = new byte[cipherText.Length];
-
-            using var aes = new AesGcm(_key, TagSizeBytes);
-            aes.Decrypt(nonce, cipherText, tag, plainBytes);
-
-            return plainBytes;
         }
 
         public void Dispose()
         {
-            if (_disposed)
+            lock (_gate)
             {
-                return;
+                if (_disposed) return;
+                CryptographicOperations.ZeroMemory(_sendKey);
+                CryptographicOperations.ZeroMemory(_receiveKey);
+                _disposed = true;
             }
-
-            CryptographicOperations.ZeroMemory(_key);
-            _disposed = true;
         }
 
         private void ThrowIfDisposed()
         {
-            if (_disposed)
-            {
-                throw new ObjectDisposedException(nameof(AesGcmMessageCrypto));
-            }
+            if (_disposed) throw new ObjectDisposedException(nameof(AesGcmMessageCrypto));
         }
     }
 }

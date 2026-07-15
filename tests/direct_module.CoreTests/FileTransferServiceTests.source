@@ -1,0 +1,797 @@
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Reflection;
+using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
+using direct_module.Network;
+using direct_module.Services;
+using Xunit;
+
+namespace direct_module.CoreTests;
+
+public sealed class FileTransferServiceTests
+{
+    [Fact]
+    public async Task ConstructorIsIoLightAndInboundTransfersFailClosedUntilReady()
+    {
+        using var temp = new TestDirectory();
+        string attachments = System.IO.Path.Combine(temp.Path, "not-created-yet", "attachments");
+        var service = new FileTransferService(
+            attachments,
+            System.IO.Path.Combine(temp.Path, "downloads"),
+            System.IO.Path.Combine(temp.Path, "outgoing"));
+
+        Assert.False(Directory.Exists(attachments));
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => service.HandleFileStartAsync(
+                CreateStart(0),
+                "authenticated:peer-not-ready",
+                TestContext.Current.CancellationToken));
+        Assert.False(Directory.Exists(attachments));
+
+        service.EnsureStorageReady();
+        ChatMessage start = CreateStart(0);
+        await service.HandleFileStartAsync(
+            start,
+            "authenticated:peer-not-ready",
+            TestContext.Current.CancellationToken);
+        Assert.True(await service.AbortIncomingTransferAsync(
+            start.FileId!,
+            "authenticated:peer-not-ready",
+            TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task OneSourceCannotConsumeAllGlobalTransferSlots()
+    {
+        using var temp = new TestDirectory();
+        FileTransferService service = CreateService(temp);
+        const string source = "authenticated:peer-a";
+
+        for (int index = 0; index < FileTransferService.MaxIncomingTransfersPerSource; index++)
+        {
+            await service.HandleFileStartAsync(
+                CreateStart(0),
+                source,
+                TestContext.Current.CancellationToken);
+        }
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => service.HandleFileStartAsync(
+                CreateStart(0),
+                source,
+                TestContext.Current.CancellationToken));
+        Assert.Equal(
+            FileTransferService.MaxIncomingTransfersPerSource,
+            await service.AbortIncomingTransfersForSourceAsync(
+                source,
+                TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task OneSourceCannotRapidlyCreateUnlimitedCompletedFiles()
+    {
+        using var temp = new TestDirectory();
+        FileTransferService service = CreateService(temp);
+        const string source = "authenticated:peer-rate-limited";
+
+        for (int index = 0; index < FileTransferService.MaxIncomingStartsPerSourcePerMinute; index++)
+        {
+            ChatMessage start = CreateStart(0);
+            await service.HandleFileStartAsync(
+                start,
+                source,
+                TestContext.Current.CancellationToken);
+            Assert.True(await service.AbortIncomingTransferAsync(
+                start.FileId!,
+                source,
+                TestContext.Current.CancellationToken));
+        }
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => service.HandleFileStartAsync(
+                CreateStart(0),
+                source,
+                TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task InvalidChunkImmediatelyAbortsAndDeletesPartialFile()
+    {
+        using var temp = new TestDirectory();
+        FileTransferService service = CreateService(temp);
+        const string source = "authenticated:peer-a";
+        ChatMessage start = CreateStart(1);
+        await service.HandleFileStartAsync(
+            start,
+            source,
+            TestContext.Current.CancellationToken);
+
+        ChatMessage invalid = CreateChunk(start, 0, "%%%%");
+
+        await Assert.ThrowsAsync<InvalidDataException>(
+            () => service.HandleFileChunkAsync(
+                invalid,
+                source,
+                TestContext.Current.CancellationToken));
+        await Assert.ThrowsAsync<InvalidDataException>(
+            () => service.HandleFileEndAsync(
+                CreateEnd(start),
+                source,
+                TestContext.Current.CancellationToken));
+        Assert.Empty(Directory.EnumerateFiles(service.AttachmentsDirectory, ".incoming-*.part"));
+    }
+
+    [Fact]
+    public async Task FileNameTruncationNeverSplitsSurrogatePairs()
+    {
+        using var temp = new TestDirectory();
+        FileTransferService service = CreateService(temp);
+        ChatMessage start = CreateStart(0);
+        start.FileName = new string('a', 178) + "😀.txt";
+
+        FileTransferDisplayResult result = Assert.IsType<FileTransferDisplayResult>(
+            await service.HandleFileStartAsync(
+                start,
+                "authenticated:peer-a",
+                TestContext.Current.CancellationToken));
+
+        Assert.InRange(result.FileName.Length, 1, 180);
+        _ = new UTF8Encoding(false, true).GetBytes(result.FileName);
+        await service.AbortAllIncomingTransfersAsync(TestContext.Current.CancellationToken);
+    }
+
+    [Theory]
+    [InlineData("group")]
+    [InlineData("conversation")]
+    [InlineData("size")]
+    [InlineData("count")]
+    [InlineData("name")]
+    public async Task ChunkEnvelopeMutationAbortsTransfer(string mutation)
+    {
+        using var temp = new TestDirectory();
+        FileTransferService service = CreateService(temp);
+        const string source = "authenticated:peer-envelope";
+        ChatMessage start = CreateStart(0);
+        await service.HandleFileStartAsync(
+            start,
+            source,
+            TestContext.Current.CancellationToken);
+
+        ChatMessage chunk = CreateChunk(start, 0, "");
+        MutateEnvelope(chunk, mutation);
+
+        await Assert.ThrowsAsync<InvalidDataException>(
+            () => service.HandleFileChunkAsync(
+                chunk,
+                source,
+                TestContext.Current.CancellationToken));
+        Assert.Empty(Directory.EnumerateFiles(service.AttachmentsDirectory, ".incoming-*.part"));
+    }
+
+    [Theory]
+    [InlineData("group")]
+    [InlineData("conversation")]
+    [InlineData("size")]
+    [InlineData("count")]
+    [InlineData("name")]
+    [InlineData("size-null")]
+    [InlineData("count-null")]
+    [InlineData("name-null")]
+    public async Task EndEnvelopeMutationCannotCompleteOrAcknowledgeTransfer(string mutation)
+    {
+        using var temp = new TestDirectory();
+        FileTransferService service = CreateService(temp);
+        const string source = "authenticated:peer-envelope";
+        ChatMessage start = CreateStart(0);
+        await service.HandleFileStartAsync(
+            start,
+            source,
+            TestContext.Current.CancellationToken);
+        await service.HandleFileChunkAsync(
+            CreateChunk(start, 0, ""),
+            source,
+            TestContext.Current.CancellationToken);
+
+        ChatMessage end = CreateEnd(start);
+        MutateEnvelope(end, mutation);
+
+        await Assert.ThrowsAsync<InvalidDataException>(
+            () => service.HandleFileEndAsync(
+                end,
+                source,
+                TestContext.Current.CancellationToken));
+        Assert.Empty(Directory.EnumerateFiles(service.AttachmentsDirectory, ".incoming-*.part"));
+        Assert.Empty(Directory.EnumerateFiles(service.AttachmentsDirectory, "sample*"));
+    }
+
+    [Fact]
+    public async Task ConsistentRelayedGroupEnvelopeCompletesNormally()
+    {
+        using var temp = new TestDirectory();
+        FileTransferService service = CreateService(temp);
+        const string source = "authenticated:group-owner";
+        ChatMessage start = CreateStart(0);
+        start.IsGroup = true;
+        start.ConversationId = "group:all-peers:v1";
+        start.RelaySenderId = "peer:44444444444444444444444444444444";
+        start.RelaySenderName = "Group owner";
+        start.RelayShortSessionId = "C3D4";
+        start.HopCount = 1;
+
+        await service.HandleFileStartAsync(
+            start,
+            source,
+            TestContext.Current.CancellationToken);
+        await service.HandleFileChunkAsync(
+            CreateChunk(start, 0, ""),
+            source,
+            TestContext.Current.CancellationToken);
+        FileTransferDisplayResult completed = Assert.IsType<FileTransferDisplayResult>(
+            await service.HandleFileEndAsync(
+                CreateEnd(start),
+                source,
+                TestContext.Current.CancellationToken));
+
+        Assert.True(File.Exists(completed.LocalFilePath));
+    }
+
+    [Fact]
+    public void AcknowledgementBindsTargetAndActualSender()
+    {
+        var transfer = new ChatMessage
+        {
+            Type = "file_end",
+            SenderId = "peer:original-sender",
+            FileId = Guid.NewGuid().ToString("N"),
+            IsGroup = true,
+            ConversationId = "group:default"
+        };
+
+        ChatMessage message = FileTransferService.CreateAcknowledgement(
+            transfer,
+            "peer:receiver",
+            "Receiver",
+            "ABCD",
+            success: true);
+
+        Assert.True(FileTransferService.TryParseAcknowledgement(message, out FileTransferAcknowledgement parsed));
+        Assert.Equal("peer:original-sender", parsed.AcknowledgementTargetId);
+        Assert.Equal("peer:receiver", parsed.AcknowledgementSenderId);
+
+        message.AcknowledgementSenderId = "peer:spoofed";
+        Assert.False(FileTransferService.TryParseAcknowledgement(message, out _));
+    }
+
+    [Fact]
+    public void AcknowledgementErrorRemovesControlAndFormattingCharacters()
+    {
+        var transfer = new ChatMessage
+        {
+            SenderId = "peer:sender",
+            FileId = Guid.NewGuid().ToString("N")
+        };
+        ChatMessage message = FileTransferService.CreateAcknowledgement(
+            transfer,
+            "peer:receiver",
+            "Receiver",
+            "ABCD",
+            success: false,
+            errorMessage: "bad\r\n\u202Eerror\u2066");
+
+        Assert.True(FileTransferService.TryParseAcknowledgement(message, out FileTransferAcknowledgement parsed));
+        Assert.Equal("baderror", parsed.ErrorMessage);
+    }
+
+    [Theory]
+    [InlineData("file_start")]
+    [InlineData("file_chunk")]
+    public async Task FailedOutboundDispatchTerminatesRemoteSessionsAndPreservesPrimaryError(
+        string failingType)
+    {
+        using var temp = new TestDirectory();
+        FileTransferService service = CreateService(temp);
+        string filePath = System.IO.Path.Combine(temp.Path, "outbound.bin");
+        File.WriteAllBytes(filePath, new byte[] { 0x42 });
+        var sentTypes = new List<string>();
+        var primary = new InvalidOperationException("primary dispatch failure");
+
+        Task SendAsync(ChatMessage message, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            sentTypes.Add(message.Type);
+            if (string.Equals(message.Type, failingType, StringComparison.Ordinal))
+            {
+                return Task.FromException(primary);
+            }
+            if (string.Equals(message.Type, "file_abort", StringComparison.Ordinal))
+            {
+                return Task.FromException(new IOException("cleanup dispatch failure"));
+            }
+            return Task.CompletedTask;
+        }
+
+        InvalidOperationException failure = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => service.SendFileConfirmedAsync(
+                filePath,
+                "peer:11111111111111111111111111111111",
+                "Sender",
+                "A1B2",
+                isGroup: false,
+                conversationId: "peer:22222222222222222222222222222222",
+                sendAsync: SendAsync,
+                waitForAcknowledgementAsync: (_, _) => Task.FromException<FileTransferAcknowledgement>(
+                    new InvalidOperationException("acknowledgement must not be awaited")),
+                cancellationToken: TestContext.Current.CancellationToken));
+
+        Assert.Same(primary, failure);
+        Assert.Equal("file_start", sentTypes[0]);
+        Assert.Equal("file_abort", sentTypes[^1]);
+        Assert.Equal(
+            failingType == "file_start"
+                ? new[] { "file_start", "file_abort" }
+                : new[] { "file_start", "file_chunk", "file_abort" },
+            sentTypes);
+    }
+
+    [Fact]
+    public async Task CanceledOutboundDispatchUsesIndependentBoundedTerminationToken()
+    {
+        using var temp = new TestDirectory();
+        FileTransferService service = CreateService(temp);
+        string filePath = System.IO.Path.Combine(temp.Path, "cancel-outbound.bin");
+        File.WriteAllBytes(filePath, new byte[] { 0x24 });
+        using CancellationTokenSource sendCancellation =
+            CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        var sentTypes = new List<string>();
+        bool? cleanupTokenWasCanceled = null;
+
+        Task SendAsync(ChatMessage message, CancellationToken cancellationToken)
+        {
+            sentTypes.Add(message.Type);
+            if (string.Equals(message.Type, "file_chunk", StringComparison.Ordinal))
+            {
+                sendCancellation.Cancel();
+                return Task.FromCanceled(sendCancellation.Token);
+            }
+            if (string.Equals(message.Type, "file_abort", StringComparison.Ordinal))
+            {
+                cleanupTokenWasCanceled = cancellationToken.IsCancellationRequested;
+            }
+            return Task.CompletedTask;
+        }
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => service.SendFileConfirmedAsync(
+                filePath,
+                "peer:11111111111111111111111111111111",
+                "Sender",
+                "A1B2",
+                isGroup: false,
+                conversationId: "peer:22222222222222222222222222222222",
+                sendAsync: SendAsync,
+                waitForAcknowledgementAsync: (_, _) => Task.FromException<FileTransferAcknowledgement>(
+                    new InvalidOperationException("acknowledgement must not be awaited")),
+                cancellationToken: sendCancellation.Token));
+
+        Assert.Equal(new[] { "file_start", "file_chunk", "file_abort" }, sentTypes);
+        Assert.False(cleanupTokenWasCanceled);
+    }
+
+    [Fact]
+    public async Task SenderAbortIsExactEnvelopeBoundAndIdempotent()
+    {
+        using var temp = new TestDirectory();
+        FileTransferService service = CreateService(temp);
+        const string source = "authenticated:peer-a";
+        ChatMessage start = CreateStart(1);
+        await service.HandleFileStartAsync(
+            start,
+            source,
+            TestContext.Current.CancellationToken);
+
+        ChatMessage wrongEnvelope = CreateAbort(start);
+        wrongEnvelope.ConversationId = "peer:33333333333333333333333333333333";
+        await Assert.ThrowsAsync<InvalidDataException>(
+            () => service.HandleFileAbortAsync(
+                wrongEnvelope,
+                source,
+                TestContext.Current.CancellationToken));
+        Assert.Single(Directory.EnumerateFiles(service.AttachmentsDirectory, ".incoming-*.part"));
+
+        Assert.True(await service.HandleFileAbortAsync(
+            CreateAbort(start),
+            source,
+            TestContext.Current.CancellationToken));
+        Assert.False(await service.HandleFileAbortAsync(
+            CreateAbort(start),
+            source,
+            TestContext.Current.CancellationToken));
+        Assert.Empty(Directory.EnumerateFiles(service.AttachmentsDirectory, ".incoming-*.part"));
+    }
+
+    [Fact]
+    public async Task AbortAfterCompletionIsNoOpAndNeverDeletesCompletedFile()
+    {
+        using var temp = new TestDirectory();
+        FileTransferService service = CreateService(temp);
+        const string source = "authenticated:peer-a";
+        ChatMessage start = CreateStart(0);
+        await service.HandleFileStartAsync(start, source, TestContext.Current.CancellationToken);
+        await service.HandleFileChunkAsync(
+            CreateChunk(start, 0, ""),
+            source,
+            TestContext.Current.CancellationToken);
+        FileTransferDisplayResult completed = Assert.IsType<FileTransferDisplayResult>(
+            await service.HandleFileEndAsync(
+                CreateEnd(start),
+                source,
+                TestContext.Current.CancellationToken));
+
+        Assert.False(await service.HandleFileAbortAsync(
+            CreateAbort(start),
+            source,
+            TestContext.Current.CancellationToken));
+        Assert.True(File.Exists(completed.LocalFilePath));
+    }
+
+    [Fact]
+    public async Task SubscriberExceptionsCannotBreakAValidTransfer()
+    {
+        using var temp = new TestDirectory();
+        FileTransferService service = CreateService(temp);
+        service.LogReceived += _ => throw new InvalidOperationException("log subscriber");
+        service.ProgressChanged += _ => throw new InvalidOperationException("progress subscriber");
+        const string source = "authenticated:peer-a";
+        ChatMessage start = CreateStart(0);
+
+        await service.HandleFileStartAsync(
+            start,
+            source,
+            TestContext.Current.CancellationToken);
+        await service.HandleFileChunkAsync(
+            CreateChunk(start, 0, ""),
+            source,
+            TestContext.Current.CancellationToken);
+        FileTransferDisplayResult completed = Assert.IsType<FileTransferDisplayResult>(
+            await service.HandleFileEndAsync(
+                CreateEnd(start),
+                source,
+                TestContext.Current.CancellationToken));
+
+        Assert.True(File.Exists(completed.LocalFilePath));
+    }
+
+    [Fact]
+    public async Task ExpirationCleanupDoesNotDeleteSessionWhileChunkGateIsHeld()
+    {
+        using var temp = new TestDirectory();
+        FileTransferService service = CreateService(temp);
+        const string source = "authenticated:peer-a";
+        ChatMessage start = CreateStart(0);
+        await service.HandleFileStartAsync(
+            start,
+            source,
+            TestContext.Current.CancellationToken);
+
+        FieldInfo sessionsField = typeof(FileTransferService).GetField(
+            "_incomingFiles",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new MissingFieldException(typeof(FileTransferService).FullName, "_incomingFiles");
+        IDictionary sessions = Assert.IsAssignableFrom<IDictionary>(sessionsField.GetValue(service));
+        object session = Assert.Single(sessions.Values.Cast<object>());
+        Type sessionType = session.GetType();
+        sessionType.GetProperty("LastActivityUtc")!.SetValue(session, DateTime.UtcNow.AddHours(-1));
+        var gate = Assert.IsType<SemaphoreSlim>(sessionType.GetProperty("Gate")!.GetValue(session));
+
+        gate.Wait(TestContext.Current.CancellationToken);
+        try
+        {
+            service.EnsureStorageReady();
+            Assert.Single(sessions.Values.Cast<object>());
+        }
+        finally
+        {
+            gate.Release();
+        }
+
+        await service.HandleFileChunkAsync(
+            CreateChunk(start, 0, ""),
+            source,
+            TestContext.Current.CancellationToken);
+        FileTransferDisplayResult completed = Assert.IsType<FileTransferDisplayResult>(
+            await service.HandleFileEndAsync(
+                CreateEnd(start),
+                source,
+                TestContext.Current.CancellationToken));
+        Assert.True(File.Exists(completed.LocalFilePath));
+    }
+
+    [Fact]
+    public async Task ExactAbortFinishesCleanupAfterOwnershipTransferEvenIfCallerCancels()
+    {
+        using var temp = new TestDirectory();
+        FileTransferService service = CreateService(temp);
+        const string source = "authenticated:peer-a";
+        ChatMessage start = CreateStart(1);
+        await service.HandleFileStartAsync(start, source, TestContext.Current.CancellationToken);
+
+        FieldInfo sessionsField = typeof(FileTransferService).GetField(
+            "_incomingFiles",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new MissingFieldException(typeof(FileTransferService).FullName, "_incomingFiles");
+        IDictionary sessions = Assert.IsAssignableFrom<IDictionary>(sessionsField.GetValue(service));
+        object session = Assert.Single(sessions.Values.Cast<object>());
+        var gate = Assert.IsType<SemaphoreSlim>(session.GetType().GetProperty("Gate")!.GetValue(session));
+        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+
+        gate.Wait(TestContext.Current.CancellationToken);
+        Task<bool> abort = service.AbortIncomingTransferAsync(start.FileId!, source, cancellation.Token);
+        cancellation.Cancel();
+        Assert.False(abort.IsCompleted);
+        gate.Release();
+
+        Assert.True(await abort);
+        Assert.Empty(sessions.Values.Cast<object>());
+        Assert.Empty(Directory.EnumerateFiles(service.AttachmentsDirectory, ".incoming-*.part"));
+    }
+
+    [Fact]
+    public async Task CrowdedFileNamesUseBoundedRandomFallback()
+    {
+        using var temp = new TestDirectory();
+        FileTransferService service = CreateService(temp);
+        for (int index = 0; index <= 32; index++)
+        {
+            string name = index == 0 ? "same.bin" : $"same_{index}.bin";
+            File.WriteAllBytes(System.IO.Path.Combine(service.AttachmentsDirectory, name), Array.Empty<byte>());
+        }
+
+        const string source = "authenticated:peer-a";
+        ChatMessage start = CreateStart(0);
+        start.FileName = "same.bin";
+        await service.HandleFileStartAsync(
+            start,
+            source,
+            TestContext.Current.CancellationToken);
+        await service.HandleFileChunkAsync(
+            CreateChunk(start, 0, ""),
+            source,
+            TestContext.Current.CancellationToken);
+        FileTransferDisplayResult completed = Assert.IsType<FileTransferDisplayResult>(
+            await service.HandleFileEndAsync(
+                CreateEnd(start),
+                source,
+                TestContext.Current.CancellationToken));
+
+        Assert.StartsWith("same_", System.IO.Path.GetFileName(completed.LocalFilePath), StringComparison.Ordinal);
+        Assert.DoesNotContain("same_33.bin", completed.LocalFilePath, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData(".incoming-0123456789abcdef-11111111111111111111111111111111-22222222222222222222222222222222.part")]
+    [InlineData(".migration-11111111111111111111111111111111.tmp")]
+    public async Task RemoteFinalNameCannotEnterServiceTemporaryNamespace(string wireName)
+    {
+        using var temp = new TestDirectory();
+        FileTransferService service = CreateService(temp);
+        const string source = "authenticated:peer-a";
+        ChatMessage start = CreateStart(0);
+        start.FileName = wireName;
+        await service.HandleFileStartAsync(start, source, TestContext.Current.CancellationToken);
+        await service.HandleFileChunkAsync(
+            CreateChunk(start, 0, ""),
+            source,
+            TestContext.Current.CancellationToken);
+        FileTransferDisplayResult completed = Assert.IsType<FileTransferDisplayResult>(
+            await service.HandleFileEndAsync(
+                CreateEnd(start),
+                source,
+                TestContext.Current.CancellationToken));
+
+        Assert.StartsWith("_", completed.FileName, StringComparison.Ordinal);
+        Assert.StartsWith("_", System.IO.Path.GetFileName(completed.LocalFilePath), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void RetainedQuotaCountsTemporaryLookingArtifacts()
+    {
+        using var temp = new TestDirectory();
+        FileTransferService service = CreateService(temp);
+        string crafted = System.IO.Path.Combine(
+            service.AttachmentsDirectory,
+            ".incoming-0123456789abcdef-11111111111111111111111111111111-22222222222222222222222222222222.part");
+        File.WriteAllBytes(crafted, Array.Empty<byte>());
+
+        MethodInfo refresh = typeof(FileTransferService).GetMethod(
+            "RefreshRetainedAttachmentCount",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new MissingMethodException(
+                typeof(FileTransferService).FullName,
+                "RefreshRetainedAttachmentCount");
+        refresh.Invoke(service, null);
+        FieldInfo retained = typeof(FileTransferService).GetField(
+            "_retainedAttachmentCount",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new MissingFieldException(
+                typeof(FileTransferService).FullName,
+                "_retainedAttachmentCount");
+
+        Assert.Equal(1, retained.GetValue(service));
+    }
+
+    [Fact]
+    public async Task RetainedByteQuotaRejectsNewInboundPersistence()
+    {
+        using var temp = new TestDirectory();
+        string attachments = temp.CreateSubdirectory("byte-quota-attachments");
+        string retainedPath = System.IO.Path.Combine(attachments, "retained.bin");
+        using (var retained = new FileStream(
+                   retainedPath,
+                   FileMode.CreateNew,
+                   FileAccess.Write,
+                   FileShare.None))
+        {
+            retained.SetLength(FileTransferService.MaxRetainedAttachmentBytes);
+        }
+        var service = new FileTransferService(
+            attachments,
+            temp.CreateSubdirectory("byte-quota-downloads"),
+            temp.CreateSubdirectory("byte-quota-outgoing"));
+        service.EnsureStorageReady();
+
+        IOException rejected = await Assert.ThrowsAsync<IOException>(
+            () => service.HandleFileStartAsync(
+                CreateStart(1),
+                "authenticated:peer-byte-quota",
+                TestContext.Current.CancellationToken));
+
+        Assert.Contains("byte limit", rejected.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Single(Directory.EnumerateFiles(attachments));
+    }
+
+    [Fact]
+    public void OutgoingCacheQuotaEvictsOldSnapshotsButProtectsCurrentSend()
+    {
+        using var temp = new TestDirectory();
+        FileTransferService service = CreateService(temp);
+        string outgoing = temp.Path + System.IO.Path.DirectorySeparatorChar + "outgoing";
+        string oldPath = System.IO.Path.Combine(outgoing, "old.bin");
+        string currentPath = System.IO.Path.Combine(outgoing, "current.bin");
+        using (var old = new FileStream(oldPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+        {
+            old.SetLength(FileTransferService.MaxOutgoingCacheBytes);
+        }
+        File.WriteAllBytes(currentPath, new byte[] { 1 });
+
+        MethodInfo cleanup = typeof(FileTransferService).GetMethod(
+            "CleanupOutgoingCache",
+            BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new MissingMethodException(
+                typeof(FileTransferService).FullName,
+                "CleanupOutgoingCache");
+        cleanup.Invoke(service, new object?[] { currentPath });
+
+        Assert.False(File.Exists(oldPath));
+        Assert.True(File.Exists(currentPath));
+        Assert.Single(Directory.EnumerateFiles(outgoing));
+    }
+
+    [Fact]
+    public async Task DownloadsCopyRejectsOversizedSourceBeforeCreatingOutput()
+    {
+        using var temp = new TestDirectory();
+        FileTransferService service = CreateService(temp);
+        string source = System.IO.Path.Combine(temp.Path, "oversized.bin");
+        using (var stream = new FileStream(source, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+        {
+            stream.SetLength(FileTransferService.MaxFileSizeBytes + 1);
+        }
+
+        await Assert.ThrowsAsync<InvalidDataException>(
+            () => service.SaveToDownloadsAsync(
+                source,
+                "oversized.bin",
+                TestContext.Current.CancellationToken));
+        Assert.Empty(Directory.EnumerateFiles(service.DownloadsDirectory));
+    }
+
+    private static FileTransferService CreateService(TestDirectory temp)
+    {
+        var service = new FileTransferService(
+            temp.CreateSubdirectory("attachments"),
+            temp.CreateSubdirectory("downloads"),
+            temp.CreateSubdirectory("outgoing"));
+        service.EnsureStorageReady();
+        return service;
+    }
+
+    private static ChatMessage CreateStart(long fileSize) => new()
+    {
+        Type = "file_start",
+        SenderId = "peer:11111111111111111111111111111111",
+        SenderName = "Sender",
+        ShortSessionId = "A1B2",
+        ConversationId = "peer:22222222222222222222222222222222",
+        FileId = Guid.NewGuid().ToString("N"),
+        FileName = "sample.bin",
+        FileSize = fileSize,
+        ChunkCount = fileSize == 0
+            ? 1
+            : checked((int)((fileSize + FileTransferService.TransferChunkSize - 1) /
+                            FileTransferService.TransferChunkSize))
+    };
+
+    private static ChatMessage CreateChunk(
+        ChatMessage start,
+        int chunkIndex,
+        string base64)
+    {
+        ChatMessage message = CreateFollowup(start, "file_chunk");
+        message.ChunkIndex = chunkIndex;
+        message.ChunkBase64 = base64;
+        return message;
+    }
+
+    private static ChatMessage CreateEnd(ChatMessage start) =>
+        CreateFollowup(start, "file_end");
+
+    private static ChatMessage CreateAbort(ChatMessage start) =>
+        CreateFollowup(start, "file_abort");
+
+    private static ChatMessage CreateFollowup(ChatMessage start, string type) => new()
+    {
+        Type = type,
+        SenderId = start.SenderId,
+        SenderName = start.SenderName,
+        ShortSessionId = start.ShortSessionId,
+        IsGroup = start.IsGroup,
+        ConversationId = start.ConversationId,
+        FileId = start.FileId,
+        FileName = start.FileName,
+        FileSize = start.FileSize,
+        ChunkCount = start.ChunkCount,
+        RelaySenderId = start.RelaySenderId,
+        RelaySenderName = start.RelaySenderName,
+        RelayShortSessionId = start.RelayShortSessionId,
+        HopCount = start.HopCount
+    };
+
+    private static void MutateEnvelope(ChatMessage message, string mutation)
+    {
+        switch (mutation)
+        {
+            case "group":
+                message.IsGroup = !message.IsGroup;
+                break;
+            case "conversation":
+                message.ConversationId = "peer:33333333333333333333333333333333";
+                break;
+            case "size":
+                message.FileSize = (message.FileSize ?? 0) + 1;
+                break;
+            case "count":
+                message.ChunkCount = (message.ChunkCount ?? 0) + 1;
+                break;
+            case "name":
+                message.FileName = "different.bin";
+                break;
+            case "size-null":
+                message.FileSize = null;
+                break;
+            case "count-null":
+                message.ChunkCount = null;
+                break;
+            case "name-null":
+                message.FileName = null;
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(mutation));
+        }
+    }
+}

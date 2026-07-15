@@ -33,10 +33,12 @@ namespace direct_module.Services
         {
             UpdateConnectAvailability(peer);
 
-            return peer.DiscoveredByBle &&
-                   peer.DiscoveredByWiFiDirect &&
-                   !string.IsNullOrWhiteSpace(peer.RoleKey) &&
-                   (!string.IsNullOrWhiteSpace(peer.RemoteIpAddress) || !string.IsNullOrWhiteSpace(peer.DeviceId)) &&
+            bool hasTcpEndpoint = !string.IsNullOrWhiteSpace(peer.RemoteIpAddress);
+            bool hasWiFiDirectEndpoint = !string.IsNullOrWhiteSpace(peer.DeviceId) &&
+                                         !peer.DeviceId.Contains("_PendingRequest", StringComparison.OrdinalIgnoreCase);
+
+            return !peer.IsGroupChat &&
+                   (hasTcpEndpoint || hasWiFiDirectEndpoint) &&
                    !peer.IsChatReady &&
                    !peer.IsConnectingWiFiDirect &&
                    !peer.IsPreparingChatTcp &&

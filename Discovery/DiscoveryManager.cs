@@ -1,4 +1,6 @@
 ﻿using System;
+using System.Linq;
+using System.Diagnostics;
 using direct_module.WiFiDirect.Models;
 
 namespace direct_module.Discovery
@@ -10,6 +12,7 @@ namespace direct_module.Discovery
 
         public event Action<string>? LogReceived;
         public event Action<PeerInfo>? PeerFound;
+        public event Action<PeerInfo>? PeerRemoved;
 
         public DiscoveryManager()
         {
@@ -20,6 +23,7 @@ namespace direct_module.Discovery
 
             _scanner.LogReceived += OnScannerLogReceived;
             _scanner.PeerFound += OnScannerPeerFound;
+            _scanner.PeerRemoved += OnScannerPeerRemoved;
         }
 
         public void StartAdvertise(string displayName, Guid sessionId, int tcpPort)
@@ -44,17 +48,35 @@ namespace direct_module.Discovery
 
         private void OnAdvertiserLogReceived(string message)
         {
-            LogReceived?.Invoke(message);
+            InvokeSafely(LogReceived, message);
         }
 
         private void OnScannerLogReceived(string message)
         {
-            LogReceived?.Invoke(message);
+            InvokeSafely(LogReceived, message);
         }
 
         private void OnScannerPeerFound(PeerInfo peer)
         {
-            PeerFound?.Invoke(peer);
+            InvokeSafely(PeerFound, peer);
+        }
+
+        private void OnScannerPeerRemoved(PeerInfo peer)
+        {
+            InvokeSafely(PeerRemoved, peer);
+        }
+
+        private static void InvokeSafely<T>(Action<T>? handlers, T value)
+        {
+            if (handlers == null) return;
+            foreach (Action<T> handler in handlers.GetInvocationList().Cast<Action<T>>())
+            {
+                try { handler(value); }
+                catch (Exception ex)
+                {
+                    Debug.WriteLine($"DiscoveryManager event handler failed: {ex}");
+                }
+            }
         }
     }
 }

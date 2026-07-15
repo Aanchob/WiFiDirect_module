@@ -6,6 +6,10 @@ namespace direct_module.Models
     {
         public int Id { get; set; }
 
+        public string MessageId { get; set; } = "";
+
+        public string MessageType { get; set; } = "chat";
+
         public string ConversationId { get; set; } = "";
 
         public string SenderId { get; set; } = "";
@@ -19,5 +23,15 @@ namespace direct_module.Models
         public DateTime SendTime { get; set; }
 
         public bool IsMine { get; set; }
+
+        public bool IsGroup { get; set; }
+
+        public string? FileId { get; set; }
+
+        public string? FileName { get; set; }
+
+        public string? LocalFilePath { get; set; }
+
+        public long? FileSize { get; set; }
     }
 }

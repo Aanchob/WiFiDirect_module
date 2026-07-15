@@ -1,0 +1,52 @@
+using System.Buffers.Binary;
+using direct_module.Discovery;
+using Xunit;
+
+namespace direct_module.CoreTests;
+
+public sealed class BleAdvertisementPayloadTests
+{
+    [Fact]
+    public void RoundTripUsesExact96BitIdentityAndNeverSplitsUtf8Rune()
+    {
+        Guid sessionId = Guid.ParseExact("00112233445566778899aabbccddeeff", "N");
+        byte[] payload = BleAdvertisementPayload.Create("😀suffix", sessionId, 5000);
+
+        Assert.Equal(BleAdvertisementPayload.MaximumPayloadBytes, payload.Length);
+        Assert.True(BleAdvertisementPayload.TryParse(payload, out BleAdvertisementData parsed));
+        Assert.Equal("00112233445566778899aabb", parsed.PeerIdentity);
+        Assert.Equal("0011", parsed.ShortSessionId);
+        Assert.Equal("00112233", parsed.RoleKey);
+        Assert.Equal("😀", parsed.DisplayName);
+        Assert.Equal(5000, parsed.TcpPort);
+    }
+
+    [Fact]
+    public void ParserRejectsZeroIdentityInvalidUtf8PortAndNonCanonicalLength()
+    {
+        Guid sessionId = Guid.ParseExact("00112233445566778899aabbccddeeff", "N");
+        byte[] valid = BleAdvertisementPayload.Create("A", sessionId, 5000);
+
+        byte[] zeroIdentity = (byte[])valid.Clone();
+        zeroIdentity.AsSpan(1, 12).Clear();
+        Assert.False(BleAdvertisementPayload.TryParse(zeroIdentity, out _));
+
+        byte[] zeroPort = (byte[])valid.Clone();
+        BinaryPrimitives.WriteUInt16BigEndian(zeroPort.AsSpan(13, 2), 0);
+        Assert.False(BleAdvertisementPayload.TryParse(zeroPort, out _));
+
+        byte[] invalidUtf8 = (byte[])valid.Clone();
+        invalidUtf8[^1] = 0xFF;
+        Assert.False(BleAdvertisementPayload.TryParse(invalidUtf8, out _));
+
+        Assert.False(BleAdvertisementPayload.TryParse(valid.AsSpan(0, 14), out _));
+        Assert.False(BleAdvertisementPayload.TryParse(new byte[20], out _));
+    }
+
+    [Fact]
+    public void CreatorRejectsAnIdentityThatItsOwnParserWouldReject()
+    {
+        Assert.Throws<ArgumentException>(() =>
+            BleAdvertisementPayload.Create("peer", Guid.Empty, 5000));
+    }
+}

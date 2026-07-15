@@ -15,8 +15,8 @@
     <Grid>
         <Grid.Resources>
             <SolidColorBrush x:Key="AppInkBrush" Color="#F3F7FA" />
-            <SolidColorBrush x:Key="MutedInkBrush" Color="#A8B5BE" />
-            <SolidColorBrush x:Key="SubtleInkBrush" Color="#6F7E89" />
+            <SolidColorBrush x:Key="MutedInkBrush" Color="#C2CDD4" />
+            <SolidColorBrush x:Key="SubtleInkBrush" Color="#A3B0B9" />
             <SolidColorBrush x:Key="PanelBrush" Color="#9911161C" />
             <SolidColorBrush x:Key="PanelStrongBrush" Color="#D012171E" />
             <SolidColorBrush x:Key="PanelSoftBrush" Color="#66192028" />
@@ -52,8 +52,8 @@
             </Style>
 
             <Style x:Key="IconOnlyButtonStyle" TargetType="Button">
-                <Setter Property="Width" Value="36" />
-                <Setter Property="Height" Value="36" />
+                <Setter Property="Width" Value="44" />
+                <Setter Property="Height" Value="44" />
                 <Setter Property="Padding" Value="0" />
                 <Setter Property="CornerRadius" Value="10" />
                 <Setter Property="Foreground" Value="{StaticResource MutedInkBrush}" />
@@ -65,7 +65,7 @@
             </Style>
 
             <Style x:Key="GhostButtonStyle" TargetType="Button">
-                <Setter Property="Height" Value="34" />
+                <Setter Property="MinHeight" Value="40" />
                 <Setter Property="Padding" Value="12,0" />
                 <Setter Property="CornerRadius" Value="10" />
                 <Setter Property="Foreground" Value="{StaticResource MutedInkBrush}" />
@@ -85,11 +85,18 @@
 
         <Rectangle Fill="{StaticResource PageGlowBrush}" Opacity="0.95" />
 
-        <Grid Margin="16" ColumnSpacing="12">
+        <ScrollViewer
+            HorizontalContentAlignment="Stretch"
+            HorizontalScrollBarVisibility="Auto"
+            HorizontalScrollMode="Enabled"
+            VerticalScrollBarVisibility="Disabled"
+            VerticalScrollMode="Disabled"
+            ZoomMode="Disabled">
+        <Grid MinWidth="824" Margin="16" ColumnSpacing="12">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="320" MinWidth="280" />
-                <ColumnDefinition Width="*" MinWidth="460" />
-                <ColumnDefinition Width="320" MinWidth="280" />
+                <ColumnDefinition Width="0.9*" MinWidth="220" />
+                <ColumnDefinition Width="1.6*" MinWidth="360" />
+                <ColumnDefinition Width="0.9*" MinWidth="220" />
             </Grid.ColumnDefinitions>
 
             <Border
@@ -134,7 +141,9 @@
                         </StackPanel>
 
                         <Button
+                            x:Name="SearchPeersHeaderButton"
                             Grid.Column="2"
+                            AutomationProperties.Name="相手を探す"
                             Click="SearchPeers_Click"
                             Style="{StaticResource IconOnlyButtonStyle}"
                             ToolTipService.ToolTip="相手を探す">
@@ -144,6 +153,7 @@
 
                     <ListView
                         x:Name="PeerList"
+                        AutomationProperties.Name="探索した相手"
                         Grid.Row="1"
                         Background="Transparent"
                         BorderThickness="0"
@@ -201,6 +211,7 @@
 
                                         <Button
                                             Grid.Column="2"
+                                            AutomationProperties.Name="この相手に接続"
                                             Background="{StaticResource LimeSoftBrush}"
                                             BorderBrush="#77B8FF6A"
                                             BorderThickness="1"
@@ -274,6 +285,7 @@
                                     Foreground="{StaticResource AccentBrush}"
                                     Text="WD" />
                                 <Ellipse
+                                    x:Name="ChatHeaderOnlineDot"
                                     Width="12"
                                     Height="12"
                                     Margin="0,0,1,1"
@@ -300,6 +312,8 @@
 
                             <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
                                 <Button
+                                    x:Name="StartTcpServerHeaderButton"
+                                    AutomationProperties.Name="TCP待ち受けを開始"
                                     Click="StartTcpServer_Click"
                                     Style="{StaticResource IconOnlyButtonStyle}"
                                     ToolTipService.ToolTip="TCP待ち受け">
@@ -311,6 +325,7 @@
 
                     <ListView
                         x:Name="MessageList"
+                        AutomationProperties.Name="会話メッセージ"
                         Grid.Row="1"
                         Padding="22,18"
                         Background="Transparent"
@@ -329,27 +344,35 @@
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="38" />
                                         <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="38" />
                                     </Grid.ColumnDefinitions>
-                                    <Grid VerticalAlignment="Top">
+                                    <Grid Grid.Column="{Binding AvatarColumn}" VerticalAlignment="Top">
                                         <Ellipse Width="34" Height="34" Fill="#FF25203A" />
                                         <TextBlock
                                             HorizontalAlignment="Center"
                                             VerticalAlignment="Center"
                                             FontSize="11"
                                             FontWeight="SemiBold"
-                                            Foreground="#FFC9B8FF"
-                                            Text="TX" />
+                                            Foreground="{Binding AvatarForeground}"
+                                            Text="{Binding AvatarText}" />
                                     </Grid>
                                     <Border
-                                        Grid.Column="1"
+                                        Grid.Column="{Binding BubbleColumn}"
                                         MaxWidth="640"
-                                        HorizontalAlignment="Left"
+                                        HorizontalAlignment="{Binding BubbleAlignment}"
                                         Padding="14,11"
-                                        Background="{StaticResource IncomingBubbleBrush}"
+                                        Background="{Binding BubbleBackground}"
                                         BorderBrush="{StaticResource StrokeBrush}"
                                         BorderThickness="1"
-                                        CornerRadius="4,16,16,16">
+                                        CornerRadius="{Binding BubbleCornerRadius}">
                                         <StackPanel Spacing="8">
+                                            <TextBlock
+                                                FontSize="11"
+                                                FontWeight="SemiBold"
+                                                Foreground="{StaticResource AccentBrush}"
+                                                Text="{Binding SenderName}"
+                                                TextTrimming="CharacterEllipsis"
+                                                Visibility="{Binding SenderVisibility}" />
                                             <TextBlock
                                                 FontSize="14"
                                                 Foreground="{StaticResource AppInkBrush}"
@@ -359,6 +382,7 @@
                                                 MaxWidth="360"
                                                 MaxHeight="260"
                                                 HorizontalAlignment="Left"
+                                                ImageFailed="AttachmentImage_ImageFailed"
                                                 Source="{Binding ImageSource}"
                                                 Stretch="Uniform"
                                                 Visibility="{Binding ImageVisibility}" />
@@ -398,6 +422,7 @@
                             </Grid.ColumnDefinitions>
                             <Button
                                 x:Name="AttachFileButton"
+                                AutomationProperties.Name="ファイルを送信"
                                 Click="AttachFileButton_Click"
                                 Style="{StaticResource IconOnlyButtonStyle}"
                                 ToolTipService.ToolTip="ファイルを送信">
@@ -405,7 +430,9 @@
                             </Button>
                             <TextBox
                                 x:Name="MessageTextBox"
+                                AutomationProperties.Name="メッセージ入力"
                                 Grid.Column="1"
+                                MaxLength="16384"
                                 MinHeight="42"
                                 KeyDown="MessageTextBox_KeyDown"
                                 VerticalAlignment="Center"
@@ -417,6 +444,7 @@
                                 PlaceholderText="メッセージを入力..." />
                             <Button
                                 x:Name="SendMessageButton"
+                                AutomationProperties.Name="メッセージを送信"
                                 Grid.Column="3"
                                 Width="46"
                                 Height="42"
@@ -490,6 +518,7 @@
                                     TextAlignment="Center"
                                     TextWrapping="Wrap" />
                                 <Border
+                                    x:Name="SelectedPeerStatusChip"
                                     Padding="10,5"
                                     Background="{StaticResource LimeSoftBrush}"
                                     BorderBrush="#55B8FF6A"
@@ -563,7 +592,10 @@
                                 </Border>
                             </StackPanel>
 
-                            <Expander Header="診断操作" IsExpanded="False">
+                            <Expander
+                                x:Name="NetworkDiagnosticsExpander"
+                                Header="診断操作"
+                                IsExpanded="False">
                                 <StackPanel Padding="0,12,0,0" Spacing="10">
                                     <Grid ColumnSpacing="8">
                                         <Grid.ColumnDefinitions>
@@ -579,6 +611,7 @@
                                             <ColumnDefinition Width="*" />
                                             <ColumnDefinition Width="*" />
                                         </Grid.ColumnDefinitions>
+                                        <Button Click="SearchButton_Click" Content="関連付け探索" Style="{StaticResource GhostButtonStyle}" />
                                         <Button Grid.Column="1" Click="SearchDefaultButton_Click" Content="通常探索" Style="{StaticResource GhostButtonStyle}" />
                                     </Grid>
 
@@ -593,6 +626,8 @@
 
                                     <TextBox
                                         x:Name="TargetIpTextBox"
+                                        AutomationProperties.Name="接続先IPアドレス"
+                                        MaxLength="128"
                                         MinHeight="38"
                                         Background="{StaticResource InputBrush}"
                                         BorderBrush="{StaticResource StrokeBrush}"
@@ -603,8 +638,10 @@
                                     <Grid ColumnSpacing="8">
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="*" />
                                         </Grid.ColumnDefinitions>
-                                        <Button Click="StartTcpServer_Click" Content="TCP待ち受け" Style="{StaticResource GhostButtonStyle}" />
+                                        <Button Click="ConnectIpButton_Click" Content="IPへ接続" Style="{StaticResource GhostButtonStyle}" />
+                                        <Button Grid.Column="1" Click="StartTcpServer_Click" Content="TCP待ち受け" Style="{StaticResource GhostButtonStyle}" />
                                     </Grid>
                                 </StackPanel>
                             </Expander>
@@ -639,6 +676,7 @@
                                 Style="{StaticResource GhostButtonStyle}" />
                             <Button
                                 Grid.Column="3"
+                                AutomationProperties.Name="ログ末尾へ移動"
                                 Click="ScrollLogBottom_Click"
                                 Style="{StaticResource IconOnlyButtonStyle}"
                                 ToolTipService.ToolTip="ログ末尾へ">
@@ -648,6 +686,7 @@
 
                         <TextBox
                             x:Name="LogTextBox"
+                            AutomationProperties.Name="アプリケーションログ"
                             Grid.Row="1"
                             AcceptsReturn="True"
                             Background="{StaticResource InputBrush}"
@@ -664,5 +703,6 @@
                 </Grid>
             </Border>
         </Grid>
+        </ScrollViewer>
     </Grid>
 </Window>

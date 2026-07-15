@@ -1,0 +1,199 @@
+using System.Collections;
+using System.IO;
+using System.Reflection;
+using direct_module.Crypto;
+using direct_module.Network;
+using Xunit;
+
+namespace direct_module.CoreTests;
+
+public sealed class ChatConnectionStateTests
+{
+    private const string LocalPeerId = "peer:11111111111111111111111111111111";
+    private const string RemotePeerId = "peer:22222222222222222222222222222222";
+    private const string OtherPeerId = "peer:33333333333333333333333333333333";
+
+    [Fact]
+    public void ReceivedHelloMustBeStagedBeforeVerificationAndThenBindsIdentity()
+    {
+        var connection = new ChatConnection(new NoOpMessageCrypto());
+        connection.SetExpectedRemoteIdentity(RemotePeerId, "BEEF");
+        PrepareConnectedState(connection, generation: 7);
+        ChatMessage hello = CreateHello(RemotePeerId, "BEEF", "remote");
+        connection.RecordReceivedHello(hello, 7, CancellationToken.None);
+
+        int verifiedEvents = 0;
+        connection.IdentityVerified += _ => verifiedEvents++;
+        Assert.True(connection.TryStageRemoteIdentity(hello, out string stageError), stageError);
+        Assert.False(connection.IsHelloVerified);
+        Assert.Equal(RemotePeerId, connection.BoundRemotePeerId);
+        Assert.Equal("BEEF", connection.BoundRemoteShortSessionId);
+
+        Assert.True(connection.CompleteHelloVerification());
+        Assert.True(connection.IsHelloVerified);
+        Assert.Equal(1, verifiedEvents);
+
+        ChatMessage validChat = CreateChat(RemotePeerId, "BEEF");
+        Assert.True(connection.IsInboundMessageIdentityValid(validChat, out string validError), validError);
+        ChatMessage impersonatedChat = CreateChat(OtherPeerId, "BEEF");
+        Assert.False(connection.IsInboundMessageIdentityValid(impersonatedChat, out _));
+    }
+
+    [Fact]
+    public void RemoteHelloCannotClaimTheLocalStableIdentity()
+    {
+        var connection = new ChatConnection(new NoOpMessageCrypto());
+        PrepareConnectedState(connection, generation: 3);
+        SetField(connection, "<LocalPeerId>k__BackingField", LocalPeerId);
+        ChatMessage hello = CreateHello(LocalPeerId, "CAFE", "self");
+        connection.RecordReceivedHello(hello, 3, CancellationToken.None);
+
+        Assert.False(connection.TryStageRemoteIdentity(hello, out string error));
+        Assert.Contains("local stable peer identity", error, StringComparison.OrdinalIgnoreCase);
+        Assert.False(connection.IsHelloVerified);
+    }
+
+    [Fact]
+    public void DuplicateHelloIsRejectedByTheActualReceiveStateTransition()
+    {
+        var connection = new ChatConnection(new NoOpMessageCrypto());
+        PrepareConnectedState(connection, generation: 11);
+        ChatMessage first = CreateHello(RemotePeerId, "ABCD", "remote");
+        ChatMessage duplicate = CreateHello(RemotePeerId, "ABCD", "remote");
+
+        connection.RecordReceivedHello(first, 11, CancellationToken.None);
+        InvalidDataException exception = Assert.Throws<InvalidDataException>(() =>
+            connection.RecordReceivedHello(duplicate, 11, CancellationToken.None));
+
+        Assert.Contains("duplicate HELLO", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void FailingAnOldQueueGenerationDoesNotFailOrDisableTheCurrentGeneration()
+    {
+        var connection = new ChatConnection(new NoOpMessageCrypto());
+        SetField(connection, "_connectionGeneration", 2);
+        SetField(connection, "_acceptingSends", true);
+
+        byte[] oldBytes = { 1, 2, 3 };
+        byte[] currentBytes = { 4, 5, 6, 7 };
+        object oldPending = CreatePendingSend(CreateChat(RemotePeerId, "BEEF"), oldBytes, generation: 1);
+        object currentPending = CreatePendingSend(CreateChat(RemotePeerId, "BEEF"), currentBytes, generation: 2);
+        object queue = GetField(connection, "_normalPrioritySends");
+        Enqueue(queue, oldPending);
+        Enqueue(queue, currentPending);
+        SetField(connection, "_queuedMessageCount", 2);
+        SetField(connection, "_queuedBytes", (long)(oldBytes.Length + currentBytes.Length));
+
+        InvokePrivate(connection, "FailPendingSends", new IOException("old transport"), 1);
+
+        Assert.True(GetCompletionTask(oldPending).IsFaulted);
+        Assert.False(GetCompletionTask(currentPending).IsCompleted);
+        Assert.Equal(1, GetField<int>(connection, "_queuedMessageCount"));
+        Assert.Equal(currentBytes.Length, GetField<long>(connection, "_queuedBytes"));
+        Assert.True(GetField<bool>(connection, "_acceptingSends"));
+        Assert.Equal(1, GetCollectionCount(queue));
+        Assert.All(oldBytes, value => Assert.Equal(0, value));
+        Assert.Equal(new byte[] { 4, 5, 6, 7 }, currentBytes);
+
+        InvokePrivate(connection, "FailPendingSends", new IOException("current transport"), 2);
+        Assert.True(GetCompletionTask(currentPending).IsFaulted);
+        Assert.False(GetField<bool>(connection, "_acceptingSends"));
+        Assert.Equal(0, GetCollectionCount(queue));
+    }
+
+    [Fact]
+    public void CloseIsIdempotentAndOneFailingSubscriberDoesNotSuppressOthers()
+    {
+        var connection = new ChatConnection(new NoOpMessageCrypto());
+        PrepareConnectedState(connection, generation: 5);
+        SetField(connection, "_isReady", true);
+        SetField(connection, "_connectionCancellation", new CancellationTokenSource());
+        int disconnectedCount = 0;
+        int closedCount = 0;
+        connection.Disconnected += _ => throw new InvalidOperationException("observer failure");
+        connection.Disconnected += _ => disconnectedCount++;
+        connection.Closed += () => throw new InvalidOperationException("observer failure");
+        connection.Closed += () => closedCount++;
+
+        connection.Close();
+        connection.Close();
+
+        Assert.False(connection.IsConnected);
+        Assert.True(connection.LifetimeToken.IsCancellationRequested);
+        Assert.Equal(1, disconnectedCount);
+        Assert.Equal(1, closedCount);
+    }
+
+    private static void PrepareConnectedState(ChatConnection connection, int generation)
+    {
+        SetField(connection, "_connectionGeneration", generation);
+        SetField(connection, "_closedGeneration", -1);
+        SetField(connection, "_isConnected", true);
+    }
+
+    private static ChatMessage CreateHello(string peerId, string shortSessionId, string senderName) => new()
+    {
+        MessageId = Guid.NewGuid().ToString("N"),
+        Type = "hello",
+        SenderId = peerId,
+        SenderName = senderName,
+        ShortSessionId = shortSessionId,
+        Body = ""
+    };
+
+    private static ChatMessage CreateChat(string peerId, string shortSessionId) => new()
+    {
+        MessageId = Guid.NewGuid().ToString("N"),
+        Type = "chat",
+        SenderId = peerId,
+        SenderName = "remote",
+        ShortSessionId = shortSessionId,
+        Body = "message"
+    };
+
+    private static object CreatePendingSend(ChatMessage message, byte[] bytes, int generation)
+    {
+        Type pendingType = typeof(ChatConnection).GetNestedType("PendingSend", BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("PendingSend was not found.");
+        ConstructorInfo constructor = pendingType.GetConstructor(
+            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+            binder: null,
+            new[] { typeof(ChatMessage), typeof(byte[]), typeof(CancellationToken), typeof(int) },
+            modifiers: null) ?? throw new InvalidOperationException("PendingSend constructor was not found.");
+        return constructor.Invoke(new object[] { message, bytes, CancellationToken.None, generation });
+    }
+
+    private static Task GetCompletionTask(object pendingSend)
+    {
+        object completion = pendingSend.GetType().GetProperty("Completion")!.GetValue(pendingSend)!;
+        return (Task)completion.GetType().GetProperty("Task")!.GetValue(completion)!;
+    }
+
+    private static void Enqueue(object queue, object item) =>
+        queue.GetType().GetMethod("Enqueue")!.Invoke(queue, new[] { item });
+
+    private static int GetCollectionCount(object queue) =>
+        (int)queue.GetType().GetProperty(nameof(ICollection.Count))!.GetValue(queue)!;
+
+    private static void InvokePrivate(ChatConnection connection, string methodName, params object[] arguments)
+    {
+        MethodInfo method = typeof(ChatConnection).GetMethod(methodName, BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException($"{methodName} was not found.");
+        method.Invoke(connection, arguments);
+    }
+
+    private static object GetField(ChatConnection connection, string fieldName) =>
+        typeof(ChatConnection).GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic)!
+            .GetValue(connection)!;
+
+    private static T GetField<T>(ChatConnection connection, string fieldName) =>
+        (T)GetField(connection, fieldName);
+
+    private static void SetField(ChatConnection connection, string fieldName, object value)
+    {
+        FieldInfo field = typeof(ChatConnection).GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException($"{fieldName} was not found.");
+        field.SetValue(connection, value);
+    }
+}

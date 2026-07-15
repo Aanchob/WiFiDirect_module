@@ -1,0 +1,38 @@
+using System;
+using System.IO;
+
+namespace direct_module.CoreTests;
+
+internal sealed class TestDirectory : IDisposable
+{
+    public TestDirectory()
+    {
+        Path = System.IO.Path.Combine(
+            System.IO.Path.GetTempPath(),
+            "direct_module-tests",
+            Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(Path);
+    }
+
+    public string Path { get; }
+
+    public string CreateSubdirectory(string name)
+    {
+        string path = System.IO.Path.Combine(Path, name);
+        Directory.CreateDirectory(path);
+        return path;
+    }
+
+    public void Dispose()
+    {
+        try
+        {
+            Directory.Delete(Path, recursive: true);
+        }
+        catch
+        {
+            // A failed test may intentionally leave an open handle. The OS temp
+            // directory can safely clean up that diagnostic artifact later.
+        }
+    }
+}

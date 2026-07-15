@@ -1,5 +1,7 @@
 ﻿using System;
-using System.Text;
+using System.Diagnostics;
+using System.Linq;
+using System.Threading;
 using Windows.Devices.Bluetooth.Advertisement;
 using Windows.Storage.Streams;
 
@@ -7,6 +9,7 @@ namespace direct_module.Discovery
 {
     public class BleAdvertiser
     {
+        private readonly object _gate = new();
         private BluetoothLEAdvertisementPublisher? _publisher;
 
         public event Action<string>? LogReceived;
@@ -16,74 +19,143 @@ namespace direct_module.Discovery
 
         public void Start(string displayName, Guid sessionId, int tcpPort)
         {
-            if (_publisher != null)
+            byte[] payloadBytes;
+            BluetoothLEAdvertisementPublisher? attemptedPublisher = null;
+            try
             {
-                LogReceived?.Invoke("BLE広告はすでに開始されています");
+                payloadBytes = BleAdvertisementPayload.Create(displayName, sessionId, tcpPort);
+            }
+            catch (Exception ex)
+            {
+                SafeLog($"BLE広告payload作成失敗: {ex.Message}");
                 return;
             }
 
-            var advertisement = new BluetoothLEAdvertisement();
-
-            string shortName = Shorten(displayName, 4);
-            string shortSessionId = sessionId.ToString("N")[..4];
-            string roleKey = sessionId.ToString("N")[..8];
-
-            string payloadText = $"DC|{shortName}|{shortSessionId}|{tcpPort}|{roleKey}";
-            byte[] payloadBytes = Encoding.UTF8.GetBytes(payloadText);
-
-            LogReceived?.Invoke($"BLE payload bytes: {payloadBytes.Length}");
-
-            var writer = new DataWriter();
-            writer.WriteBytes(payloadBytes);
-
-            var manufacturerData = new BluetoothLEManufacturerData
+            try
             {
-                CompanyId = ManufacturerId,
-                Data = writer.DetachBuffer()
-            };
+                string logMessage;
+                lock (_gate)
+                {
+                    if (_publisher != null &&
+                        (_publisher.Status == BluetoothLEAdvertisementPublisherStatus.Aborted ||
+                         _publisher.Status == BluetoothLEAdvertisementPublisherStatus.Stopped))
+                    {
+                        _publisher.StatusChanged -= OnStatusChanged;
+                        _publisher = null;
+                    }
 
-            advertisement.ManufacturerData.Add(manufacturerData);
+                    if (_publisher != null)
+                    {
+                        logMessage = "BLE広告はすでに開始されています";
+                    }
+                    else
+                    {
+                        var advertisement = new BluetoothLEAdvertisement();
+                        using var writer = new DataWriter();
+                        writer.WriteBytes(payloadBytes);
+                        advertisement.ManufacturerData.Add(new BluetoothLEManufacturerData
+                        {
+                            CompanyId = ManufacturerId,
+                            Data = writer.DetachBuffer()
+                        });
 
-            _publisher = new BluetoothLEAdvertisementPublisher(advertisement);
-            _publisher.StatusChanged += OnStatusChanged;
-
-            LogReceived?.Invoke($"BLE広告開始要求: {payloadText}");
-
-            _publisher.Start();
+                        var publisher = new BluetoothLEAdvertisementPublisher(advertisement);
+                        attemptedPublisher = publisher;
+                        publisher.StatusChanged += OnStatusChanged;
+                        _publisher = publisher;
+                        publisher.Start();
+                        logMessage = $"BLE広告開始要求: Version={BleAdvertisementPayload.CurrentVersion}, Bytes={payloadBytes.Length}";
+                    }
+                }
+                SafeLog(logMessage);
+            }
+            catch (Exception ex)
+            {
+                if (attemptedPublisher != null)
+                {
+                    ReleasePublisher(attemptedPublisher);
+                }
+                SafeLog($"BLE広告開始失敗: {ex.GetType().Name}: {ex.Message}");
+            }
         }
 
         public void Stop()
         {
-            if (_publisher == null)
+            BluetoothLEAdvertisementPublisher? publisher;
+            lock (_gate)
             {
-                LogReceived?.Invoke("BLE広告は開始されていません");
+                publisher = _publisher;
+                if (publisher != null)
+                {
+                    publisher.StatusChanged -= OnStatusChanged;
+                    _publisher = null;
+                }
+            }
+
+            if (publisher == null)
+            {
+                SafeLog("BLE広告は開始されていません");
                 return;
             }
 
-            _publisher.Stop();
-            _publisher.StatusChanged -= OnStatusChanged;
-            _publisher = null;
-
-            LogReceived?.Invoke("BLE広告停止");
+            try
+            {
+                publisher.Stop();
+                SafeLog("BLE広告停止");
+            }
+            catch (Exception ex)
+            {
+                SafeLog($"BLE広告停止失敗: {ex.GetType().Name}: {ex.Message}");
+            }
         }
 
         private void OnStatusChanged(
             BluetoothLEAdvertisementPublisher sender,
             BluetoothLEAdvertisementPublisherStatusChangedEventArgs args)
         {
-            LogReceived?.Invoke($"BLE広告状態: {args.Status}, Error: {args.Error}");
+            if (args.Status == BluetoothLEAdvertisementPublisherStatus.Aborted)
+            {
+                ReleasePublisher(sender);
+            }
+            QueueLog(
+                $"BLE広告状態: {args.Status}, Error: {args.Error}" +
+                (args.Status == BluetoothLEAdvertisementPublisherStatus.Aborted
+                    ? " (再開始可能な状態に戻しました)"
+                    : ""));
         }
 
-        private static string Shorten(string text, int maxLength)
+        private void ReleasePublisher(BluetoothLEAdvertisementPublisher publisher)
         {
-            if (string.IsNullOrWhiteSpace(text))
+            lock (_gate)
             {
-                return "PC";
+                publisher.StatusChanged -= OnStatusChanged;
+                if (ReferenceEquals(_publisher, publisher))
+                {
+                    _publisher = null;
+                }
             }
+        }
 
-            return text.Length <= maxLength
-                ? text
-                : text[..maxLength];
+        private void QueueLog(string message)
+        {
+            ThreadPool.QueueUserWorkItem(_ => SafeLog(message));
+        }
+
+        private void SafeLog(string message)
+        {
+            Action<string>? handlers = LogReceived;
+            if (handlers == null) return;
+            foreach (Action<string> handler in handlers.GetInvocationList().Cast<Action<string>>())
+            {
+                try
+                {
+                    handler(message);
+                }
+                catch (Exception ex)
+                {
+                    Debug.WriteLine($"BleAdvertiser log handler failed: {ex}");
+                }
+            }
         }
     }
 }

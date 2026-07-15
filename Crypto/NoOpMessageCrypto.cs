@@ -1,6 +1,6 @@
 namespace direct_module.Crypto
 {
-    public class NoOpMessageCrypto : IMessageCrypto
+    internal sealed class NoOpMessageCrypto : IMessageCrypto
     {
         public byte[] Encrypt(byte[] plainBytes)
         {

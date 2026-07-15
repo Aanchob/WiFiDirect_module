@@ -1,0 +1,50 @@
+using System;
+using direct_module.Database;
+using Xunit;
+
+namespace direct_module.CoreTests;
+
+public sealed class HistoryTimestampPolicyTests
+{
+    [Fact]
+    public void IncomingClaimCannotControlStoredTime()
+    {
+        DateTime now = new(2026, 7, 14, 1, 2, 3, DateTimeKind.Utc);
+
+        DateTime normalized = HistoryTimestampPolicy.NormalizeForStorage(
+            DateTime.MaxValue,
+            isOutgoing: false,
+            now);
+
+        Assert.Equal(now, normalized);
+        Assert.Equal(DateTimeKind.Utc, normalized.Kind);
+    }
+
+    [Fact]
+    public void SaneOutgoingTimeIsConvertedToUtc()
+    {
+        DateTime now = DateTime.UtcNow;
+        DateTime local = now.AddMinutes(-1).ToLocalTime();
+
+        DateTime normalized = HistoryTimestampPolicy.NormalizeForStorage(
+            local,
+            isOutgoing: true,
+            now);
+
+        Assert.Equal(local.ToUniversalTime(), normalized);
+        Assert.Equal(DateTimeKind.Utc, normalized.Kind);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void ExtremeOutgoingTimesFallBackToNow(bool useMaximum)
+    {
+        DateTime now = new(2026, 7, 14, 1, 2, 3, DateTimeKind.Utc);
+        DateTime claimed = useMaximum ? DateTime.MaxValue : DateTime.MinValue;
+
+        Assert.Equal(
+            now,
+            HistoryTimestampPolicy.NormalizeForStorage(claimed, isOutgoing: true, now));
+    }
+}

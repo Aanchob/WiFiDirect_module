@@ -1,0 +1,365 @@
+using System;
+using System.Collections;
+using System.IO;
+using System.Linq;
+using System.Reflection;
+using System.Security.Cryptography;
+using direct_module.Database;
+using direct_module.Services;
+using Xunit;
+
+namespace direct_module.CoreTests;
+
+public sealed class LocalIdentityServiceTests
+{
+    [Fact]
+    public void OversizedOrPlaintextIdentityIsRejectedWithoutThrowing()
+    {
+        using var temp = new TestDirectory();
+        string path = System.IO.Path.Combine(temp.Path, "identity.dat");
+        File.WriteAllText(path, "peer:" + Guid.NewGuid().ToString("N"));
+
+        object?[] arguments = { path, null };
+        bool success = (bool)InvokePrivate("TryReadPeerId", arguments)!;
+
+        Assert.False(success);
+        Assert.Equal(string.Empty, arguments[1]);
+
+        File.WriteAllBytes(path, new byte[(64 * 1024) + 1]);
+        arguments = new object?[] { path, null };
+        Assert.False((bool)InvokePrivate("TryReadPeerId", arguments)!);
+    }
+
+    [Fact]
+    public void CorruptPinJsonIsQuarantinedAndRemainsFailClosed()
+    {
+        using var temp = new TestDirectory();
+        string path = System.IO.Path.Combine(temp.Path, "remote-identity-pins.dat");
+        File.WriteAllText(path, "{ definitely-not-protected-json }");
+
+        TargetInvocationException first = Assert.Throws<TargetInvocationException>(
+            () => InvokePrivate("ReadPinsFromPath", new object?[] { path }));
+
+        Assert.IsType<RemoteIdentityPinStoreUnavailableException>(first.InnerException);
+        Assert.False(File.Exists(path));
+        Assert.Single(Directory.EnumerateFiles(temp.Path, "remote-identity-pins.corrupt-*.dat"));
+        Assert.True(File.Exists(path + ".recovery-required"));
+
+        TargetInvocationException second = Assert.Throws<TargetInvocationException>(
+            () => InvokePrivate("ReadPinsFromPath", new object?[] { path }));
+        Assert.IsType<RemoteIdentityPinStoreUnavailableException>(second.InnerException);
+    }
+
+    [Fact]
+    public void DirectoryAtPinStorePathIsCorruptionRatherThanAnEmptyStore()
+    {
+        using var temp = new TestDirectory();
+        string path = System.IO.Path.Combine(temp.Path, "remote-identity-pins.dat");
+        Directory.CreateDirectory(path);
+
+        TargetInvocationException failure = Assert.Throws<TargetInvocationException>(
+            () => InvokePrivate("ReadPinsFromPath", new object?[] { path }));
+
+        Assert.IsType<RemoteIdentityPinStoreUnavailableException>(failure.InnerException);
+        Assert.False(Directory.Exists(path));
+        Assert.Single(Directory.EnumerateDirectories(temp.Path, "remote-identity-pins.corrupt-*.dat"));
+        Assert.True(File.Exists(path + ".recovery-required"));
+    }
+
+    [Fact]
+    public void ExplicitPinRecoveryKeepsMarkerUntilCorruptStoreIsQuarantined()
+    {
+        using var temp = new TestDirectory();
+        string path = System.IO.Path.Combine(temp.Path, "remote-identity-pins.dat");
+        File.WriteAllText(path, "not-dpapi");
+
+        using (var lockFile = new FileStream(
+            path,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.Read))
+        {
+            TargetInvocationException corrupt = Assert.Throws<TargetInvocationException>(
+                () => InvokePrivate("ReadPinsFromPath", new object?[] { path }));
+            Assert.IsType<RemoteIdentityPinStoreUnavailableException>(corrupt.InnerException);
+            Assert.True(File.Exists(path));
+            Assert.True(File.Exists(path + ".recovery-required"));
+
+            TargetInvocationException blocked = Assert.Throws<TargetInvocationException>(
+                () => InvokePrivate(
+                    "ResetRemoteIdentityPinStoreAfterCorruption",
+                    new object?[] { path }));
+            Assert.IsType<RemoteIdentityPinStoreUnavailableException>(blocked.InnerException);
+            Assert.True(File.Exists(path));
+            Assert.True(File.Exists(path + ".recovery-required"));
+        }
+
+        _ = InvokePrivate(
+            "ResetRemoteIdentityPinStoreAfterCorruption",
+            new object?[] { path });
+        Assert.False(File.Exists(path));
+        Assert.False(File.Exists(path + ".recovery-required"));
+        Assert.Single(Directory.EnumerateFiles(
+            temp.Path,
+            "remote-identity-pins-recovered.corrupt-*.dat"));
+
+        IDictionary empty = Assert.IsAssignableFrom<IDictionary>(
+            InvokePrivate("ReadPinsFromPath", new object?[] { path }));
+        Assert.Empty(empty);
+    }
+
+    [Fact]
+    public void OccupiedPrivateKeyPathFailsClosedWithoutGeneratingReplacement()
+    {
+        using var temp = new TestDirectory();
+        string destinationDirectory = temp.CreateSubdirectory("chat-identity.key");
+        byte[] generated = Enumerable.Repeat((byte)0xA5, 64).ToArray();
+        bool factoryCalled = false;
+
+        TargetInvocationException failure = Assert.Throws<TargetInvocationException>(
+            () => InvokePrivate(
+                "GetOrCreateChatIdentityPrivateKeyFromPath",
+                new object?[]
+                {
+                    destinationDirectory,
+                    (Func<byte[]>)(() =>
+                    {
+                        factoryCalled = true;
+                        return generated;
+                    })
+                }));
+
+        Assert.IsType<LocalIdentityStoreUnavailableException>(failure.InnerException);
+        Assert.False(factoryCalled);
+        Assert.All(generated, value => Assert.Equal(0xA5, value));
+        Assert.True(File.Exists(System.IO.Path.Combine(temp.Path, "local-identity.recovery-required")));
+    }
+
+    [Fact]
+    public void CorruptPeerIdentityIsNeverSilentlyRotated()
+    {
+        using var temp = new TestDirectory();
+        string first = Assert.IsType<string>(InvokePrivate(
+            "GetOrCreatePeerIdFromDirectory",
+            new object?[] { temp.Path }));
+        string identityPath = System.IO.Path.Combine(temp.Path, "identity.dat");
+        File.WriteAllText(identityPath, "not-dpapi");
+
+        TargetInvocationException failure = Assert.Throws<TargetInvocationException>(
+            () => InvokePrivate(
+                "GetOrCreatePeerIdFromDirectory",
+                new object?[] { temp.Path }));
+
+        Assert.IsType<LocalIdentityStoreUnavailableException>(failure.InnerException);
+        Assert.Equal("not-dpapi", File.ReadAllText(identityPath));
+        Assert.True(File.Exists(System.IO.Path.Combine(temp.Path, "local-identity.recovery-required")));
+        Assert.DoesNotContain(
+            Directory.EnumerateFiles(temp.Path),
+            path => File.ReadAllText(path).Contains(first, StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ExplicitLocalIdentityRecoveryQuarantinesPeerAndKeyAsOneFailClosedUnit()
+    {
+        using var temp = new TestDirectory();
+        _ = InvokePrivate("GetOrCreatePeerIdFromDirectory", new object?[] { temp.Path });
+        string keyPath = System.IO.Path.Combine(temp.Path, "chat-identity.key");
+        _ = InvokePrivate(
+            "GetOrCreateChatIdentityPrivateKeyFromPath",
+            new object?[]
+            {
+                keyPath,
+                (Func<byte[]>)CreateP256PrivateKey
+            });
+        _ = InvokePrivate(
+            "EnsureLocalIdentityInitializedMarker",
+            new object?[] { System.IO.Path.Combine(temp.Path, "local-identity.initialized") });
+        File.WriteAllText(keyPath, "damaged-key");
+
+        TargetInvocationException corrupt = Assert.Throws<TargetInvocationException>(
+            () => InvokePrivate(
+                "GetOrCreateChatIdentityPrivateKeyFromPath",
+                new object?[] { keyPath, (Func<byte[]>)(() => new byte[64]) }));
+        Assert.IsType<LocalIdentityStoreUnavailableException>(corrupt.InnerException);
+
+        _ = InvokePrivate(
+            "ResetLocalIdentityAfterCorruptionInDirectory",
+            new object?[] { temp.Path });
+
+        Assert.False(File.Exists(System.IO.Path.Combine(temp.Path, "identity.dat")));
+        Assert.False(File.Exists(keyPath));
+        Assert.False(File.Exists(System.IO.Path.Combine(temp.Path, "local-identity.initialized")));
+        Assert.False(File.Exists(System.IO.Path.Combine(temp.Path, "local-identity.recovery-required")));
+        Assert.Single(Directory.EnumerateFiles(temp.Path, "local-peer-identity-recovered.corrupt-*.dat"));
+        Assert.Single(Directory.EnumerateFiles(temp.Path, "chat-identity-recovered.corrupt-*.dat"));
+
+        TargetInvocationException restartRequired = Assert.Throws<TargetInvocationException>(
+            () => InvokePrivate(
+                "GetOrCreatePeerIdFromDirectory",
+                new object?[] { temp.Path }));
+        Assert.IsType<LocalIdentityStoreUnavailableException>(restartRequired.InnerException);
+    }
+
+    [Fact]
+    public void DecryptableButInvalidPrivateKeyFailsClosedWithoutCallingFactory()
+    {
+        using var temp = new TestDirectory();
+        string keyPath = System.IO.Path.Combine(temp.Path, "chat-identity.key");
+        byte[] invalid = Enumerable.Repeat((byte)0xC3, 96).ToArray();
+        File.WriteAllText(keyPath, UserDataProtection.ProtectBytesToString(invalid));
+        bool factoryCalled = false;
+
+        TargetInvocationException failure = Assert.Throws<TargetInvocationException>(
+            () => InvokePrivate(
+                "GetOrCreateChatIdentityPrivateKeyFromPath",
+                new object?[]
+                {
+                    keyPath,
+                    (Func<byte[]>)(() =>
+                    {
+                        factoryCalled = true;
+                        return CreateP256PrivateKey();
+                    })
+                }));
+
+        Assert.IsType<LocalIdentityStoreUnavailableException>(failure.InnerException);
+        Assert.False(factoryCalled);
+        Assert.True(File.Exists(keyPath));
+        Assert.True(File.Exists(System.IO.Path.Combine(temp.Path, "local-identity.recovery-required")));
+    }
+
+    [Fact]
+    public void InvalidGeneratedPrivateKeyIsZeroedAndNeverPersisted()
+    {
+        using var temp = new TestDirectory();
+        string keyPath = System.IO.Path.Combine(temp.Path, "chat-identity.key");
+        byte[] generated = Enumerable.Repeat((byte)0xA5, 64).ToArray();
+
+        TargetInvocationException failure = Assert.Throws<TargetInvocationException>(
+            () => InvokePrivate(
+                "GetOrCreateChatIdentityPrivateKeyFromPath",
+                new object?[] { keyPath, (Func<byte[]>)(() => generated) }));
+
+        Assert.IsType<InvalidDataException>(failure.InnerException);
+        Assert.All(generated, value => Assert.Equal(0, value));
+        Assert.False(File.Exists(keyPath));
+    }
+
+    [Fact]
+    public void ConcurrentlyCreatedSigningKeyWinsWithoutBeingOverwritten()
+    {
+        using var temp = new TestDirectory();
+        string keyPath = System.IO.Path.Combine(temp.Path, "chat-identity.key");
+        byte[] winner = CreateP256PrivateKey();
+        byte[] loser = CreateP256PrivateKey();
+        byte[]? returned = null;
+        byte[]? persisted = null;
+        try
+        {
+            returned = Assert.IsType<byte[]>(InvokePrivate(
+                "GetOrCreateChatIdentityPrivateKeyFromPath",
+                new object?[]
+                {
+                    keyPath,
+                    (Func<byte[]>)(() =>
+                    {
+                        // Simulate another process committing after our initial
+                        // existence check but before this writer claims the path.
+                        File.WriteAllText(
+                            keyPath,
+                            UserDataProtection.ProtectBytesToString(winner));
+                        return loser;
+                    })
+                }));
+            persisted = UserDataProtection.UnprotectBytesFromString(File.ReadAllText(keyPath));
+
+            Assert.Equal(winner, returned);
+            Assert.Equal(winner, persisted);
+            Assert.All(loser, value => Assert.Equal(0, value));
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(winner);
+            CryptographicOperations.ZeroMemory(loser);
+            if (returned != null)
+            {
+                CryptographicOperations.ZeroMemory(returned);
+            }
+            if (persisted != null)
+            {
+                CryptographicOperations.ZeroMemory(persisted);
+            }
+        }
+    }
+
+    [Fact]
+    public void PrivateKeyMustBeP256AndConsumeTheEntirePkcs8Payload()
+    {
+        using var temp = new TestDirectory();
+        string keyPath = System.IO.Path.Combine(temp.Path, "chat-identity.key");
+        using ECDsa p384 = ECDsa.Create(ECCurve.NamedCurves.nistP384);
+        byte[] wrongCurve = p384.ExportPkcs8PrivateKey();
+        try
+        {
+            TargetInvocationException wrongCurveFailure = Assert.Throws<TargetInvocationException>(
+                () => InvokePrivate(
+                    "GetOrCreateChatIdentityPrivateKeyFromPath",
+                    new object?[] { keyPath, (Func<byte[]>)(() => wrongCurve) }));
+            Assert.IsType<InvalidDataException>(wrongCurveFailure.InnerException);
+            Assert.All(wrongCurve, value => Assert.Equal(0, value));
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(wrongCurve);
+        }
+
+        byte[] valid = CreateP256PrivateKey();
+        byte[] trailing = valid.Concat(new byte[] { 0x00 }).ToArray();
+        CryptographicOperations.ZeroMemory(valid);
+        try
+        {
+            TargetInvocationException trailingFailure = Assert.Throws<TargetInvocationException>(
+                () => InvokePrivate(
+                    "GetOrCreateChatIdentityPrivateKeyFromPath",
+                    new object?[] { keyPath, (Func<byte[]>)(() => trailing) }));
+            Assert.IsType<InvalidDataException>(trailingFailure.InnerException);
+            Assert.All(trailing, value => Assert.Equal(0, value));
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(trailing);
+        }
+    }
+
+    [Fact]
+    public void AtomicWriterCanReplaceExistingFileOnTempDirectory()
+    {
+        using var temp = new TestDirectory();
+        string path = System.IO.Path.Combine(temp.Path, "identity.dat");
+        File.WriteAllText(path, "old");
+
+        _ = InvokePrivate(
+            "WriteProtectedAtomic",
+            new object?[] { path, "dpapi:v1:test-value", true });
+
+        Assert.Equal("dpapi:v1:test-value", File.ReadAllText(path));
+        Assert.Empty(Directory.EnumerateFiles(temp.Path, ".identity-*.tmp"));
+    }
+
+    private static object? InvokePrivate(string methodName, object?[] arguments)
+    {
+        MethodInfo method = typeof(LocalIdentityService)
+            .GetMethods(BindingFlags.NonPublic | BindingFlags.Static)
+            .SingleOrDefault(candidate =>
+                candidate.Name == methodName &&
+                candidate.GetParameters().Length == arguments.Length)
+            ?? throw new MissingMethodException(typeof(LocalIdentityService).FullName, methodName);
+        return method.Invoke(null, arguments);
+    }
+
+    private static byte[] CreateP256PrivateKey()
+    {
+        using ECDsa key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        return key.ExportPkcs8PrivateKey();
+    }
+}

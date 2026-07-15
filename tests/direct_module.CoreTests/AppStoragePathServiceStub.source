@@ -1,0 +1,27 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+
+namespace direct_module.Services;
+
+// The production resolver also probes Windows.Storage package locations. Core tests
+// exercise explicit temporary paths, so a WinRT-free per-user fallback is sufficient.
+public static class AppStoragePathService
+{
+    public static string ResolveAppDataDirectory() =>
+        Path.Combine(ResolveLocalAppData(), "Aanchob", "WiFiDirect_module");
+
+    public static IReadOnlyList<string> ResolveLegacyAppDataDirectories() =>
+        new[] { Path.Combine(ResolveLocalAppData(), "direct_module") };
+
+    public static string ResolveOutgoingCacheDirectory() =>
+        Path.Combine(ResolveAppDataDirectory(), "outgoing");
+
+    private static string ResolveLocalAppData()
+    {
+        string path = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        if (string.IsNullOrWhiteSpace(path))
+            path = Path.GetTempPath();
+        return Path.GetFullPath(path);
+    }
+}

@@ -1,169 +1,198 @@
 using System;
-using System.Text;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Linq;
+using System.Threading;
 using Windows.Devices.WiFiDirect;
-using Windows.Storage.Streams;
 
 namespace direct_module.WiFiDirect
 {
     public class WiFiDirectAdvertiser
     {
+        private readonly object _gate = new();
         private WiFiDirectAdvertisementPublisher? _publisher;
-        private bool _isStarted;
 
         public event Action<string>? LogReceived;
 
-        public void Start(
+        public bool Start(
             bool listenerRegistered,
             string displayName = "",
             string shortSessionId = "",
-            bool autonomousGroupOwner = false)
+            bool autonomousGroupOwner = false,
+            string peerIdentity = "",
+            int tcpPort = 0)
         {
-            if (_isStarted)
+            if (!listenerRegistered)
             {
-                LogReceived?.Invoke("Wi-Fi Direct Advertisement はすでに起動中です");
-                LogReceived?.Invoke($"Current Publisher Status: {_publisher?.Status}");
-                return;
+                SafeLog("Wi-Fi Direct advertisement requires a registered listener.");
+                return false;
             }
 
+            WiFiDirectAdvertisementPublisher? attemptedPublisher = null;
+            var pendingLogs = new List<string>();
+            bool started;
             try
             {
-                CleanupPublisher();
+                lock (_gate)
+                {
+                    if (_publisher != null &&
+                        (_publisher.Status == WiFiDirectAdvertisementPublisherStatus.Aborted ||
+                         _publisher.Status == WiFiDirectAdvertisementPublisherStatus.Stopped))
+                    {
+                        _publisher.StatusChanged -= OnStatusChanged;
+                        _publisher = null;
+                    }
 
-                _publisher = new WiFiDirectAdvertisementPublisher();
-                LogReceived?.Invoke("AdvertisementPublisher作成");
+                    if (_publisher != null)
+                    {
+                        pendingLogs.Add("Wi-Fi Direct advertisement is already active.");
+                        pendingLogs.Add($"Current publisher status: {_publisher.Status}");
+                        started = true;
+                    }
+                    else
+                    {
+                        var publisher = new WiFiDirectAdvertisementPublisher();
+                        attemptedPublisher = publisher;
+                        publisher.StatusChanged += OnStatusChanged;
+                        _publisher = publisher;
 
-                _publisher.StatusChanged += OnStatusChanged;
-                LogReceived?.Invoke("AdvertisementPublisher StatusChanged登録済み");
+                        publisher.Advertisement.ListenStateDiscoverability =
+                            WiFiDirectAdvertisementListenStateDiscoverability.Normal;
+                        publisher.Advertisement.IsAutonomousGroupOwnerEnabled = autonomousGroupOwner;
+                        publisher.Advertisement.SupportedConfigurationMethods.Add(
+                            WiFiDirectConfigurationMethod.PushButton);
 
-                _publisher.Advertisement.ListenStateDiscoverability =
-                    WiFiDirectAdvertisementListenStateDiscoverability.Normal;
-                _publisher.Advertisement.IsAutonomousGroupOwnerEnabled = autonomousGroupOwner;
-                _publisher.Advertisement.SupportedConfigurationMethods.Add(WiFiDirectConfigurationMethod.PushButton);
+                        AddAppInformationElement(
+                            publisher.Advertisement,
+                            displayName,
+                            shortSessionId,
+                            peerIdentity,
+                            tcpPort);
 
-                TryAddAppInformationElement(
-                    _publisher.Advertisement,
-                    displayName,
-                    shortSessionId
-                );
+                        pendingLogs.Add("Wi-Fi Direct advertisement configured.");
+                        pendingLogs.Add($"ListenStateDiscoverability: {publisher.Advertisement.ListenStateDiscoverability}");
+                        pendingLogs.Add($"IsAutonomousGroupOwnerEnabled: {publisher.Advertisement.IsAutonomousGroupOwnerEnabled}");
+                        pendingLogs.Add($"LegacySettings.IsEnabled: {publisher.Advertisement.LegacySettings.IsEnabled}");
+                        pendingLogs.Add($"InformationElements.Count: {publisher.Advertisement.InformationElements.Count}");
+                        pendingLogs.Add($"Listener registered: {listenerRegistered}");
+                        pendingLogs.Add($"DCHAT information element added: Identity={peerIdentity}, ShortSessionId={shortSessionId}, TcpPort={tcpPort}");
 
-                LogReceived?.Invoke("Advertisement設定内容");
-                LogReceived?.Invoke($"ListenStateDiscoverability: {_publisher.Advertisement.ListenStateDiscoverability}");
-                LogReceived?.Invoke($"IsAutonomousGroupOwnerEnabled: {_publisher.Advertisement.IsAutonomousGroupOwnerEnabled}");
-                LogReceived?.Invoke($"LegacySettings.IsEnabled: {_publisher.Advertisement.LegacySettings.IsEnabled}");
-                LogReceived?.Invoke($"InformationElements.Count: {_publisher.Advertisement.InformationElements.Count}");
-                LogReceived?.Invoke($"Listener登録状態: {listenerRegistered}");
+                        publisher.Start();
 
-                _publisher.Start();
-                _isStarted = true;
-
-                LogReceived?.Invoke($"AdvertisementPublisher Start呼び出し完了: Status={_publisher.Status}");
+                        pendingLogs.Add($"Advertisement publisher Start returned. Status={publisher.Status}");
+                        started = publisher.Status != WiFiDirectAdvertisementPublisherStatus.Aborted;
+                    }
+                }
             }
             catch (Exception ex)
             {
-                LogReceived?.Invoke($"AdvertisementPublisher開始失敗: {ex.GetType().Name}");
-                LogReceived?.Invoke($"Error: {ex.Message}");
-                CleanupPublisher();
+                ReleasePublisher(attemptedPublisher);
+                SafeLog($"Advertisement publisher start failed: {ex.GetType().Name}: {ex.Message}");
+                return false;
             }
+
+            foreach (string message in pendingLogs) SafeLog(message);
+            return started;
         }
 
         public void Stop()
         {
-            if (_publisher == null)
+            WiFiDirectAdvertisementPublisher? publisher;
+            lock (_gate)
             {
-                LogReceived?.Invoke("Wi-Fi Direct Advertisement は開始されていません");
+                publisher = _publisher;
+                if (publisher != null)
+                {
+                    publisher.StatusChanged -= OnStatusChanged;
+                    _publisher = null;
+                }
+            }
+
+            if (publisher == null)
+            {
+                SafeLog("Wi-Fi Direct advertisement is not active.");
                 return;
             }
 
             try
             {
-                LogReceived?.Invoke($"AdvertisementPublisher Stop前Status: {_publisher.Status}");
-                _publisher.Stop();
-                LogReceived?.Invoke($"AdvertisementPublisher Stop後Status: {_publisher.Status}");
+                SafeLog($"Advertisement publisher status before Stop: {publisher.Status}");
+                publisher.Stop();
+                SafeLog($"Advertisement publisher status after Stop: {publisher.Status}");
             }
             catch (Exception ex)
             {
-                LogReceived?.Invoke($"AdvertisementPublisher停止失敗: {ex.GetType().Name}");
-                LogReceived?.Invoke($"Error: {ex.Message}");
-            }
-            finally
-            {
-                CleanupPublisher();
+                SafeLog($"Advertisement publisher stop failed: {ex.GetType().Name}: {ex.Message}");
             }
         }
 
-        private void TryAddAppInformationElement(
+        private static void AddAppInformationElement(
             WiFiDirectAdvertisement advertisement,
             string displayName,
-            string shortSessionId)
+            string shortSessionId,
+            string peerIdentity,
+            int tcpPort)
         {
-            if (string.IsNullOrWhiteSpace(shortSessionId))
+            if (string.IsNullOrWhiteSpace(shortSessionId) && string.IsNullOrWhiteSpace(peerIdentity))
             {
-                LogReceived?.Invoke("Wi-Fi Direct InformationElement追加スキップ: ShortSessionIdなし");
-                return;
+                throw new ArgumentException("A peer identity is required.", nameof(peerIdentity));
             }
 
-            try
-            {
-                string payload = string.IsNullOrWhiteSpace(displayName)
-                    ? $"DCHAT|{shortSessionId}"
-                    : $"DCHAT|{displayName}|{shortSessionId}";
-
-                var informationElement = new WiFiDirectInformationElement
-                {
-                    Oui = CreateBuffer(new byte[] { 0x44, 0x43, 0x48 }),
-                    OuiType = 1,
-                    Value = CreateBuffer(Encoding.UTF8.GetBytes(payload))
-                };
-
-                advertisement.InformationElements.Add(informationElement);
-                LogReceived?.Invoke($"Wi-Fi Direct InformationElement追加成功: {payload}");
-            }
-            catch (Exception ex)
-            {
-                LogReceived?.Invoke("Wi-Fi Direct InformationElement追加失敗");
-                LogReceived?.Invoke($"例外名: {ex.GetType().Name}");
-                LogReceived?.Invoke($"Message: {ex.Message}");
-            }
-        }
-
-        private static IBuffer CreateBuffer(byte[] bytes)
-        {
-            var writer = new DataWriter();
-            writer.WriteBytes(bytes);
-            return writer.DetachBuffer();
+            WiFiDirectInformationElement informationElement = DchatInformationElement.Create(
+                displayName,
+                peerIdentity,
+                shortSessionId,
+                tcpPort);
+            advertisement.InformationElements.Add(informationElement);
         }
 
         private void OnStatusChanged(
             WiFiDirectAdvertisementPublisher sender,
             WiFiDirectAdvertisementPublisherStatusChangedEventArgs args)
         {
-            LogReceived?.Invoke("AdvertisementPublisher StatusChanged");
-            LogReceived?.Invoke($"StatusChanged Status: {args.Status}");
-            LogReceived?.Invoke($"StatusChanged Error: {args.Error}");
-            LogReceived?.Invoke($"Publisher Current Status: {sender.Status}");
-
             if (args.Status == WiFiDirectAdvertisementPublisherStatus.Aborted)
             {
-                LogReceived?.Invoke("AdvertisementPublisher Aborted: Publisherをクリアします");
-                CleanupPublisher(sender);
+                ReleasePublisher(sender);
+            }
+
+            QueueLog(
+                $"Advertisement publisher status changed: Status={args.Status}, Error={args.Error}" +
+                (args.Status == WiFiDirectAdvertisementPublisherStatus.Aborted
+                    ? " (publisher released for restart)"
+                    : ""));
+        }
+
+        private void ReleasePublisher(WiFiDirectAdvertisementPublisher? publisher)
+        {
+            if (publisher == null) return;
+
+            lock (_gate)
+            {
+                publisher.StatusChanged -= OnStatusChanged;
+                if (ReferenceEquals(_publisher, publisher))
+                {
+                    _publisher = null;
+                }
             }
         }
 
-        private void CleanupPublisher(WiFiDirectAdvertisementPublisher? publisher = null)
+        private void QueueLog(string message)
         {
-            WiFiDirectAdvertisementPublisher? target = publisher ?? _publisher;
+            ThreadPool.QueueUserWorkItem(_ => SafeLog(message));
+        }
 
-            if (target != null)
+        private void SafeLog(string message)
+        {
+            Action<string>? handlers = LogReceived;
+            if (handlers == null) return;
+            foreach (Action<string> handler in handlers.GetInvocationList().Cast<Action<string>>())
             {
-                target.StatusChanged -= OnStatusChanged;
+                try { handler(message); }
+                catch (Exception ex)
+                {
+                    Debug.WriteLine($"WiFiDirectAdvertiser log handler failed: {ex}");
+                }
             }
-
-            if (publisher == null || ReferenceEquals(_publisher, publisher))
-            {
-                _publisher = null;
-            }
-
-            _isStarted = false;
         }
     }
 }

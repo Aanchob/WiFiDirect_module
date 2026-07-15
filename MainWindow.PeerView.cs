@@ -1,9 +1,11 @@
 using System.Linq;
+using System.Threading;
 using direct_module.Services;
 using direct_module.WiFiDirect.Models;
 using Microsoft.UI;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
+using Windows.UI;
 
 namespace direct_module
 {
@@ -11,13 +13,17 @@ namespace direct_module
     {
         private void PeerList_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
-            UpdateSelectedPeerDetails(PeerList.SelectedItem as PeerInfo);
+            PeerInfo? selectedPeer = PeerList.SelectedItem as PeerInfo;
+            UpdateSelectedPeerDetails(selectedPeer);
+            SwitchConversation(selectedPeer);
             UpdateSendButtonState();
         }
 
         private void UpdatePeerCount()
         {
-            PeerCountText.Text = $"検出済み {PeerList.Items.Count}";
+            int discoveredCount = PeerList.Items.Cast<PeerInfo>().Count(peer => !peer.IsGroupChat);
+            int connectedCount = _chatConnectionManager.Connections.Count(connection => connection.IsConnected && connection.IsReady);
+            PeerCountText.Text = $"検出済み {discoveredCount} / 接続 {connectedCount}";
         }
 
         private void UpdateSelectedPeerDetails(PeerInfo? peer)
@@ -36,29 +42,38 @@ namespace direct_module
                 SelectedPeerSessionText.Text = "Session: -";
                 SelectedPeerDeviceText.Text = "DeviceId: -";
                 SelectedPeerOnlineDot.Fill = new SolidColorBrush(Colors.Gray);
+                ChatHeaderOnlineDot.Fill = new SolidColorBrush(Colors.Gray);
+                SetSelectedStatusVisual(Colors.Gray, ColorHelper.FromArgb(32, 128, 128, 128));
                 return;
             }
 
             if (peer.IsGroupChat)
             {
+                int readyCount = _chatConnectionManager.Connections.Count(connection => connection.IsConnected && connection.IsReady);
+                bool isAvailable = readyCount > 0;
                 ChatHeaderAvatarText.Text = "GR";
                 ChatHeaderTitleText.Text = peer.DisplayName;
-                ChatHeaderStatusText.Text = "接続中の相手全員に送信します";
+                ChatHeaderStatusText.Text = isAvailable
+                    ? $"接続中の相手 {readyCount} 台へ送信します"
+                    : "送信可能な相手はいません";
                 SelectedPeerAvatarText.Text = "GR";
                 SelectedPeerNameText.Text = peer.DisplayName;
-                SelectedPeerStatusText.Text = "グループ宛先";
+                SelectedPeerStatusText.Text = isAvailable ? $"オンライン {readyCount} 台" : "オフライン";
                 SelectedPeerSourceText.Text = peer.DisplayText;
-                SelectedPeerProgress.Value = 100;
+                SelectedPeerProgress.Value = isAvailable ? 100 : 0;
                 SelectedPeerIpText.Text = "Remote IP: -";
                 SelectedPeerSessionText.Text = "Session: group";
                 SelectedPeerDeviceText.Text = "DeviceId: -";
-                SelectedPeerOnlineDot.Fill = new SolidColorBrush(Colors.LimeGreen);
+                Color groupColor = isAvailable ? Colors.LimeGreen : Colors.Gray;
+                SelectedPeerOnlineDot.Fill = new SolidColorBrush(groupColor);
+                ChatHeaderOnlineDot.Fill = new SolidColorBrush(groupColor);
+                SetSelectedStatusVisual(groupColor, ColorHelper.FromArgb(32, groupColor.R, groupColor.G, groupColor.B));
                 return;
             }
 
             string displayName = string.IsNullOrWhiteSpace(peer.DisplayName)
                 ? "Unknown Peer"
-                : peer.DisplayName;
+                : SanitizeUntrustedDisplayText(peer.DisplayName);
             string status = PeerDisplayService.GetStatusText(peer);
 
             ChatHeaderAvatarText.Text = PeerDisplayService.CreateInitials(displayName);
@@ -72,29 +87,44 @@ namespace direct_module
             SelectedPeerIpText.Text = $"Remote IP: {PeerDisplayService.GetDisplayValue(peer.RemoteIpAddress)}";
             SelectedPeerSessionText.Text = $"Session: {PeerDisplayService.GetDisplayValue(peer.ShortSessionId)}";
             SelectedPeerDeviceText.Text = $"DeviceId: {PeerDisplayService.GetDisplayValue(peer.DeviceId)}";
-            SelectedPeerOnlineDot.Fill = new SolidColorBrush(peer.IsChatReady ? Colors.LimeGreen : peer.IsTcpConnected ? Colors.DeepSkyBlue : Colors.Gray);
+            Color stateColor = peer.IsChatReady
+                ? Colors.LimeGreen
+                : peer.IsTcpConnected ? Colors.DeepSkyBlue
+                : string.Equals(peer.StatusText, "エラー", System.StringComparison.OrdinalIgnoreCase) ||
+                  peer.StatusText.Contains("失敗", System.StringComparison.OrdinalIgnoreCase) ||
+                  peer.StatusText.Contains("切断", System.StringComparison.OrdinalIgnoreCase)
+                    ? Colors.OrangeRed
+                    : Colors.Gray;
+            SelectedPeerOnlineDot.Fill = new SolidColorBrush(stateColor);
+            ChatHeaderOnlineDot.Fill = new SolidColorBrush(stateColor);
+            SetSelectedStatusVisual(stateColor, ColorHelper.FromArgb(32, stateColor.R, stateColor.G, stateColor.B));
         }
 
         private void UpdateSendButtonState()
         {
+            if (!DispatcherQueue.HasThreadAccess)
+            {
+                DispatcherQueue.TryEnqueue(UpdateSendButtonState);
+                return;
+            }
+
+            if (Volatile.Read(ref _shutdownStarted) != 0)
+            {
+                return;
+            }
+
             bool canSend = false;
 
-            if (PeerList.SelectedItem is PeerInfo peer)
+            if (_localIdentityReady && PeerList.SelectedItem is PeerInfo peer)
             {
                 canSend = peer.IsGroupChat
                     ? _chatConnectionManager.Connections.Any(connection => connection.IsConnected && connection.IsReady)
                     : PeerConnectionStateService.IsChatReady(peer) && GetConnectionForPeer(peer)?.IsReady == true;
             }
-            else if (_chatRole == ChatRole.Host)
-            {
-                canSend = _chatConnectionManager.Connections.Any(connection => connection.IsConnected && connection.IsReady);
-            }
-
-            DispatcherQueue.TryEnqueue(() =>
-            {
-                SendMessageButton.IsEnabled = canSend;
-                AttachFileButton.IsEnabled = canSend;
-            });
+            SendMessageButton.IsEnabled = canSend;
+            AttachFileButton.IsEnabled = canSend &&
+                Volatile.Read(ref _fileStorageReady) != 0 &&
+                _outgoingFileSendGate.CurrentCount > 0;
 
             AddLog(
                 canSend
@@ -107,37 +137,40 @@ namespace direct_module
 
         private void UpdateReconnectButtonState()
         {
-            bool canReconnect = PeerList.SelectedItem is PeerInfo peer &&
+            if (!DispatcherQueue.HasThreadAccess)
+            {
+                DispatcherQueue.TryEnqueue(UpdateReconnectButtonState);
+                return;
+            }
+
+            if (Volatile.Read(ref _shutdownStarted) != 0)
+            {
+                return;
+            }
+
+            bool canReconnect = _localIdentityReady &&
+                PeerList.SelectedItem is PeerInfo peer &&
                 _peerConnectionStateService.CanReconnect(peer);
 
-            DispatcherQueue.TryEnqueue(() =>
-            {
-                ReconnectButton.IsEnabled = canReconnect;
-            });
+            ReconnectButton.IsEnabled = canReconnect;
         }
 
         private void RefreshPeerDisplay(PeerInfo peer)
         {
             _peerConnectionStateService.UpdateConnectAvailability(peer);
-
-            int selectedIndex = PeerList.SelectedIndex;
-            int index = PeerList.Items.IndexOf(peer);
-            if (index < 0)
-            {
-                return;
-            }
-
-            PeerList.Items.RemoveAt(index);
-            PeerList.Items.Insert(index, peer);
-
-            if (selectedIndex >= 0 && selectedIndex < PeerList.Items.Count)
-            {
-                PeerList.SelectedIndex = selectedIndex;
-            }
-
             UpdatePeerCount();
-            UpdateSelectedPeerDetails(PeerList.SelectedItem as PeerInfo);
+            if (ReferenceEquals(PeerList.SelectedItem, peer))
+            {
+                UpdateSelectedPeerDetails(peer);
+            }
             UpdateSendButtonState();
+        }
+
+        private void SetSelectedStatusVisual(Color foreground, Color background)
+        {
+            SelectedPeerStatusText.Foreground = new SolidColorBrush(foreground);
+            SelectedPeerStatusChip.BorderBrush = new SolidColorBrush(foreground);
+            SelectedPeerStatusChip.Background = new SolidColorBrush(background);
         }
     }
 }

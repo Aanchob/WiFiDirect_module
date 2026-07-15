@@ -1,347 +1,742 @@
 using direct_module.WiFiDirect.Models;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.Linq;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Windows.Devices.Enumeration;
 using Windows.Devices.WiFiDirect;
-using Windows.Storage.Streams;
 
-namespace direct_module.WiFiDirect
+namespace direct_module.WiFiDirect;
+
+public enum WiFiDirectScanSelectorType
 {
-    public enum WiFiDirectScanSelectorType
+    Default,
+    AssociationEndpoint
+}
+
+public sealed class WiFiDirectScanner
+{
+    private const int MaximumTrackedDevices = 512;
+    private const int MaximumUnidentifiedDevices = 64;
+    private const int MaximumDeviceIdCharacters = 4096;
+    private const int MaximumNewDevicesPerMinute = 512;
+    private const int MaximumUpdateEventsPerMinute = 600;
+    private readonly object _gate = new();
+    private readonly Dictionary<string, DeviceInformation> _devices = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _appDeviceIds = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, PeerInfo> _publishedPeers = new(StringComparer.OrdinalIgnoreCase);
+    private DeviceWatcher? _watcher;
+    private CancellationTokenSource? _scanTimeoutCts;
+    private int _generation;
+    private long _lastInvalidDeviceLog;
+    private long _lastCapacityLog;
+    private long _lastEventRateLog;
+    private long _eventWindowStartedAt = Stopwatch.GetTimestamp();
+    private int _newDevicesInWindow;
+    private int _updatesInWindow;
+
+    public event Action<string>? LogReceived;
+    public event Action<PeerInfo>? PeerFound;
+    public event Action<PeerInfo>? PeerRemoved;
+
+    public Task StartAsync(int scanSeconds = 30) =>
+        StartAsync(WiFiDirectScanSelectorType.AssociationEndpoint, scanSeconds);
+
+    public Task StartDefaultAsync(int scanSeconds = 30) =>
+        StartAsync(WiFiDirectScanSelectorType.Default, scanSeconds);
+
+    public Task StartAssociationEndpointAsync(int scanSeconds = 0) =>
+        StartAsync(WiFiDirectScanSelectorType.AssociationEndpoint, scanSeconds);
+
+    public Task StartAsync(WiFiDirectScanSelectorType selectorType, int scanSeconds = 30)
     {
-        Default,
-        AssociationEndpoint
-    }
-
-    public class WiFiDirectScanner
-    {
-        private readonly Dictionary<string, DeviceInformation> _devices = new();
-        private DeviceWatcher? _watcher;
-        private CancellationTokenSource? _scanTimeoutCts;
-        private WiFiDirectScanSelectorType _currentSelectorType;
-
-        public event Action<string>? LogReceived;
-        public event Action<PeerInfo>? PeerFound;
-
-        public Task StartAsync(int scanSeconds = 30)
+        if (scanSeconds < 0)
         {
-            return StartAsync(WiFiDirectScanSelectorType.AssociationEndpoint, scanSeconds);
+            throw new ArgumentOutOfRangeException(nameof(scanSeconds));
         }
 
-        public Task StartDefaultAsync(int scanSeconds = 30)
-        {
-            return StartAsync(WiFiDirectScanSelectorType.Default, scanSeconds);
-        }
+        DeviceWatcher? watcher = null;
+        DeviceWatcher? previousWatcher = null;
+        CancellationTokenSource? previousTimeout = null;
+        CancellationTokenSource? timeout = null;
+        CancellationTokenSource? failedTimeout = null;
+        Exception? startError = null;
+        int generation = 0;
+        string? alreadyRunningMessage = null;
+        var pendingLogs = new List<string>();
+        var removedFromPreviousWatcher = new List<PeerInfo>();
 
-        public Task StartAssociationEndpointAsync(int scanSeconds = 0)
+        try
         {
-            return StartAsync(WiFiDirectScanSelectorType.AssociationEndpoint, scanSeconds);
-        }
-
-        public Task StartAsync(WiFiDirectScanSelectorType selectorType, int scanSeconds = 30)
-        {
-            if (_watcher != null)
+            lock (_gate)
             {
-                if (_watcher.Status == DeviceWatcherStatus.Started ||
-                    _watcher.Status == DeviceWatcherStatus.Created)
+                if (_watcher != null && IsActive(_watcher.Status))
                 {
-                    LogReceived?.Invoke($"Wi-Fi Direct探索はすでに起動中です: Status={_watcher.Status}");
-                    return Task.CompletedTask;
+                    alreadyRunningMessage = $"Wi-Fi Direct探索はすでに起動中です: Status={_watcher.Status}";
+                }
+                else
+                {
+                    if (_watcher != null)
+                    {
+                        previousWatcher = _watcher;
+                        DetachWatcherLocked(previousWatcher);
+                        _watcher = null;
+                    }
+
+                    previousTimeout = _scanTimeoutCts;
+                    _scanTimeoutCts = null;
+                    removedFromPreviousWatcher.AddRange(_publishedPeers.Values);
+                    _devices.Clear();
+                    _appDeviceIds.Clear();
+                    _publishedPeers.Clear();
+                    generation = ++_generation;
+                    _eventWindowStartedAt = Stopwatch.GetTimestamp();
+                    _newDevicesInWindow = 0;
+                    _updatesInWindow = 0;
+
+                    string selector = selectorType == WiFiDirectScanSelectorType.AssociationEndpoint
+                        ? WiFiDirectDevice.GetDeviceSelector(WiFiDirectDeviceSelectorType.AssociationEndpoint)
+                        : WiFiDirectDevice.GetDeviceSelector();
+
+                    watcher = DeviceInformation.CreateWatcher(selector);
+                    watcher.Added += OnDeviceAdded;
+                    watcher.Updated += OnDeviceUpdated;
+                    watcher.Removed += OnDeviceRemoved;
+                    watcher.EnumerationCompleted += OnEnumerationCompleted;
+                    watcher.Stopped += OnStopped;
+                    _watcher = watcher;
+
+                    if (scanSeconds > 0)
+                    {
+                        timeout = new CancellationTokenSource();
+                        _scanTimeoutCts = timeout;
+                    }
+
+                    pendingLogs.Add("Wi-Fi Direct探索開始");
+                    pendingLogs.Add($"Selector Type: {selectorType}");
+                    pendingLogs.Add($"探索時間: {(scanSeconds == 0 ? "継続" : $"{scanSeconds}秒")}");
+
+                    try
+                    {
+                        watcher.Start();
+                        pendingLogs.Add($"Watcher Status after Start: {watcher.Status}");
+                        if (timeout != null)
+                        {
+                            _ = StopAfterDelayAsync(watcher, generation, scanSeconds, timeout.Token);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        startError = ex;
+                        DetachWatcherLocked(watcher);
+                        if (ReferenceEquals(_watcher, watcher))
+                        {
+                            _watcher = null;
+                            _generation++;
+                        }
+
+                        failedTimeout = _scanTimeoutCts;
+                        _scanTimeoutCts = null;
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            startError = ex;
+            lock (_gate)
+            {
+                if (watcher != null)
+                {
+                    DetachWatcherLocked(watcher);
                 }
 
-                LogReceived?.Invoke($"前回のWi-Fi Direct探索を整理します: Status={_watcher.Status}");
-                CleanupWatcher();
-            }
-
-            _currentSelectorType = selectorType;
-            _devices.Clear();
-
-            try
-            {
-                string selector = selectorType == WiFiDirectScanSelectorType.AssociationEndpoint
-                    ? WiFiDirectDevice.GetDeviceSelector(WiFiDirectDeviceSelectorType.AssociationEndpoint)
-                    : WiFiDirectDevice.GetDeviceSelector();
-
-                LogReceived?.Invoke("Wi-Fi Direct探索開始");
-                LogReceived?.Invoke($"Selector Type: {selectorType}");
-                LogReceived?.Invoke($"Selector: {selector}");
-
-                _watcher = DeviceInformation.CreateWatcher(selector);
-                _watcher.Added += OnDeviceAdded;
-                _watcher.Updated += OnDeviceUpdated;
-                _watcher.Removed += OnDeviceRemoved;
-                _watcher.EnumerationCompleted += OnEnumerationCompleted;
-                _watcher.Stopped += OnStopped;
-
-                LogReceived?.Invoke($"Watcher Status before Start: {_watcher.Status}");
-                LogReceived?.Invoke($"探索時間: {scanSeconds}秒");
-
-                _watcher.Start();
-
-                LogReceived?.Invoke($"Watcher Status after Start: {_watcher.Status}");
-
-                if (scanSeconds <= 0)
+                if (ReferenceEquals(_watcher, watcher))
                 {
-                    LogReceived?.Invoke("Wi-Fi Direct探索は自動停止せず継続します");
-                    return Task.CompletedTask;
+                    _watcher = null;
+                    _generation++;
                 }
 
-                _scanTimeoutCts = new CancellationTokenSource();
-                _ = StopAfterDelayAsync(scanSeconds, _scanTimeoutCts.Token);
+                failedTimeout = _scanTimeoutCts;
+                _scanTimeoutCts = null;
             }
-            catch (Exception ex)
-            {
-                LogReceived?.Invoke($"Wi-Fi Direct探索エラー: {ex.GetType().Name}");
-                LogReceived?.Invoke($"Message: {ex.Message}");
-                CleanupWatcher();
-            }
+        }
 
+        if (alreadyRunningMessage != null)
+        {
+            SafeLog(alreadyRunningMessage);
             return Task.CompletedTask;
         }
 
-        public void Stop()
+        CancelAndDispose(previousTimeout);
+        StopDetachedWatcher(previousWatcher);
+        CancelAndDispose(failedTimeout);
+        PublishRemovedPeers(removedFromPreviousWatcher);
+        foreach (string message in pendingLogs) SafeLog(message);
+        if (startError != null)
         {
-            if (_watcher == null)
+            SafeLog($"Wi-Fi Direct探索エラー: {startError.GetType().Name}");
+            SafeLog($"Message: {startError.Message}");
+        }
+
+        return Task.CompletedTask;
+    }
+
+    public void Stop()
+    {
+        DeviceWatcher? watcher;
+        int generation;
+
+        lock (_gate)
+        {
+            watcher = _watcher;
+            generation = _generation;
+        }
+
+        if (watcher == null)
+        {
+            SafeLog("Wi-Fi Direct探索は開始されていません");
+            return;
+        }
+
+        ReleaseWatcher(watcher, generation, stopWatcher: true);
+    }
+
+    private async Task StopAfterDelayAsync(
+        DeviceWatcher watcher,
+        int generation,
+        int scanSeconds,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await Task.Delay(TimeSpan.FromSeconds(scanSeconds), cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            return;
+        }
+
+        SafeLog($"{scanSeconds}秒経過したのでWi-Fi Direct探索を停止します");
+        ReleaseWatcher(watcher, generation, stopWatcher: true);
+    }
+
+    private void OnDeviceAdded(DeviceWatcher sender, DeviceInformation device)
+    {
+        if (Monitor.IsEntered(_gate))
+        {
+            ThreadPool.QueueUserWorkItem(_ => OnDeviceAdded(sender, device));
+            return;
+        }
+
+        if (!IsAcceptableDeviceId(device.Id))
+        {
+            LogInvalidDeviceId();
+            return;
+        }
+
+        bool capacityReached = false;
+        bool eventRateReached = false;
+        bool hasAppInformation = DchatInformationElement.TryParse(device, out _);
+        lock (_gate)
+        {
+            if (!ReferenceEquals(_watcher, sender))
             {
-                LogReceived?.Invoke("Wi-Fi Direct探索は開始されていません");
                 return;
             }
 
-            LogReceived?.Invoke($"Wi-Fi Direct探索停止要求: Status={_watcher.Status}");
+            bool isNew = !_devices.ContainsKey(device.Id);
+            if (isNew && !hasAppInformation &&
+                _devices.Count - _appDeviceIds.Count >= MaximumUnidentifiedDevices)
+            {
+                capacityReached = true;
+            }
+            if (isNew && _devices.Count >= MaximumTrackedDevices)
+            {
+                if (hasAppInformation)
+                {
+                    string? unidentifiedId = _devices.Keys.FirstOrDefault(id => !_appDeviceIds.Contains(id));
+                    if (unidentifiedId != null)
+                    {
+                        _devices.Remove(unidentifiedId);
+                        _publishedPeers.Remove(unidentifiedId);
+                    }
+                    else
+                    {
+                        capacityReached = true;
+                    }
+                }
+                else
+                {
+                    capacityReached = true;
+                }
+            }
+            if (!capacityReached)
+            {
+                ResetEventWindowIfNeeded(Stopwatch.GetTimestamp());
+                if (isNew)
+                {
+                    if (_newDevicesInWindow >= MaximumNewDevicesPerMinute)
+                    {
+                        eventRateReached = true;
+                    }
+                    else
+                    {
+                        _newDevicesInWindow++;
+                        _devices[device.Id] = device;
+                        if (hasAppInformation) _appDeviceIds.Add(device.Id);
+                    }
+                }
+                else if (_updatesInWindow >= MaximumUpdateEventsPerMinute)
+                {
+                    eventRateReached = true;
+                    _devices[device.Id] = device;
+                }
+                else
+                {
+                    _updatesInWindow++;
+                    _devices[device.Id] = device;
+                    if (hasAppInformation) _appDeviceIds.Add(device.Id);
+                }
+            }
+        }
+
+        if (capacityReached)
+        {
+            LogCapacityReached();
+            return;
+        }
+        if (eventRateReached)
+        {
+            LogEventRateReached();
+            return;
+        }
+
+        PublishPeer(sender, device, "Added");
+    }
+
+    private void OnDeviceUpdated(DeviceWatcher sender, DeviceInformationUpdate update)
+    {
+        if (Monitor.IsEntered(_gate))
+        {
+            ThreadPool.QueueUserWorkItem(_ => OnDeviceUpdated(sender, update));
+            return;
+        }
+
+        if (!IsAcceptableDeviceId(update.Id))
+        {
+            LogInvalidDeviceId();
+            return;
+        }
+
+        DeviceInformation? device;
+        bool eventRateReached = false;
+        string? updateError = null;
+        lock (_gate)
+        {
+            if (!ReferenceEquals(_watcher, sender) || !_devices.TryGetValue(update.Id, out device))
+            {
+                return;
+            }
 
             try
-            {
-                CancelScanTimeout();
-
-                if (_watcher.Status == DeviceWatcherStatus.Created ||
-                    _watcher.Status == DeviceWatcherStatus.Started ||
-                    _watcher.Status == DeviceWatcherStatus.EnumerationCompleted)
-                {
-                    _watcher.Stop();
-                }
-
-                if (_watcher.Status == DeviceWatcherStatus.Stopped ||
-                    _watcher.Status == DeviceWatcherStatus.Aborted ||
-                    _watcher.Status == DeviceWatcherStatus.EnumerationCompleted)
-                {
-                    CleanupWatcher();
-                }
-            }
-            catch (Exception ex)
-            {
-                LogReceived?.Invoke($"Wi-Fi Direct探索停止エラー: {ex.GetType().Name}");
-                LogReceived?.Invoke($"Message: {ex.Message}");
-                CleanupWatcher();
-            }
-        }
-
-        private async Task StopAfterDelayAsync(int scanSeconds, CancellationToken cancellationToken)
-        {
-            if (scanSeconds <= 0)
-            {
-                return;
-            }
-
-            try
-            {
-                await Task.Delay(TimeSpan.FromSeconds(scanSeconds), cancellationToken);
-            }
-            catch (OperationCanceledException)
-            {
-                return;
-            }
-
-            if (cancellationToken.IsCancellationRequested)
-            {
-                return;
-            }
-
-            LogReceived?.Invoke($"{scanSeconds}秒経過したのでWi-Fi Direct探索を停止します");
-            Stop();
-        }
-
-        private void OnDeviceAdded(DeviceWatcher sender, DeviceInformation device)
-        {
-            _devices[device.Id] = device;
-
-            string shortSessionId = TryExtractShortSessionId(device);
-            string displayName = string.IsNullOrWhiteSpace(device.Name)
-                ? "Unknown Wi-Fi Direct device"
-                : device.Name;
-
-            LogReceived?.Invoke("Added");
-            LogReceived?.Invoke("---- Wi-Fi Direct Candidate ----");
-            LogReceived?.Invoke($"Selector Type: {_currentSelectorType}");
-            LogReceived?.Invoke($"Name: {FormatName(device.Name)}");
-            LogReceived?.Invoke($"Id: {device.Id}");
-            LogReceived?.Invoke($"Kind: {device.Kind}");
-            LogReceived?.Invoke($"IsEnabled: {device.IsEnabled}");
-            LogReceived?.Invoke(string.IsNullOrWhiteSpace(shortSessionId)
-                ? "Wi-Fi Direct InformationElement読み取り不可: ShortSessionIdなし"
-                : $"Wi-Fi Direct InformationElement取得: ShortSessionId={shortSessionId}");
-            if (string.IsNullOrWhiteSpace(shortSessionId))
-            {
-                LogReceived?.Invoke("ShortSessionId取得不可のため名前照合にフォールバック");
-            }
-            LogReceived?.Invoke("IsEnabledで除外せずPeerFoundへ流します");
-            LogReceived?.Invoke($"Wi-Fi Direct Candidate発見: Name={displayName}, DeviceId={device.Id}");
-
-            PeerInfo peer = new PeerInfo
-            {
-                DisplayName = displayName,
-                WiFiDirectName = displayName,
-                DeviceId = device.Id,
-                DeviceKind = device.Kind.ToString(),
-                IsEnabled = device.IsEnabled,
-                DiscoveredByBle = false,
-                DiscoveredByWiFiDirect = true,
-                TcpPort = 0,
-                ShortSessionId = shortSessionId,
-                MatchKey = shortSessionId,
-                IsConnected = false
-            };
-
-            PeerFound?.Invoke(peer);
-        }
-
-        private void OnDeviceUpdated(DeviceWatcher sender, DeviceInformationUpdate update)
-        {
-            LogReceived?.Invoke("Updated");
-            LogReceived?.Invoke($"Updated Id: {update.Id}");
-
-            if (_devices.TryGetValue(update.Id, out DeviceInformation? device))
             {
                 device.Update(update);
-                LogReceived?.Invoke($"Name: {FormatName(device.Name)}");
-                LogReceived?.Invoke($"Kind: {device.Kind}");
-                LogReceived?.Invoke($"IsEnabled: {device.IsEnabled}");
-            }
-        }
-
-        private void OnDeviceRemoved(DeviceWatcher sender, DeviceInformationUpdate update)
-        {
-            LogReceived?.Invoke("Removed");
-            LogReceived?.Invoke($"Removed Id: {update.Id}");
-            _devices.Remove(update.Id);
-        }
-
-        private void OnEnumerationCompleted(DeviceWatcher sender, object args)
-        {
-            LogReceived?.Invoke("EnumerationCompleted");
-            LogReceived?.Invoke($"Wi-Fi Direct初回探索完了: Status={sender.Status}, CandidateCount={_devices.Count}");
-        }
-
-        private void OnStopped(DeviceWatcher sender, object args)
-        {
-            LogReceived?.Invoke("Stopped");
-            LogReceived?.Invoke($"Wi-Fi Direct探索停止: Status={sender.Status}");
-            CleanupWatcher();
-        }
-
-        private void CleanupWatcher()
-        {
-            CancelScanTimeout();
-
-            if (_watcher == null)
-            {
-                return;
-            }
-
-            _watcher.Added -= OnDeviceAdded;
-            _watcher.Updated -= OnDeviceUpdated;
-            _watcher.Removed -= OnDeviceRemoved;
-            _watcher.EnumerationCompleted -= OnEnumerationCompleted;
-            _watcher.Stopped -= OnStopped;
-            _watcher = null;
-        }
-
-        private void CancelScanTimeout()
-        {
-            if (_scanTimeoutCts == null)
-            {
-                return;
-            }
-
-            _scanTimeoutCts.Cancel();
-            _scanTimeoutCts.Dispose();
-            _scanTimeoutCts = null;
-        }
-
-        private string TryExtractShortSessionId(DeviceInformation device)
-        {
-            try
-            {
-                foreach (var property in device.Properties)
-                {
-                    if (property.Value is string text && TryParseDchatPayload(text, out string sessionId))
-                    {
-                        return sessionId;
-                    }
-
-                    if (property.Value is IBuffer buffer)
-                    {
-                        string textFromBuffer = ReadBufferAsString(buffer);
-                        if (TryParseDchatPayload(textFromBuffer, out string sessionIdFromBuffer))
-                        {
-                            return sessionIdFromBuffer;
-                        }
-                    }
-                }
-
-                LogReceived?.Invoke("Wi-Fi Direct InformationElement読み取り不可: DeviceInformation.PropertiesにDCHATなし");
-                return "";
             }
             catch (Exception ex)
             {
-                LogReceived?.Invoke("Wi-Fi Direct InformationElement読み取り失敗");
-                LogReceived?.Invoke($"例外名: {ex.GetType().Name}");
-                LogReceived?.Invoke($"Message: {ex.Message}");
-                return "";
+                updateError = $"Wi-Fi Direct device update failed: {ex.GetType().Name}: {ex.Message}";
+            }
+
+            if (updateError == null)
+            {
+                ResetEventWindowIfNeeded(Stopwatch.GetTimestamp());
+                if (_updatesInWindow >= MaximumUpdateEventsPerMinute)
+                {
+                    eventRateReached = true;
+                }
+                else
+                {
+                    _updatesInWindow++;
+                }
             }
         }
 
-        private static bool TryParseDchatPayload(string text, out string shortSessionId)
+        if (updateError != null)
         {
-            shortSessionId = "";
+            SafeLog(updateError);
+            return;
+        }
 
-            if (string.IsNullOrWhiteSpace(text) || !text.Contains("DCHAT", StringComparison.OrdinalIgnoreCase))
+        if (eventRateReached)
+        {
+            LogEventRateReached();
+            return;
+        }
+
+        PublishPeer(sender, device, "Updated");
+    }
+
+    private void OnDeviceRemoved(DeviceWatcher sender, DeviceInformationUpdate update)
+    {
+        if (Monitor.IsEntered(_gate))
+        {
+            ThreadPool.QueueUserWorkItem(_ => OnDeviceRemoved(sender, update));
+            return;
+        }
+
+        if (!IsAcceptableDeviceId(update.Id))
+        {
+            LogInvalidDeviceId();
+            return;
+        }
+
+        DeviceInformation? removed;
+        PeerInfo? publishedPeer;
+        lock (_gate)
+        {
+            if (!ReferenceEquals(_watcher, sender) || !_devices.Remove(update.Id, out removed))
             {
-                return false;
+                return;
             }
 
-            string[] parts = text.Split('|');
+            _appDeviceIds.Remove(update.Id);
+            _publishedPeers.Remove(update.Id, out publishedPeer);
+        }
 
-            if (parts.Length >= 3 && parts[0] == "DCHAT")
+        SafeLog($"Removed: {FormatDeviceIdForLog(update.Id)}");
+        if (publishedPeer != null)
+        {
+            InvokeSafely(PeerRemoved, publishedPeer, nameof(PeerRemoved));
+        }
+    }
+
+    private void OnEnumerationCompleted(DeviceWatcher sender, object args)
+    {
+        if (Monitor.IsEntered(_gate))
+        {
+            ThreadPool.QueueUserWorkItem(_ => OnEnumerationCompleted(sender, args));
+            return;
+        }
+
+        int count;
+        lock (_gate)
+        {
+            if (!ReferenceEquals(_watcher, sender))
             {
-                shortSessionId = parts[2];
-                return !string.IsNullOrWhiteSpace(shortSessionId);
+                return;
             }
 
-            if (parts.Length >= 2 && parts[0] == "DCHAT")
+            count = _devices.Count;
+        }
+
+        SafeLog($"Wi-Fi Direct初回探索完了: Status={sender.Status}, CandidateCount={count}");
+    }
+
+    private void OnStopped(DeviceWatcher sender, object args)
+    {
+        int generation;
+        lock (_gate)
+        {
+            if (!ReferenceEquals(_watcher, sender))
             {
-                shortSessionId = parts[1];
-                return !string.IsNullOrWhiteSpace(shortSessionId);
+                return;
             }
 
+            generation = _generation;
+        }
+
+        string status = sender.Status.ToString();
+        ThreadPool.QueueUserWorkItem(_ =>
+        {
+            ReleaseWatcher(sender, generation, stopWatcher: false);
+            SafeLog($"Wi-Fi Direct探索停止: Status={status}");
+        });
+    }
+
+    private void PublishPeer(DeviceWatcher sender, DeviceInformation device, string reason)
+    {
+        if (!TryCreatePeer(device, out PeerInfo peer))
+        {
+            return;
+        }
+        lock (_gate)
+        {
+            if (!ReferenceEquals(_watcher, sender) || !_devices.ContainsKey(device.Id)) return;
+            _appDeviceIds.Add(device.Id);
+            _publishedPeers[device.Id] = peer;
+        }
+        SafeLog($"{reason}: Name={peer.DisplayName}, DeviceId={FormatDeviceIdForLog(peer.DeviceId)}, Identity={peer.MatchKey}, TcpPort={peer.TcpPort}");
+        InvokeSafely(PeerFound, peer, nameof(PeerFound));
+    }
+
+    private static bool TryCreatePeer(DeviceInformation device, out PeerInfo peer)
+    {
+        bool hasAppInformation = DchatInformationElement.TryParse(device, out DchatInformation appInformation);
+        if (!hasAppInformation)
+        {
+            peer = null!;
             return false;
         }
 
-        private static string ReadBufferAsString(IBuffer buffer)
+        string displayName = !string.IsNullOrWhiteSpace(appInformation.DisplayName)
+            ? appInformation.DisplayName
+            : string.IsNullOrWhiteSpace(device.Name)
+                ? "Unknown Wi-Fi Direct device"
+                : SanitizeDisplayName(device.Name);
+
+        peer = new PeerInfo
         {
-            byte[] bytes = new byte[buffer.Length];
+            DisplayName = displayName,
+            WiFiDirectName = displayName,
+            DeviceId = device.Id,
+            DeviceKind = device.Kind.ToString(),
+            IsEnabled = device.IsEnabled,
+            DiscoveredByBle = false,
+            DiscoveredByWiFiDirect = true,
+            TcpPort = appInformation.TcpPort,
+            ShortSessionId = appInformation.ShortSessionId,
+            RoleKey = appInformation.RoleKey,
+            MatchKey = appInformation.PeerIdentity,
+            IsConnected = false,
+            LastSeenAtUtc = DateTimeOffset.UtcNow
+        };
+        return true;
+    }
 
-            using var reader = DataReader.FromBuffer(buffer);
-            reader.ReadBytes(bytes);
+    private void ReleaseWatcher(DeviceWatcher watcher, int generation, bool stopWatcher)
+    {
+        CancellationTokenSource? timeout;
+        List<PeerInfo> removedPeers;
+        lock (_gate)
+        {
+            if (!ReferenceEquals(_watcher, watcher) || _generation != generation)
+            {
+                return;
+            }
 
-            return Encoding.UTF8.GetString(bytes);
+            DetachWatcherLocked(watcher);
+            timeout = _scanTimeoutCts;
+            _scanTimeoutCts = null;
+            _watcher = null;
+            _devices.Clear();
+            _appDeviceIds.Clear();
+            removedPeers = _publishedPeers.Values.ToList();
+            _publishedPeers.Clear();
+            _generation++;
         }
 
-        private static string FormatName(string name)
+        SafeLog("Wi-Fi Direct探索停止要求");
+        CancelAndDispose(timeout);
+        if (stopWatcher)
         {
-            return string.IsNullOrWhiteSpace(name) ? "(empty)" : name;
+            StopDetachedWatcher(watcher);
         }
+        PublishRemovedPeers(removedPeers);
+    }
+
+    private void DetachWatcherLocked(DeviceWatcher watcher)
+    {
+        watcher.Added -= OnDeviceAdded;
+        watcher.Updated -= OnDeviceUpdated;
+        watcher.Removed -= OnDeviceRemoved;
+        watcher.EnumerationCompleted -= OnEnumerationCompleted;
+        watcher.Stopped -= OnStopped;
+    }
+
+    private static bool IsActive(DeviceWatcherStatus status) =>
+        status is DeviceWatcherStatus.Created or DeviceWatcherStatus.Started or DeviceWatcherStatus.EnumerationCompleted;
+
+    private void StopDetachedWatcher(DeviceWatcher? watcher)
+    {
+        if (watcher == null)
+        {
+            return;
+        }
+
+        try
+        {
+            if (IsActive(watcher.Status))
+            {
+                watcher.Stop();
+            }
+        }
+        catch (Exception ex)
+        {
+            SafeLog($"Wi-Fi Direct探索停止エラー: {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    private void CancelAndDispose(CancellationTokenSource? cancellation)
+    {
+        if (cancellation == null)
+        {
+            return;
+        }
+
+        try
+        {
+            cancellation.Cancel();
+        }
+        catch (Exception ex)
+        {
+            SafeLog($"Wi-Fi Direct scan cancellation failed: {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            try { cancellation.Dispose(); }
+            catch (Exception ex)
+            {
+                SafeLog($"Wi-Fi Direct scan cancellation disposal failed: {ex.GetType().Name}: {ex.Message}");
+            }
+        }
+    }
+
+    private void PublishRemovedPeers(IEnumerable<PeerInfo> peers)
+    {
+        foreach (PeerInfo peer in peers)
+        {
+            InvokeSafely(PeerRemoved, peer, nameof(PeerRemoved));
+        }
+    }
+
+    private void InvokeSafely(Action<PeerInfo>? handlers, PeerInfo peer, string eventName)
+    {
+        if (handlers == null) return;
+        foreach (Action<PeerInfo> handler in handlers.GetInvocationList().Cast<Action<PeerInfo>>())
+        {
+            try { handler(peer); }
+            catch (Exception ex)
+            {
+                SafeLog($"{eventName} handler failed: {ex.GetType().Name}: {ex.Message}");
+            }
+        }
+    }
+
+    private void LogInvalidDeviceId()
+    {
+        long now = Stopwatch.GetTimestamp();
+        lock (_gate)
+        {
+            if (_lastInvalidDeviceLog != 0 &&
+                Stopwatch.GetElapsedTime(_lastInvalidDeviceLog, now) < TimeSpan.FromSeconds(5))
+            {
+                return;
+            }
+
+            _lastInvalidDeviceLog = now;
+        }
+
+        SafeLog("Wi-Fi Direct candidate with an invalid DeviceId was ignored.");
+    }
+
+    private void LogCapacityReached()
+    {
+        long now = Stopwatch.GetTimestamp();
+        lock (_gate)
+        {
+            if (_lastCapacityLog != 0 &&
+                Stopwatch.GetElapsedTime(_lastCapacityLog, now) < TimeSpan.FromSeconds(5))
+            {
+                return;
+            }
+
+            _lastCapacityLog = now;
+        }
+
+        SafeLog("Wi-Fi Direct candidate limit reached; additional devices are ignored.");
+    }
+
+    private void LogEventRateReached()
+    {
+        long now = Stopwatch.GetTimestamp();
+        lock (_gate)
+        {
+            if (_lastEventRateLog != 0 &&
+                Stopwatch.GetElapsedTime(_lastEventRateLog, now) < TimeSpan.FromSeconds(5))
+            {
+                return;
+            }
+
+            _lastEventRateLog = now;
+        }
+
+        SafeLog("Wi-Fi Direct discovery event rate limit reached; excess updates are coalesced.");
+    }
+
+    private void ResetEventWindowIfNeeded(long now)
+    {
+        if (Stopwatch.GetElapsedTime(_eventWindowStartedAt, now) < TimeSpan.FromMinutes(1))
+        {
+            return;
+        }
+
+        _eventWindowStartedAt = now;
+        _newDevicesInWindow = 0;
+        _updatesInWindow = 0;
+    }
+
+    private void SafeLog(string message)
+    {
+        Action<string>? handlers = LogReceived;
+        if (handlers == null) return;
+        foreach (Action<string> handler in handlers.GetInvocationList().Cast<Action<string>>())
+        {
+            try
+            {
+                handler(message);
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"WiFiDirectScanner log handler failed: {ex}");
+            }
+        }
+    }
+
+    private static bool IsAcceptableDeviceId(string? deviceId) =>
+        !string.IsNullOrWhiteSpace(deviceId) &&
+        deviceId.Length <= MaximumDeviceIdCharacters &&
+        !deviceId.Any(character => char.IsControl(character));
+
+    private static string FormatDeviceIdForLog(string? deviceId)
+    {
+        if (string.IsNullOrEmpty(deviceId)) return "(empty)";
+        var builder = new StringBuilder(Math.Min(deviceId.Length, 256));
+        foreach (Rune rune in deviceId.EnumerateRunes())
+        {
+            if (Rune.GetUnicodeCategory(rune) is System.Globalization.UnicodeCategory.Control or
+                System.Globalization.UnicodeCategory.Format or
+                System.Globalization.UnicodeCategory.LineSeparator or
+                System.Globalization.UnicodeCategory.ParagraphSeparator)
+            {
+                continue;
+            }
+            if (builder.Length + rune.Utf16SequenceLength > 256) break;
+            builder.Append(rune);
+        }
+        return builder.Length == 0 ? "(redacted)" : builder.ToString();
+    }
+
+    private static string SanitizeDisplayName(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return "Unknown Wi-Fi Direct device";
+        var builder = new StringBuilder(Math.Min(value.Length, 256));
+        foreach (Rune rune in value.EnumerateRunes())
+        {
+            if (Rune.GetUnicodeCategory(rune) is System.Globalization.UnicodeCategory.Control or
+                System.Globalization.UnicodeCategory.Format or
+                System.Globalization.UnicodeCategory.LineSeparator or
+                System.Globalization.UnicodeCategory.ParagraphSeparator)
+            {
+                continue;
+            }
+            if (builder.Length + rune.Utf16SequenceLength > 256) break;
+            builder.Append(rune);
+        }
+        string sanitized = builder.ToString().Trim();
+        return sanitized.Length == 0 ? "Unknown Wi-Fi Direct device" : sanitized;
     }
 }

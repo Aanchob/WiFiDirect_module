@@ -1,0 +1,464 @@
+using System.Diagnostics;
+using System.Security.Cryptography;
+using direct_module.Crypto;
+using direct_module.Network;
+using direct_module.Services;
+using direct_module.WiFiDirect.Models;
+using Xunit;
+
+namespace direct_module.CoreTests;
+
+public sealed class NetworkCryptoPeerTests
+{
+    private const string GroupConversationId = "group:all-peers:v1";
+
+    [Fact]
+    public void AesGcmRejectsTamperWithoutAdvancingReceiveSequence()
+    {
+        byte[] forwardKey = Enumerable.Range(0, AesGcmMessageCrypto.KeySizeBytes).Select(value => (byte)value).ToArray();
+        byte[] reverseKey = Enumerable.Range(32, AesGcmMessageCrypto.KeySizeBytes).Select(value => (byte)value).ToArray();
+        Assert.Throws<ArgumentException>(() => new AesGcmMessageCrypto(forwardKey, forwardKey));
+        using var sender = new AesGcmMessageCrypto(forwardKey, reverseKey);
+        using var receiver = new AesGcmMessageCrypto(reverseKey, forwardKey);
+        byte[] frame = sender.Encrypt("authenticated payload"u8.ToArray());
+        byte[] tampered = (byte[])frame.Clone();
+        tampered[^1] ^= 0x80;
+
+        Assert.ThrowsAny<CryptographicException>(() => receiver.Decrypt(tampered));
+        Assert.ThrowsAny<CryptographicException>(() => sender.Decrypt(frame));
+        Assert.Equal("authenticated payload"u8.ToArray(), receiver.Decrypt(frame));
+    }
+
+    [Fact]
+    public void AesGcmRejectsReplayAndOutOfOrderFrames()
+    {
+        byte[] forwardKey = RandomNumberGenerator.GetBytes(AesGcmMessageCrypto.KeySizeBytes);
+        byte[] reverseKey = RandomNumberGenerator.GetBytes(AesGcmMessageCrypto.KeySizeBytes);
+        using var sender = new AesGcmMessageCrypto(forwardKey, reverseKey);
+        using var receiver = new AesGcmMessageCrypto(reverseKey, forwardKey);
+        byte[] first = sender.Encrypt("first"u8.ToArray());
+        byte[] second = sender.Encrypt("second"u8.ToArray());
+
+        Assert.Throws<CryptographicException>(() => receiver.Decrypt(second));
+        Assert.Equal("first"u8.ToArray(), receiver.Decrypt(first));
+        Assert.Equal("second"u8.ToArray(), receiver.Decrypt(second));
+        Assert.Throws<CryptographicException>(() => receiver.Decrypt(first));
+    }
+
+    [Fact]
+    public void EcdhAgreementRejectsTrailingAndMalformedPublicKeys()
+    {
+        using ECDiffieHellman first = EcdhService.Create();
+        using ECDiffieHellman second = EcdhService.Create();
+        byte[] firstPublic = EcdhService.GetPublicKey(first);
+        byte[] secondPublic = EcdhService.GetPublicKey(second);
+        byte[] firstShared = EcdhService.CreateSharedKey(first, secondPublic);
+        byte[] secondShared = EcdhService.CreateSharedKey(second, firstPublic);
+        Assert.Equal(firstShared, secondShared);
+
+        byte[] trailing = new byte[secondPublic.Length + 1];
+        secondPublic.CopyTo(trailing, 0);
+        trailing[^1] = 0x42;
+        Assert.Throws<CryptographicException>(() => EcdhService.CreateSharedKey(first, trailing));
+        Assert.Throws<CryptographicException>(() => EcdhService.CreateSharedKey(first, new byte[] { 1, 2, 3 }));
+        using ECDiffieHellman wrongCurve = ECDiffieHellman.Create(ECCurve.NamedCurves.nistP384);
+        byte[] wrongCurvePublicKey = EcdhService.GetPublicKey(wrongCurve);
+        Assert.Throws<CryptographicException>(() => EcdhService.CreateSharedKey(first, wrongCurvePublicKey));
+
+        CryptographicOperations.ZeroMemory(firstShared);
+        CryptographicOperations.ZeroMemory(secondShared);
+        CryptographicOperations.ZeroMemory(wrongCurvePublicKey);
+    }
+
+    [Fact]
+    public void StableIdentitySignatureBindsEphemeralKeyAndHandshakeRole()
+    {
+        using EcdsaChatIdentity identity = EcdsaChatIdentity.Create();
+        using EcdsaChatIdentity otherIdentity = EcdsaChatIdentity.Create();
+        using ECDiffieHellman ephemeral = EcdhService.Create();
+        byte[] ephemeralPublicKey = EcdhService.GetPublicKey(ephemeral);
+        byte[] identityPublicKey = identity.ExportPublicKey();
+        byte[] otherIdentityPublicKey = otherIdentity.ExportPublicKey();
+        byte[] signature = identity.SignEphemeralKey(
+            ephemeralPublicKey,
+            ChatHandshakeRole.Initiator);
+        byte[] alteredEphemeralPublicKey = (byte[])ephemeralPublicKey.Clone();
+        alteredEphemeralPublicKey[^1] ^= 0x01;
+
+        Assert.True(EcdsaChatIdentity.VerifyEphemeralKey(
+            identityPublicKey,
+            ephemeralPublicKey,
+            signature,
+            ChatHandshakeRole.Initiator));
+        Assert.False(EcdsaChatIdentity.VerifyEphemeralKey(
+            identityPublicKey,
+            ephemeralPublicKey,
+            signature,
+            ChatHandshakeRole.Acceptor));
+        Assert.False(EcdsaChatIdentity.VerifyEphemeralKey(
+            identityPublicKey,
+            alteredEphemeralPublicKey,
+            signature,
+            ChatHandshakeRole.Initiator));
+        Assert.False(EcdsaChatIdentity.VerifyEphemeralKey(
+            otherIdentityPublicKey,
+            ephemeralPublicKey,
+            signature,
+            ChatHandshakeRole.Initiator));
+
+        using ECDsa wrongCurveIdentity = ECDsa.Create(ECCurve.NamedCurves.nistP384);
+        byte[] wrongCurvePrivateKey = wrongCurveIdentity.ExportPkcs8PrivateKey();
+        Assert.Throws<CryptographicException>(() =>
+            EcdsaChatIdentity.ImportPkcs8PrivateKey(wrongCurvePrivateKey));
+
+        CryptographicOperations.ZeroMemory(ephemeralPublicKey);
+        CryptographicOperations.ZeroMemory(alteredEphemeralPublicKey);
+        CryptographicOperations.ZeroMemory(identityPublicKey);
+        CryptographicOperations.ZeroMemory(otherIdentityPublicKey);
+        CryptographicOperations.ZeroMemory(signature);
+        CryptographicOperations.ZeroMemory(wrongCurvePrivateKey);
+    }
+
+    [Fact]
+    public void SessionKeyDerivationBindsDirectionRolesAndStableIdentities()
+    {
+        byte[] sharedKey = RandomNumberGenerator.GetBytes(AesGcmMessageCrypto.KeySizeBytes);
+        byte[] initiatorEphemeral = RandomNumberGenerator.GetBytes(91);
+        byte[] acceptorEphemeral = RandomNumberGenerator.GetBytes(91);
+        byte[] initiatorIdentity = RandomNumberGenerator.GetBytes(91);
+        byte[] acceptorIdentity = RandomNumberGenerator.GetBytes(91);
+
+        byte[] forward = ChatSessionKeyDerivation.DeriveDirectionalKey(
+            sharedKey,
+            ChatKeyDirection.InitiatorToAcceptor,
+            initiatorEphemeral,
+            acceptorEphemeral,
+            initiatorIdentity,
+            acceptorIdentity);
+        byte[] forwardAgain = ChatSessionKeyDerivation.DeriveDirectionalKey(
+            sharedKey,
+            ChatKeyDirection.InitiatorToAcceptor,
+            initiatorEphemeral,
+            acceptorEphemeral,
+            initiatorIdentity,
+            acceptorIdentity);
+        byte[] reverse = ChatSessionKeyDerivation.DeriveDirectionalKey(
+            sharedKey,
+            ChatKeyDirection.AcceptorToInitiator,
+            initiatorEphemeral,
+            acceptorEphemeral,
+            initiatorIdentity,
+            acceptorIdentity);
+
+        acceptorIdentity[^1] ^= 0x01;
+        byte[] changedIdentity = ChatSessionKeyDerivation.DeriveDirectionalKey(
+            sharedKey,
+            ChatKeyDirection.InitiatorToAcceptor,
+            initiatorEphemeral,
+            acceptorEphemeral,
+            initiatorIdentity,
+            acceptorIdentity);
+
+        Assert.Equal(forward, forwardAgain);
+        Assert.NotEqual(forward, reverse);
+        Assert.NotEqual(forward, changedIdentity);
+
+        foreach (byte[] secret in new[]
+                 {
+                     sharedKey, initiatorEphemeral, acceptorEphemeral,
+                     initiatorIdentity, acceptorIdentity, forward,
+                     forwardAgain, reverse, changedIdentity
+                 })
+        {
+            CryptographicOperations.ZeroMemory(secret);
+        }
+    }
+
+    [Fact]
+    public void FileAbortRequiresBoundedGuidEnvelopeAndEmptyBody()
+    {
+        ChatMessage abort = ValidMessage("file_abort");
+        abort.FileId = Guid.NewGuid().ToString("N");
+        abort.FileName = "partial.bin";
+        abort.FileSize = 1024;
+        abort.ChunkCount = 1;
+        ValidateMessage(abort);
+
+        abort.IsGroup = true;
+        abort.ConversationId = GroupConversationId;
+        ChatMessage relayedAbort = abort.CreateRelayEnvelope(PeerId(2), "Host", "BEEF");
+        ValidateMessage(relayedAbort);
+
+        ChatMessage invalidId = ValidMessage("file_abort");
+        invalidId.FileId = "not-a-guid";
+        AssertValidationFails(invalidId);
+
+        ChatMessage body = ValidMessage("file_abort");
+        body.FileId = Guid.NewGuid().ToString("N");
+        body.Body = "smuggled payload";
+        AssertValidationFails(body);
+
+        ChatMessage oversizedChunk = ValidMessage("file_abort");
+        oversizedChunk.FileId = Guid.NewGuid().ToString("N");
+        oversizedChunk.ChunkBase64 = new string('A', 174_765);
+        AssertValidationFails(oversizedChunk);
+
+        ChatMessage oversizedFile = ValidMessage("file_abort");
+        oversizedFile.FileId = Guid.NewGuid().ToString("N");
+        oversizedFile.FileSize = 50L * 1024 * 1024 + 1;
+        AssertValidationFails(oversizedFile);
+    }
+
+    [Fact]
+    public void MessageValidationRejectsNonCanonicalWireIdentityForms()
+    {
+        ChatMessage spacedPeerId = ValidMessage("chat");
+        spacedPeerId.SenderId = $" {spacedPeerId.SenderId}";
+        AssertValidationFails(spacedPeerId);
+
+        ChatMessage spacedSessionId = ValidMessage("chat");
+        spacedSessionId.ShortSessionId = " ABCD";
+        AssertValidationFails(spacedSessionId);
+
+        ChatMessage bracedMessageId = ValidMessage("chat");
+        bracedMessageId.MessageId = $"{{{Guid.NewGuid():D}}}";
+        AssertValidationFails(bracedMessageId);
+    }
+
+    [Fact]
+    public void ControlMessageRateLimiterBoundsHelloAndKeepAliveBursts()
+    {
+        var limiter = new ChatMessageRateLimiter();
+        long start = Stopwatch.Frequency;
+
+        Assert.True(limiter.TryConsume("hello", start));
+        Assert.False(limiter.TryConsume("hello", start));
+        for (int index = 0; index < ChatMessageRateLimiter.KeepAliveBurstCapacity; index++)
+        {
+            Assert.True(limiter.TryConsume(index % 2 == 0 ? "ping" : "pong", start));
+        }
+        Assert.False(limiter.TryConsume("ping", start));
+
+        long twoSecondsLater = start + Stopwatch.Frequency * 2L;
+        Assert.True(limiter.TryConsume("pong", twoSecondsLater));
+        Assert.False(limiter.TryConsume("ping", twoSecondsLater));
+
+        limiter.Reset();
+        Assert.True(limiter.TryConsume("hello", twoSecondsLater));
+    }
+
+    [Fact]
+    public void ControlMessageRateLimiterSharesBoundAcrossFileControlTypes()
+    {
+        var limiter = new ChatMessageRateLimiter();
+        string[] controlTypes = { "file_start", "file_end", "file_abort", "file_ack" };
+        long start = Stopwatch.Frequency;
+        for (int index = 0; index < ChatMessageRateLimiter.FileControlBurstCapacity; index++)
+        {
+            Assert.True(limiter.TryConsume(controlTypes[index % controlTypes.Length], start));
+        }
+
+        Assert.False(limiter.TryConsume("file_abort", start));
+        Assert.True(limiter.TryConsume("file_chunk", start));
+        Assert.True(limiter.TryConsume("chat", start));
+
+        long oneSecondLater = start + Stopwatch.Frequency;
+        Assert.True(limiter.TryConsume("file_start", oneSecondLater));
+        Assert.True(limiter.TryConsume("file_end", oneSecondLater));
+        Assert.True(limiter.TryConsume("file_ack", oneSecondLater));
+        Assert.False(limiter.TryConsume("file_abort", oneSecondLater));
+    }
+
+    [Fact]
+    public void RelayEnvelopeCannotCarryRawAcknowledgementState()
+    {
+        ChatMessage original = ValidMessage("chat");
+        original.IsGroup = true;
+        original.ConversationId = GroupConversationId;
+        original.AcknowledgementTargetId = PeerId(8);
+        original.AcknowledgementSenderId = PeerId(9);
+
+        ChatMessage relay = original.CreateRelayEnvelope(PeerId(2), "Host", "BEEF");
+        Assert.Equal(1, relay.HopCount);
+        Assert.Equal(PeerId(2), relay.RelaySenderId);
+        Assert.Equal(string.Empty, relay.AcknowledgementTargetId);
+        Assert.Equal(string.Empty, relay.AcknowledgementSenderId);
+
+        ChatMessage acknowledgement = ValidAcknowledgement();
+        acknowledgement.IsGroup = true;
+        acknowledgement.ConversationId = GroupConversationId;
+        Assert.Throws<InvalidOperationException>(() =>
+            acknowledgement.CreateRelayEnvelope(PeerId(2), "Host", "BEEF"));
+    }
+
+    [Fact]
+    public void MessageValidationRejectsRelayedAckAndHopZeroRelayName()
+    {
+        ChatMessage acknowledgement = ValidAcknowledgement();
+        ValidateMessage(acknowledgement);
+
+        acknowledgement.HopCount = 1;
+        acknowledgement.IsGroup = true;
+        acknowledgement.ConversationId = GroupConversationId;
+        acknowledgement.RelaySenderId = PeerId(2);
+        acknowledgement.RelaySenderName = "Host";
+        acknowledgement.RelayShortSessionId = "BEEF";
+        AssertValidationFails(acknowledgement);
+
+        ChatMessage direct = ValidMessage("chat");
+        direct.RelaySenderName = "hidden relay";
+        AssertValidationFails(direct);
+
+        ChatMessage whitespaceRelay = ValidMessage("chat");
+        whitespaceRelay.RelaySenderName = " ";
+        AssertValidationFails(whitespaceRelay);
+
+        ChatMessage whitespaceAcknowledgementIdentity = ValidMessage("chat");
+        whitespaceAcknowledgementIdentity.AcknowledgementTargetId = " ";
+        AssertValidationFails(whitespaceAcknowledgementIdentity);
+    }
+
+    [Fact]
+    public void MessageValidationRejectsNonCanonicalGroupAndUnsafeIdentityText()
+    {
+        ChatMessage group = ValidMessage("chat");
+        group.IsGroup = true;
+        group.ConversationId = "group:attacker-room";
+        AssertValidationFails(group);
+
+        ChatMessage hello = ValidMessage("hello");
+        hello.SenderName = "trusted\u202Eexe";
+        AssertValidationFails(hello);
+
+        ChatMessage body = ValidMessage("chat");
+        body.Body = new string('x', 16 * 1024 + 1);
+        AssertValidationFails(body);
+    }
+
+    [Fact]
+    public void ConnectionRoleElectionIsDeterministicAcrossPeerOrder()
+    {
+        const string localIdentity = "800000000000000000000000";
+        var service = new ConnectionRoleService("8000", "80000000", localIdentity);
+        PeerInfo lower = RolePeer("700000000000000000000000");
+        PeerInfo higher = RolePeer("900000000000000000000000");
+
+        BleRoleNegotiationResult lowerDecision = service.DecideBleRole(lower, lower.MatchKey);
+        BleRoleNegotiationResult higherDecision = service.DecideBleRole(higher, higher.MatchKey);
+        Assert.True(lowerDecision.LocalIsGo);
+        Assert.True(higherDecision.LocalIsClient);
+
+        bool firstOrderIsGo = new[] { lower, higher }
+            .Select(peer => service.DecideBleRole(peer, peer.MatchKey))
+            .All(result => result.LocalIsGo);
+        bool reverseOrderIsGo = new[] { higher, lower }
+            .Select(peer => service.DecideBleRole(peer, peer.MatchKey))
+            .All(result => result.LocalIsGo);
+        Assert.Equal(firstOrderIsGo, reverseOrderIsGo);
+        Assert.False(firstOrderIsGo);
+    }
+
+    [Fact]
+    public void PeerPromotionConsolidatesRestartedSessionAndUsesVerifiedName()
+    {
+        var registry = new PeerRegistryService();
+        string peerId = PeerId(1);
+        var old = new PeerInfo
+        {
+            PeerId = peerId,
+            DisplayName = "A much longer stale device name",
+            MatchKey = "111111111111111111111111",
+            ShortSessionId = "1111",
+            RoleKey = "11111111",
+            DiscoveredByBle = true,
+            LastSeenAtUtc = DateTimeOffset.UtcNow.AddMinutes(-1)
+        };
+        var restarted = new PeerInfo
+        {
+            DisplayName = "New",
+            MatchKey = "222222222222222222222222",
+            ShortSessionId = "2222",
+            RoleKey = "22222222",
+            DiscoveredByBle = true,
+            LastSeenAtUtc = DateTimeOffset.UtcNow
+        };
+        registry.Register(old);
+        registry.Register(restarted);
+
+        PeerIdentityPromotionResult promotion = registry.PromoteVerifiedStableIdentity(restarted, peerId);
+        Assert.False(promotion.IsConflict);
+        Assert.Same(old, promotion.CanonicalPeer);
+        Assert.Contains(restarted, promotion.RemovedPeers);
+        Assert.Equal("New", promotion.CanonicalPeer.DisplayName);
+        Assert.Equal(restarted.MatchKey, promotion.CanonicalPeer.MatchKey);
+        Assert.Single(registry.Peers, peer => !peer.IsGroupChat);
+    }
+
+    [Fact]
+    public void PeerRegistryTreatsIpAsAmbiguousHintAndPreservesActiveTcpPeers()
+    {
+        var registry = new PeerRegistryService();
+        PeerInfo first = DiscoveryPeer("111111111111111111111111", "device-1", "192.0.2.9");
+        PeerInfo second = DiscoveryPeer("222222222222222222222222", "device-2", "192.0.2.9");
+        first.DiscoveredByWiFiDirect = true;
+        first.IsTcpConnected = true;
+        second.DiscoveredByWiFiDirect = true;
+        second.IsChatReady = true;
+        registry.Register(first);
+        registry.Register(second);
+
+        Assert.Null(registry.FindByRemoteIpOrName("192.0.2.9", "ignored"));
+        Assert.Empty(registry.RemoveStaleWiFiDirectPeers());
+        Assert.Contains(first, registry.Peers);
+        Assert.Contains(second, registry.Peers);
+    }
+
+    private static ChatMessage ValidAcknowledgement()
+    {
+        ChatMessage message = ValidMessage("file_ack");
+        message.FileId = Guid.NewGuid().ToString("N");
+        message.AcknowledgementTargetId = PeerId(3);
+        message.AcknowledgementSenderId = PeerId(1);
+        message.Body = "ok";
+        return message;
+    }
+
+    private static ChatMessage ValidMessage(string type) => new()
+    {
+        Type = type,
+        SenderId = PeerId(1),
+        SenderName = "Peer",
+        ShortSessionId = "ABCD",
+        Body = ""
+    };
+
+    private static PeerInfo RolePeer(string identity) => new()
+    {
+        MatchKey = identity,
+        ShortSessionId = identity[..4],
+        RoleKey = identity[..8]
+    };
+
+    private static PeerInfo DiscoveryPeer(string identity, string deviceId, string ip) => new()
+    {
+        DisplayName = deviceId,
+        MatchKey = identity,
+        ShortSessionId = identity[..4],
+        RoleKey = identity[..8],
+        DeviceId = deviceId,
+        RemoteIpAddress = ip,
+        LastSeenAtUtc = DateTimeOffset.UtcNow
+    };
+
+    private static string PeerId(int value) => $"peer:{value:X32}";
+
+    private static void ValidateMessage(ChatMessage message)
+    {
+        ChatMessageValidator.ValidateOutbound(message);
+    }
+
+    private static void AssertValidationFails(ChatMessage message)
+    {
+        Assert.Throws<InvalidDataException>(() => ValidateMessage(message));
+    }
+}

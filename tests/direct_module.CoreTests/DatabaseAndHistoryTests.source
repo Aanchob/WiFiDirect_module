@@ -1,0 +1,911 @@
+using System;
+using System.IO;
+using System.Linq;
+using System.Reflection;
+using System.Threading.Tasks;
+using direct_module.Database;
+using direct_module.Models;
+using direct_module.Network;
+using direct_module.Services;
+using Microsoft.Data.Sqlite;
+using Xunit;
+
+namespace direct_module.CoreTests;
+
+public sealed class DatabaseAndHistoryTests
+{
+    [Fact]
+    public void IncomingFutureTimestampIsStoredAsReceiveTime()
+    {
+        using var temp = new TestDirectory();
+        var database = new DatabaseService(System.IO.Path.Combine(temp.Path, "chat.db"));
+        var repository = new ChatRepository(database);
+        var history = new ChatHistoryService(repository, "peer:local", "Local");
+        DateTime before = DateTime.UtcNow;
+
+        ChatHistorySaveResult saved = history.SaveMessage(
+            new direct_module.Network.ChatMessage
+            {
+                MessageId = Guid.NewGuid().ToString("N"),
+                Type = "chat",
+                SenderId = "peer:remote",
+                SenderName = "Remote",
+                Body = "future",
+                SentAt = DateTime.MaxValue
+            },
+            isOutgoing: false,
+            peer: null,
+            connection: null);
+
+        DateTime after = DateTime.UtcNow;
+        Assert.Equal(ChatHistorySaveStatus.Saved, saved.Status);
+        direct_module.Models.ChatMessage loaded = Assert.Single(repository.GetRecentMessages());
+        Assert.InRange(loaded.SendTime.ToUniversalTime(), before, after);
+    }
+
+    [Fact]
+    public void LegacyPlaintextAndUsersAreProtectedAndWalIsTruncated()
+    {
+        using var temp = new TestDirectory();
+        string path = System.IO.Path.Combine(temp.Path, "legacy.db");
+        CreateLegacyDatabase(path);
+
+        _ = new DatabaseService(path);
+
+        using var connection = new SqliteConnection($"Data Source={path};Mode=ReadOnly;Pooling=False");
+        connection.Open();
+        using SqliteCommand message = connection.CreateCommand();
+        message.CommandText = "SELECT Message FROM ChatMessages LIMIT 1;";
+        string storedMessage = Assert.IsType<string>(message.ExecuteScalar());
+        Assert.StartsWith("dpapi:v1:", storedMessage, StringComparison.Ordinal);
+        Assert.DoesNotContain("legacy secret", storedMessage, StringComparison.Ordinal);
+
+        using SqliteCommand names = connection.CreateCommand();
+        names.CommandText =
+            """
+            SELECT MessageId, MessageLookupKey, ConversationId, ConversationLookupKey,
+                   SenderId, SenderName, ReceiverId, ReceiverName
+            FROM ChatMessages WHERE Id = 1;
+            """;
+        using (SqliteDataReader namesReader = names.ExecuteReader())
+        {
+            Assert.True(namesReader.Read());
+            Assert.StartsWith("dpapi:v1:", namesReader.GetString(0), StringComparison.Ordinal);
+            Assert.Matches("^[0-9A-F]{64}$", namesReader.GetString(1));
+            Assert.StartsWith("dpapi:v1:", namesReader.GetString(2), StringComparison.Ordinal);
+            Assert.Matches("^[0-9A-F]{64}$", namesReader.GetString(3));
+            for (int index = 4; index < 8; index++)
+            {
+                Assert.StartsWith("dpapi:v1:", namesReader.GetString(index), StringComparison.Ordinal);
+            }
+        }
+
+        using SqliteCommand malformed = connection.CreateCommand();
+        malformed.CommandText = "SELECT Message FROM ChatMessages WHERE Id = 3;";
+        Assert.Equal("dpapi:v1:not-base64!!!", malformed.ExecuteScalar()?.ToString());
+
+        using SqliteCommand user = connection.CreateCommand();
+        user.CommandText = "SELECT DeviceId, MachineName, DisplayName FROM Users LIMIT 1;";
+        using SqliteDataReader reader = user.ExecuteReader();
+        Assert.True(reader.Read());
+        for (int index = 0; index < 3; index++)
+        {
+            Assert.StartsWith("dpapi:v1:", reader.GetString(index), StringComparison.Ordinal);
+        }
+        reader.Close();
+
+        using SqliteCommand timestamp = connection.CreateCommand();
+        timestamp.CommandText = "SELECT SendTime FROM ChatMessages WHERE Id = 2;";
+        string canonicalTimestamp = Assert.IsType<string>(timestamp.ExecuteScalar());
+        Assert.EndsWith("Z", canonicalTimestamp, StringComparison.Ordinal);
+        Assert.DoesNotContain("+09:00", canonicalTimestamp, StringComparison.Ordinal);
+
+        string walPath = path + "-wal";
+        Assert.True(!File.Exists(walPath) || new FileInfo(walPath).Length == 0);
+    }
+
+    [Fact]
+    public void CompletedSensitiveMigrationRejectsPlaintextAddedByAnOlderWriter()
+    {
+        using var temp = new TestDirectory();
+        string path = System.IO.Path.Combine(temp.Path, "stale-marker.db");
+        _ = new DatabaseService(path);
+        using (SqliteConnection connection = OpenDatabase(path))
+        using (SqliteCommand insert = connection.CreateCommand())
+        {
+            insert.CommandText =
+                """
+                INSERT INTO ChatMessages
+                (MessageId, MessageType, ConversationId, SenderId, SenderName,
+                 ReceiverId, ReceiverName, Message, SendTime, IsMine, IsGroup,
+                 FileId, FileName, LocalFilePath, FileSize)
+                VALUES
+                (@MessageId, 'chat', 'peer:legacy', 'peer:sender', 'Sender',
+                 'peer:receiver', 'Receiver', 'plaintext after marker', @SendTime, 0, 0,
+                 @FileId, 'legacy.bin', 'C:\\legacy.bin', 1);
+                """;
+            insert.Parameters.AddWithValue("@MessageId", Guid.NewGuid().ToString("N"));
+            insert.Parameters.AddWithValue("@SendTime", DateTime.UtcNow.ToString("O"));
+            insert.Parameters.AddWithValue("@FileId", Guid.NewGuid().ToString("N"));
+            SqliteException rejected = Assert.Throws<SqliteException>(() => insert.ExecuteNonQuery());
+            Assert.Equal(19, rejected.SqliteErrorCode);
+        }
+        Assert.Equal("0", ReadScalar(path, "SELECT COUNT(*) FROM ChatMessages;"));
+        Assert.Equal("1", ReadMetadata(path, "SensitiveValuesProtectedV4"));
+    }
+
+    [Fact]
+    public void GuidSpellingVariantsCannotCreateDuplicateHistoryRows()
+    {
+        using var temp = new TestDirectory();
+        var database = new DatabaseService(System.IO.Path.Combine(temp.Path, "canonical-id.db"));
+        var repository = new ChatRepository(database);
+        var history = new ChatHistoryService(repository, "peer:local", "Local");
+        Guid id = Guid.NewGuid();
+
+        ChatHistorySaveResult first = history.SaveMessage(
+            new direct_module.Network.ChatMessage
+            {
+                MessageId = id.ToString("B").ToUpperInvariant(),
+                Type = "chat",
+                SenderId = "peer:remote",
+                Body = "first"
+            },
+            isOutgoing: false,
+            peer: null,
+            connection: null);
+        ChatHistorySaveResult second = history.SaveMessage(
+            new direct_module.Network.ChatMessage
+            {
+                MessageId = id.ToString("N"),
+                Type = "chat",
+                SenderId = "peer:remote",
+                Body = "duplicate"
+            },
+            isOutgoing: false,
+            peer: null,
+            connection: null);
+
+        Assert.Equal(ChatHistorySaveStatus.Saved, first.Status);
+        Assert.Equal(ChatHistorySaveStatus.DuplicateMessageId, second.Status);
+        direct_module.Models.ChatMessage stored = Assert.Single(repository.GetRecentMessages());
+        Assert.Equal(id.ToString("N"), stored.MessageId);
+    }
+
+    [Fact]
+    public void HistoryIdentifiersUseDomainSeparatedKeyedTokensAndRemainQueryable()
+    {
+        using var temp = new TestDirectory();
+        string path = System.IO.Path.Combine(temp.Path, "lookup.db");
+        var database = new DatabaseService(path);
+        var repository = new ChatRepository(database);
+        string sharedValue = Guid.NewGuid().ToString("N");
+        Assert.True(repository.TrySaveMessage(new direct_module.Models.ChatMessage
+        {
+            MessageId = sharedValue,
+            MessageType = "chat",
+            ConversationId = sharedValue,
+            SenderId = "peer:sender",
+            SenderName = "Sender",
+            ReceiverId = "peer:receiver",
+            ReceiverName = "Receiver",
+            Message = "secret body",
+            SendTime = DateTime.UtcNow,
+            IsMine = true,
+            IsGroup = false,
+            FileId = Guid.NewGuid().ToString("N"),
+            FileName = "secret.bin",
+            LocalFilePath = "C:\\secret.bin",
+            FileSize = 42
+        }));
+
+        (string messageToken, string conversationToken) =
+            database.CreateHistoryLookupTokens(sharedValue, sharedValue);
+        Assert.NotEqual(messageToken, conversationToken);
+        Assert.True(DatabaseService.HistoryLookupTokensEqual(messageToken, messageToken));
+        Assert.False(DatabaseService.HistoryLookupTokensEqual(messageToken, conversationToken));
+        Assert.False(DatabaseService.HistoryLookupTokensEqual(messageToken, "not-a-token"));
+
+        direct_module.Models.ChatMessage loaded = Assert.Single(repository.GetMessages(sharedValue));
+        Assert.Equal(sharedValue, loaded.MessageId);
+        Assert.Equal(sharedValue, loaded.ConversationId);
+        Assert.Equal("chat", loaded.MessageType);
+        Assert.True(loaded.IsMine);
+        Assert.False(loaded.IsGroup);
+        Assert.Equal(42, loaded.FileSize);
+
+        using SqliteConnection raw = OpenDatabase(path);
+        using SqliteCommand command = raw.CreateCommand();
+        command.CommandText =
+            """
+            SELECT MessageId, ConversationId, MessageType, SenderId, SenderName,
+                   ReceiverId, ReceiverName, Message, IsMine, IsGroup,
+                   FileId, FileName, LocalFilePath, FileSize,
+                   MessageLookupKey, ConversationLookupKey, SendTime
+            FROM ChatMessages LIMIT 1;
+            """;
+        using SqliteDataReader reader = command.ExecuteReader();
+        Assert.True(reader.Read());
+        for (int index = 0; index < 14; index++)
+        {
+            Assert.StartsWith("dpapi:v1:", reader.GetValue(index)?.ToString(), StringComparison.Ordinal);
+        }
+        Assert.Matches("^[0-9A-F]{64}$", reader.GetString(14));
+        Assert.Matches("^[0-9A-F]{64}$", reader.GetString(15));
+        Assert.True(DateTimeOffset.TryParse(reader.GetString(16), out _));
+
+        string protectedLookupKey = Assert.IsType<string>(ReadMetadata(path, "HistoryLookupHmacKeyV1"));
+        Assert.StartsWith("dpapi:v1:", protectedLookupKey, StringComparison.Ordinal);
+        byte[] lookupKey = UserDataProtection.UnprotectBytesFromString(protectedLookupKey);
+        try
+        {
+            Assert.Equal(32, lookupKey.Length);
+        }
+        finally
+        {
+            System.Security.Cryptography.CryptographicOperations.ZeroMemory(lookupKey);
+        }
+    }
+
+    [Fact]
+    public void MissingOrCorruptHistoryLookupKeyNeverRotatesSilently()
+    {
+        using var missingTemp = new TestDirectory();
+        string missingPath = System.IO.Path.Combine(missingTemp.Path, "missing-key.db");
+        SaveOneHistoryMessage(new DatabaseService(missingPath));
+        using (SqliteConnection connection = OpenDatabase(missingPath))
+        using (SqliteCommand remove = connection.CreateCommand())
+        {
+            remove.CommandText = "DELETE FROM AppMetadata WHERE Key = 'HistoryLookupHmacKeyV1';";
+            remove.ExecuteNonQuery();
+        }
+        Assert.Throws<HistoryProtectionUnavailableException>(() => new DatabaseService(missingPath));
+        Assert.Null(ReadMetadata(missingPath, "HistoryLookupHmacKeyV1"));
+
+        using var corruptTemp = new TestDirectory();
+        string corruptPath = System.IO.Path.Combine(corruptTemp.Path, "corrupt-key.db");
+        SaveOneHistoryMessage(new DatabaseService(corruptPath));
+        using (SqliteConnection connection = OpenDatabase(corruptPath))
+        using (SqliteCommand corrupt = connection.CreateCommand())
+        {
+            corrupt.CommandText =
+                "UPDATE AppMetadata SET Value = @Value WHERE Key = 'HistoryLookupHmacKeyV1';";
+            corrupt.Parameters.AddWithValue(
+                "@Value",
+                UserDataProtection.ProtectBytesToString(new byte[31]));
+            corrupt.ExecuteNonQuery();
+        }
+        Assert.Throws<HistoryProtectionUnavailableException>(() => new DatabaseService(corruptPath));
+    }
+
+    [Fact]
+    public void HistoryLookupTokenTamperingFailsClosed()
+    {
+        using var temp = new TestDirectory();
+        string path = System.IO.Path.Combine(temp.Path, "tampered-token.db");
+        SaveOneHistoryMessage(new DatabaseService(path));
+        using (SqliteConnection connection = OpenDatabase(path))
+        using (SqliteCommand tamper = connection.CreateCommand())
+        {
+            tamper.CommandText =
+                "UPDATE ChatMessages SET ConversationLookupKey = @Token;";
+            tamper.Parameters.AddWithValue("@Token", new string('0', 64));
+            tamper.ExecuteNonQuery();
+        }
+
+        Assert.Throws<HistoryProtectionUnavailableException>(() => new DatabaseService(path));
+        Assert.Equal(new string('0', 64), ReadScalar(path, "SELECT ConversationLookupKey FROM ChatMessages;"));
+    }
+
+    [Fact]
+    public void CorruptOrOversizedHistoryRowDoesNotHideHealthyRowsOrExposePlaintext()
+    {
+        using var temp = new TestDirectory();
+        string path = System.IO.Path.Combine(temp.Path, "bounded-reader.db");
+        var database = new DatabaseService(path);
+        var repository = new ChatRepository(database);
+        Assert.True(repository.TrySaveMessage(CreateStoredMessage("first protected")));
+        Assert.True(repository.TrySaveMessage(CreateStoredMessage("healthy protected")));
+
+        using (SqliteConnection connection = OpenDatabase(path))
+        using (SqliteCommand corrupt = connection.CreateCommand())
+        {
+            corrupt.CommandText =
+                """
+                DROP TRIGGER TR_ChatMessages_RequireProtectedUpdateV1;
+                UPDATE ChatMessages
+                SET MessageId = zeroblob(20000),
+                    ConversationId = zeroblob(40000),
+                    SenderName = 'plaintext must not escape',
+                    Message = zeroblob(9000000),
+                    SendTime = zeroblob(128),
+                    IsMine = zeroblob(5000),
+                    FileSize = zeroblob(5000)
+                WHERE Id = (SELECT MIN(Id) FROM ChatMessages);
+                """;
+            corrupt.ExecuteNonQuery();
+        }
+
+        var loaded = repository.GetRecentMessages(10);
+
+        Assert.Equal(2, loaded.Count);
+        direct_module.Models.ChatMessage healthy = Assert.Single(
+            loaded,
+            message => message.Message == "healthy protected");
+        Assert.NotEmpty(healthy.MessageId);
+        direct_module.Models.ChatMessage damaged = Assert.Single(
+            loaded,
+            message => message.Id != healthy.Id);
+        Assert.StartsWith("corrupt:", damaged.MessageId, StringComparison.Ordinal);
+        Assert.StartsWith("unknown:corrupt:", damaged.ConversationId, StringComparison.Ordinal);
+        Assert.Equal("[この履歴を復号できません]", damaged.SenderName);
+        Assert.Equal("[この履歴を復号できません]", damaged.Message);
+        Assert.DoesNotContain("plaintext must not escape", damaged.SenderName, StringComparison.Ordinal);
+        Assert.False(damaged.IsMine);
+        Assert.Null(damaged.FileSize);
+
+        var reopenedRepository = new ChatRepository(new DatabaseService(path));
+        var afterRecovery = reopenedRepository.GetRecentMessages(10);
+        Assert.Equal(2, afterRecovery.Count);
+        Assert.Single(afterRecovery, message => message.Message == "healthy protected");
+        direct_module.Models.ChatMessage recovered = Assert.Single(
+            afterRecovery,
+            message => message.Message != "healthy protected");
+        Assert.Equal("[unreadable history]", recovered.Message);
+        Assert.DoesNotContain("plaintext must not escape", recovered.SenderName, StringComparison.Ordinal);
+        Assert.True(UserDataProtection.IsProtected(
+            ReadScalar(path, "SELECT Message FROM ChatMessages ORDER BY Id LIMIT 1;")));
+    }
+
+    [Fact]
+    public void LegacyGuidVariantsAreRepairedBeforeUniqueLookupIndexCreation()
+    {
+        using var temp = new TestDirectory();
+        string path = System.IO.Path.Combine(temp.Path, "legacy-guid-variants.db");
+        CreateLegacyDatabase(path);
+        Guid duplicate = Guid.NewGuid();
+        using (SqliteConnection connection = OpenDatabase(path))
+        using (SqliteCommand insert = connection.CreateCommand())
+        {
+            insert.CommandText =
+                """
+                INSERT INTO ChatMessages
+                (MessageId, MessageType, ConversationId, SenderId, SenderName,
+                 ReceiverId, ReceiverName, Message, SendTime, IsMine, IsGroup)
+                VALUES
+                (@First, 'chat', 'peer:x', 's', 's', 'r', 'r', '', @Now, 0, 0),
+                (@Second, 'chat', 'peer:x', 's', 's', 'r', 'r', '', @Now, 0, 0);
+                """;
+            insert.Parameters.AddWithValue("@First", duplicate.ToString("D").ToUpperInvariant());
+            insert.Parameters.AddWithValue("@Second", duplicate.ToString("B").ToLowerInvariant());
+            insert.Parameters.AddWithValue("@Now", DateTime.UtcNow.ToString("O"));
+            insert.ExecuteNonQuery();
+        }
+
+        var database = new DatabaseService(path);
+        using SqliteConnection verify = OpenDatabase(path);
+        using SqliteCommand count = verify.CreateCommand();
+        count.CommandText =
+            "SELECT COUNT(*), COUNT(DISTINCT MessageLookupKey) FROM ChatMessages;";
+        using SqliteDataReader reader = count.ExecuteReader();
+        Assert.True(reader.Read());
+        Assert.Equal(reader.GetInt64(0), reader.GetInt64(1));
+        Assert.Equal(reader.GetInt64(0), new ChatRepository(database).GetRecentMessages(5_000).Count);
+    }
+
+    [Fact]
+    public void OlderWriterGuidVariantsResumeMigrationWithExistingUniqueLookupIndex()
+    {
+        using var temp = new TestDirectory();
+        string path = System.IO.Path.Combine(temp.Path, "older-writer-guid-variants.db");
+        _ = new DatabaseService(path);
+        Guid duplicate = Guid.NewGuid();
+        using (SqliteConnection connection = OpenDatabase(path))
+        using (SqliteCommand insert = connection.CreateCommand())
+        {
+            insert.CommandText =
+                """
+                DROP TRIGGER TR_ChatMessages_RequireProtectedInsertV1;
+                DROP TRIGGER TR_ChatMessages_RequireProtectedUpdateV1;
+                INSERT INTO ChatMessages
+                (MessageId, MessageType, ConversationId, SenderId, SenderName,
+                 ReceiverId, ReceiverName, Message, SendTime, IsMine, IsGroup)
+                VALUES
+                (@First, 'chat', 'peer:legacy', 's', 's', 'r', 'r', 'first', @Now, 0, 0),
+                (@Second, 'chat', 'peer:legacy', 's', 's', 'r', 'r', 'second', @Now, 0, 0);
+                DELETE FROM AppMetadata WHERE Key = 'HistoryLookupMetadataProtectedV1';
+                """;
+            insert.Parameters.AddWithValue("@First", duplicate.ToString("D").ToUpperInvariant());
+            insert.Parameters.AddWithValue("@Second", duplicate.ToString("B").ToLowerInvariant());
+            insert.Parameters.AddWithValue("@Now", DateTime.UtcNow.ToString("O"));
+            insert.ExecuteNonQuery();
+        }
+
+        var database = new DatabaseService(path);
+
+        using SqliteConnection verify = OpenDatabase(path);
+        using SqliteCommand count = verify.CreateCommand();
+        count.CommandText =
+            """
+            SELECT COUNT(*), COUNT(DISTINCT MessageLookupKey),
+                   SUM(CASE WHEN MessageLookupKey = '' THEN 1 ELSE 0 END),
+                   SUM(CASE WHEN substr(MessageId, 1, 9) = 'dpapi:v1:' THEN 1 ELSE 0 END)
+            FROM ChatMessages;
+            """;
+        using SqliteDataReader reader = count.ExecuteReader();
+        Assert.True(reader.Read());
+        Assert.Equal(2, reader.GetInt64(0));
+        Assert.Equal(2, reader.GetInt64(1));
+        Assert.Equal(0, reader.GetInt64(2));
+        Assert.Equal(2, reader.GetInt64(3));
+        Assert.Equal(2, new ChatRepository(database).GetMessages("peer:legacy", 10).Count);
+        Assert.Equal("1", ReadMetadata(path, "HistoryLookupMetadataProtectedV1"));
+    }
+
+    [Fact]
+    public void LegacyDuplicateRepairCannotCollideWithAttackerChosenSuffixes()
+    {
+        using var temp = new TestDirectory();
+        string path = System.IO.Path.Combine(temp.Path, "duplicate-collision.db");
+        CreateLegacyDatabase(path);
+        using (SqliteConnection connection = OpenDatabase(path))
+        using (SqliteCommand insert = connection.CreateCommand())
+        {
+            insert.CommandText =
+                """
+                INSERT INTO ChatMessages
+                (MessageId, MessageType, ConversationId, SenderId, SenderName,
+                 ReceiverId, ReceiverName, Message, SendTime, IsMine, IsGroup)
+                VALUES
+                ('dup', 'chat', 'peer:x', 's', 's', 'r', 'r', '', @Now, 0, 0),
+                ('dup', 'chat', 'peer:x', 's', 's', 'r', 'r', '', @Now, 0, 0),
+                ('dup:duplicate:5', 'chat', 'peer:x', 's', 's', 'r', 'r', '', @Now, 0, 0);
+                """;
+            insert.Parameters.AddWithValue("@Now", DateTime.UtcNow.ToString("O"));
+            insert.ExecuteNonQuery();
+        }
+
+        _ = new DatabaseService(path);
+
+        using SqliteConnection verify = OpenDatabase(path);
+        using SqliteCommand count = verify.CreateCommand();
+        count.CommandText = "SELECT COUNT(*), COUNT(DISTINCT MessageId) FROM ChatMessages;";
+        using SqliteDataReader reader = count.ExecuteReader();
+        Assert.True(reader.Read());
+        Assert.Equal(reader.GetInt64(0), reader.GetInt64(1));
+    }
+
+    [Fact]
+    public async Task ConcurrentInitializationDoesNotRaceAdditiveMigration()
+    {
+        using var temp = new TestDirectory();
+        string path = System.IO.Path.Combine(temp.Path, "concurrent.db");
+
+        Task[] tasks = Enumerable.Range(0, 8)
+            .Select(_ => Task.Run(() => new DatabaseService(path)))
+            .ToArray();
+
+        await Task.WhenAll(tasks);
+        using var connection = new SqliteConnection($"Data Source={path};Mode=ReadOnly;Pooling=False");
+        connection.Open();
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = "PRAGMA quick_check;";
+        Assert.Equal("ok", command.ExecuteScalar()?.ToString());
+    }
+
+    [Fact]
+    public void SavingMessagePrunesExpiredRowsWithoutRestart()
+    {
+        using var temp = new TestDirectory();
+        string path = System.IO.Path.Combine(temp.Path, "retention.db");
+        var database = new DatabaseService(path);
+        const string expiredMessageId = "expired-id";
+        const string expiredConversationId = "peer:old";
+        (string expiredMessageToken, string expiredConversationToken) =
+            database.CreateHistoryLookupTokens(expiredMessageId, expiredConversationId);
+        using (SqliteConnection connection = database.GetConnection())
+        {
+            connection.Open();
+            using SqliteCommand seed = connection.CreateCommand();
+            seed.CommandText =
+                """
+                INSERT INTO ChatMessages
+                (MessageId, MessageLookupKey, MessageType,
+                 ConversationId, ConversationLookupKey, SenderId, SenderName,
+                 ReceiverId, ReceiverName, Message, SendTime, IsMine, IsGroup)
+                VALUES
+                (@MessageId, @MessageLookupKey, @MessageType,
+                 @ConversationId, @ConversationLookupKey, @SenderId, @SenderName,
+                 @ReceiverId, @ReceiverName, @Message, @SendTime, @IsMine, @IsGroup);
+                """;
+            seed.Parameters.AddWithValue("@MessageId", UserDataProtection.ProtectString(expiredMessageId));
+            seed.Parameters.AddWithValue("@MessageLookupKey", expiredMessageToken);
+            seed.Parameters.AddWithValue("@MessageType", UserDataProtection.ProtectString("chat"));
+            seed.Parameters.AddWithValue("@ConversationId", UserDataProtection.ProtectString(expiredConversationId));
+            seed.Parameters.AddWithValue("@ConversationLookupKey", expiredConversationToken);
+            seed.Parameters.AddWithValue("@SenderId", UserDataProtection.ProtectString("sender"));
+            seed.Parameters.AddWithValue("@SenderName", UserDataProtection.ProtectString(""));
+            seed.Parameters.AddWithValue("@ReceiverId", UserDataProtection.ProtectString("receiver"));
+            seed.Parameters.AddWithValue("@ReceiverName", UserDataProtection.ProtectString(""));
+            seed.Parameters.AddWithValue("@Message", UserDataProtection.ProtectString(""));
+            seed.Parameters.AddWithValue("@IsMine", UserDataProtection.ProtectString("0"));
+            seed.Parameters.AddWithValue("@IsGroup", UserDataProtection.ProtectString("0"));
+            seed.Parameters.AddWithValue(
+                "@SendTime",
+                DateTime.UtcNow.Subtract(DatabaseService.MessageRetention).AddDays(-1).ToString("O"));
+            seed.ExecuteNonQuery();
+        }
+
+        var repository = new ChatRepository(database);
+        Assert.True(repository.TrySaveMessage(new direct_module.Models.ChatMessage
+        {
+            MessageId = Guid.NewGuid().ToString("N"),
+            MessageType = "chat",
+            ConversationId = "peer:new",
+            SenderId = "peer:local",
+            SenderName = "Local",
+            ReceiverId = "peer:new",
+            ReceiverName = "Remote",
+            Message = "new",
+            SendTime = DateTime.UtcNow,
+            IsMine = true
+        }));
+
+        using SqliteConnection verify = database.GetConnection();
+        verify.Open();
+        using SqliteCommand count = verify.CreateCommand();
+        count.CommandText = "SELECT COUNT(*) FROM ChatMessages WHERE MessageId = 'expired-id';";
+        Assert.Equal(0L, (long)count.ExecuteScalar()!);
+    }
+
+    [Fact]
+    public void SnapshotCopyIncludesCommittedWalFrames()
+    {
+        using var temp = new TestDirectory();
+        string sourcePath = System.IO.Path.Combine(temp.Path, "source.db");
+        string destinationPath = System.IO.Path.Combine(temp.Path, "snapshot.db");
+        using var source = new SqliteConnection($"Data Source={sourcePath};Pooling=False");
+        source.Open();
+        using (SqliteCommand command = source.CreateCommand())
+        {
+            command.CommandText =
+                """
+                PRAGMA journal_mode=WAL;
+                PRAGMA wal_autocheckpoint=0;
+                CREATE TABLE WalData(Value TEXT NOT NULL);
+                INSERT INTO WalData VALUES ('committed-in-wal');
+                """;
+            command.ExecuteNonQuery();
+        }
+        Assert.True(File.Exists(sourcePath + "-wal"));
+
+        MethodInfo copy = typeof(DatabaseService).GetMethod(
+            "CopyDatabaseSnapshot",
+            BindingFlags.NonPublic | BindingFlags.Static)
+            ?? throw new MissingMethodException(typeof(DatabaseService).FullName, "CopyDatabaseSnapshot");
+        copy.Invoke(null, new object[] { sourcePath, destinationPath });
+
+        using var snapshot = new SqliteConnection($"Data Source={destinationPath};Mode=ReadOnly;Pooling=False");
+        snapshot.Open();
+        using SqliteCommand verify = snapshot.CreateCommand();
+        verify.CommandText = "SELECT Value FROM WalData;";
+        Assert.Equal("committed-in-wal", verify.ExecuteScalar()?.ToString());
+    }
+
+    [Fact]
+    public void FailedLegacyMigrationDoesNotCreatePermanentEmptyDatabase()
+    {
+        using var temp = new TestDirectory();
+        string legacyDirectory = temp.CreateSubdirectory("legacy");
+        string legacyPath = System.IO.Path.Combine(legacyDirectory, "chat.db");
+        File.WriteAllText(legacyPath, "not a sqlite database");
+        string targetPath = System.IO.Path.Combine(temp.Path, "new", "chat.db");
+        Directory.CreateDirectory(System.IO.Path.GetDirectoryName(targetPath)!);
+
+        MethodInfo migrate = typeof(DatabaseService).GetMethod(
+            "MigrateLegacyDatabaseIfNeeded",
+            BindingFlags.NonPublic | BindingFlags.Static)
+            ?? throw new MissingMethodException(typeof(DatabaseService).FullName, "MigrateLegacyDatabaseIfNeeded");
+        TargetInvocationException failure = Assert.Throws<TargetInvocationException>(
+            () => migrate.Invoke(null, new object?[] { targetPath, new[] { legacyDirectory } }));
+
+        Assert.IsType<IOException>(failure.InnerException);
+        Assert.False(File.Exists(targetPath));
+    }
+
+    [Fact]
+    public void LegacyAttachmentPathMigrationCopiesVerifiesUpdatesAndIsIdempotent()
+    {
+        using var temp = new TestDirectory();
+        string legacyDirectory = temp.CreateSubdirectory("legacy-data");
+        string legacyAttachments = Directory.CreateDirectory(
+            System.IO.Path.Combine(legacyDirectory, "Attachments")).FullName;
+        string oldPath = System.IO.Path.Combine(legacyAttachments, "legacy payload.txt");
+        File.WriteAllText(oldPath, "legacy attachment payload");
+        string legacyDatabase = System.IO.Path.Combine(legacyDirectory, "chat.db");
+        CreateLegacyDatabase(legacyDatabase);
+        InsertAttachmentRow(legacyDatabase, "attachment-id", oldPath);
+
+        string targetDatabase = System.IO.Path.Combine(temp.Path, "current", "chat.db");
+        string targetAttachments = temp.CreateSubdirectory("current-attachments");
+        Directory.CreateDirectory(System.IO.Path.GetDirectoryName(targetDatabase)!);
+        InvokeLegacyDataMigration(
+            targetDatabase,
+            new[] { legacyDirectory },
+            targetAttachments);
+
+        string firstDestination = Assert.Single(
+            Directory.GetFiles(targetAttachments, "*_migrated-*.txt"));
+        Assert.Equal("legacy attachment payload", File.ReadAllText(firstDestination));
+        Assert.True(File.Exists(oldPath));
+        Assert.Equal("1", ReadMetadata(targetDatabase, "LegacyAttachmentPathsMigratedV2"));
+
+        // Simulate a restart after the file copy but before an older build had
+        // updated the row. The content-addressed destination must be verified and
+        // reused rather than duplicated.
+        using (var connection = OpenDatabase(targetDatabase))
+        using (SqliteCommand reset = connection.CreateCommand())
+        {
+            reset.CommandText =
+                """
+                DELETE FROM AppMetadata WHERE Key = 'LegacyAttachmentPathsMigratedV2';
+                UPDATE ChatMessages SET LocalFilePath = @OldPath
+                WHERE MessageId = 'attachment-id';
+                """;
+            reset.Parameters.AddWithValue("@OldPath", oldPath);
+            reset.ExecuteNonQuery();
+        }
+
+        InvokeLegacyDataMigration(
+            targetDatabase,
+            new[] { legacyDirectory },
+            targetAttachments);
+        Assert.Single(Directory.GetFiles(targetAttachments, "*_migrated-*.txt"));
+
+        var database = new DatabaseService(targetDatabase);
+        direct_module.Models.ChatMessage stored = Assert.Single(
+            new ChatRepository(database).GetRecentMessages(),
+            message => message.MessageId == "attachment-id");
+        Assert.Equal(firstDestination, stored.LocalFilePath);
+        Assert.True(File.Exists(oldPath));
+    }
+
+    [Fact]
+    public void LegacyAttachmentDatabaseUpdateRollsBackAndRetriesAfterFailure()
+    {
+        using var temp = new TestDirectory();
+        string legacyDirectory = temp.CreateSubdirectory("legacy-transaction");
+        string legacyAttachments = Directory.CreateDirectory(
+            System.IO.Path.Combine(legacyDirectory, "Attachments")).FullName;
+        string firstOldPath = System.IO.Path.Combine(legacyAttachments, "first.bin");
+        string secondOldPath = System.IO.Path.Combine(legacyAttachments, "second.bin");
+        File.WriteAllText(firstOldPath, "first");
+        File.WriteAllText(secondOldPath, "second");
+        string legacyDatabase = System.IO.Path.Combine(legacyDirectory, "chat.db");
+        CreateLegacyDatabase(legacyDatabase);
+        InsertAttachmentRow(legacyDatabase, "attachment-a", firstOldPath);
+        InsertAttachmentRow(legacyDatabase, "attachment-b", secondOldPath);
+        using (var connection = OpenDatabase(legacyDatabase))
+        using (SqliteCommand trigger = connection.CreateCommand())
+        {
+            trigger.CommandText =
+                """
+                CREATE TRIGGER RejectSecondAttachmentPath
+                BEFORE UPDATE OF LocalFilePath ON ChatMessages
+                WHEN OLD.MessageId = 'attachment-b'
+                BEGIN
+                    SELECT RAISE(ABORT, 'injected attachment path update failure');
+                END;
+                """;
+            trigger.ExecuteNonQuery();
+        }
+
+        string targetDatabase = System.IO.Path.Combine(temp.Path, "current", "chat.db");
+        string targetAttachments = temp.CreateSubdirectory("transaction-attachments");
+        Directory.CreateDirectory(System.IO.Path.GetDirectoryName(targetDatabase)!);
+        InvokeLegacyDataMigration(
+            targetDatabase,
+            new[] { legacyDirectory },
+            targetAttachments);
+
+        Assert.Equal(firstOldPath, ReadAttachmentPath(targetDatabase, "attachment-a"));
+        Assert.Equal(secondOldPath, ReadAttachmentPath(targetDatabase, "attachment-b"));
+        Assert.Null(ReadMetadata(targetDatabase, "LegacyAttachmentPathsMigratedV2"));
+        Assert.Equal(2, Directory.GetFiles(targetAttachments, "*_migrated-*.bin").Length);
+
+        using (var connection = OpenDatabase(targetDatabase))
+        using (SqliteCommand drop = connection.CreateCommand())
+        {
+            drop.CommandText = "DROP TRIGGER RejectSecondAttachmentPath;";
+            drop.ExecuteNonQuery();
+        }
+        InvokeLegacyDataMigration(
+            targetDatabase,
+            new[] { legacyDirectory },
+            targetAttachments);
+
+        Assert.StartsWith(
+            "dpapi:v1:",
+            ReadAttachmentPath(targetDatabase, "attachment-a"),
+            StringComparison.Ordinal);
+        Assert.StartsWith(
+            "dpapi:v1:",
+            ReadAttachmentPath(targetDatabase, "attachment-b"),
+            StringComparison.Ordinal);
+        Assert.Equal("1", ReadMetadata(targetDatabase, "LegacyAttachmentPathsMigratedV2"));
+        Assert.Equal(2, Directory.GetFiles(targetAttachments, "*_migrated-*.bin").Length);
+        Assert.True(File.Exists(firstOldPath));
+        Assert.True(File.Exists(secondOldPath));
+    }
+
+    private static void InvokeLegacyDataMigration(
+        string targetDatabase,
+        string[] legacyDirectories,
+        string targetAttachments)
+    {
+        MethodInfo migrate = typeof(DatabaseService).GetMethod(
+            "MigrateLegacyDataIfNeeded",
+            BindingFlags.NonPublic | BindingFlags.Static)
+            ?? throw new MissingMethodException(
+                typeof(DatabaseService).FullName,
+                "MigrateLegacyDataIfNeeded");
+        migrate.Invoke(
+            null,
+            new object?[] { targetDatabase, legacyDirectories, targetAttachments });
+    }
+
+    private static SqliteConnection OpenDatabase(string path)
+    {
+        var connection = new SqliteConnection($"Data Source={path};Pooling=False");
+        connection.Open();
+        return connection;
+    }
+
+    private static void SaveOneHistoryMessage(DatabaseService database)
+    {
+        var repository = new ChatRepository(database);
+        Assert.True(repository.TrySaveMessage(new direct_module.Models.ChatMessage
+        {
+            MessageId = Guid.NewGuid().ToString("N"),
+            MessageType = "chat",
+            ConversationId = "peer:protected-history",
+            SenderId = "peer:sender",
+            SenderName = "Sender",
+            ReceiverId = "peer:receiver",
+            ReceiverName = "Receiver",
+            Message = "protected",
+            SendTime = DateTime.UtcNow,
+            IsMine = true
+        }));
+    }
+
+    private static direct_module.Models.ChatMessage CreateStoredMessage(string body) => new()
+    {
+        MessageId = Guid.NewGuid().ToString("N"),
+        MessageType = "chat",
+        ConversationId = "peer:bounded-reader",
+        SenderId = "peer:sender",
+        SenderName = "Sender",
+        ReceiverId = "peer:receiver",
+        ReceiverName = "Receiver",
+        Message = body,
+        SendTime = DateTime.UtcNow,
+        IsMine = true,
+        IsGroup = false,
+        FileSize = null
+    };
+
+    private static string? ReadScalar(string path, string sql)
+    {
+        using SqliteConnection connection = OpenDatabase(path);
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = sql;
+        return command.ExecuteScalar()?.ToString();
+    }
+
+    private static string ReadAttachmentPath(string path, string messageId)
+    {
+        using SqliteConnection connection = OpenDatabase(path);
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            "SELECT LocalFilePath FROM ChatMessages WHERE MessageId = @MessageId;";
+        command.Parameters.AddWithValue("@MessageId", messageId);
+        return Assert.IsType<string>(command.ExecuteScalar());
+    }
+
+    private static string? ReadMetadata(string path, string key)
+    {
+        using SqliteConnection connection = OpenDatabase(path);
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = "SELECT Value FROM AppMetadata WHERE Key = @Key;";
+        command.Parameters.AddWithValue("@Key", key);
+        return command.ExecuteScalar()?.ToString();
+    }
+
+    private static void InsertAttachmentRow(string path, string messageId, string localFilePath)
+    {
+        using SqliteConnection connection = OpenDatabase(path);
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            """
+            INSERT INTO ChatMessages
+            (MessageId, MessageType, ConversationId, SenderId, SenderName,
+             ReceiverId, ReceiverName, Message, SendTime, IsMine, IsGroup,
+             FileId, FileName, LocalFilePath, FileSize)
+            VALUES
+            (@MessageId, 'file', 'peer:legacy', 'sender', 'Sender',
+             'receiver', 'Receiver', '', @SendTime, 0, 0,
+             @FileId, @FileName, @LocalFilePath, @FileSize);
+            """;
+        command.Parameters.AddWithValue("@MessageId", messageId);
+        command.Parameters.AddWithValue("@SendTime", DateTime.UtcNow.ToString("O"));
+        command.Parameters.AddWithValue("@FileId", Guid.NewGuid().ToString("N"));
+        command.Parameters.AddWithValue("@FileName", System.IO.Path.GetFileName(localFilePath));
+        command.Parameters.AddWithValue("@LocalFilePath", localFilePath);
+        command.Parameters.AddWithValue("@FileSize", new FileInfo(localFilePath).Length);
+        command.ExecuteNonQuery();
+    }
+
+    private static void CreateLegacyDatabase(string path)
+    {
+        using var connection = new SqliteConnection($"Data Source={path};Pooling=False");
+        connection.Open();
+        using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            """
+            PRAGMA journal_mode=WAL;
+            CREATE TABLE ChatMessages
+            (
+                Id INTEGER PRIMARY KEY AUTOINCREMENT,
+                MessageId TEXT NOT NULL,
+                MessageType TEXT NOT NULL,
+                ConversationId TEXT NOT NULL,
+                SenderId TEXT NOT NULL,
+                SenderName TEXT NOT NULL,
+                ReceiverId TEXT NOT NULL,
+                ReceiverName TEXT NOT NULL,
+                Message TEXT NOT NULL,
+                SendTime TEXT NOT NULL,
+                IsMine INTEGER NOT NULL,
+                IsGroup INTEGER NOT NULL,
+                FileId TEXT NULL,
+                FileName TEXT NULL,
+                LocalFilePath TEXT NULL,
+                FileSize INTEGER NULL
+            );
+            INSERT INTO ChatMessages
+            (MessageId, MessageType, ConversationId, SenderId, SenderName,
+             ReceiverId, ReceiverName, Message, SendTime, IsMine, IsGroup)
+            VALUES
+            ('legacy-id', 'chat', 'peer:legacy', 'sender', 'Sender',
+             'receiver', 'Receiver', 'legacy secret', '9999-12-31T23:59:59Z', 0, 0);
+
+            INSERT INTO ChatMessages
+            (MessageId, MessageType, ConversationId, SenderId, SenderName,
+             ReceiverId, ReceiverName, Message, SendTime, IsMine, IsGroup)
+            VALUES
+            ('offset-id', 'chat', 'peer:legacy', 'sender', 'Sender',
+             'receiver', 'Receiver', 'offset secret', @OffsetTime, 0, 0);
+
+            INSERT INTO ChatMessages
+            (MessageId, MessageType, ConversationId, SenderId, SenderName,
+             ReceiverId, ReceiverName, Message, SendTime, IsMine, IsGroup)
+            VALUES
+            ('malformed-dpapi-id', 'chat', 'peer:legacy', 'sender', 'Sender',
+             'receiver', 'Receiver', 'dpapi:v1:not-base64!!!', @OffsetTime, 0, 0);
+
+            CREATE TABLE Users
+            (
+                DeviceId TEXT PRIMARY KEY,
+                MachineName TEXT NOT NULL,
+                DisplayName TEXT NOT NULL,
+                CreatedAt TEXT NOT NULL
+            );
+            INSERT INTO Users VALUES ('device-secret', 'machine-secret', 'display-secret', '2020-01-01T00:00:00Z');
+            """;
+        command.Parameters.AddWithValue(
+            "@OffsetTime",
+            DateTimeOffset.UtcNow.AddMinutes(-5).ToOffset(TimeSpan.FromHours(9)).ToString("O"));
+        command.ExecuteNonQuery();
+    }
+}

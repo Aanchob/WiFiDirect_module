@@ -341,6 +341,28 @@ ASALocalRun/
 # MSBuild Binary and Structured Log
 *.binlog
 
+# Runtime chat data and cryptographic identity material. The application stores
+# these under per-user AppData, but legacy builds used the working directory.
+chat.db
+chat.db-*
+identity.dat
+identity.corrupt-*.dat
+chat-identity.key
+chat-identity.corrupt-*.dat
+local-identity.initialized
+local-identity.recovery-required
+local-peer-identity-recovered.corrupt-*.dat
+chat-identity-recovered.corrupt-*.dat
+local-identity-state-recovered.corrupt-*.dat
+remote-identity-pins.dat
+remote-identity-pins.corrupt-*.dat
+remote-identity-pins.dat.recovery-required
+.identity-*.tmp
+.identity-marker-*.tmp
+.pin-recovery-*.tmp
+Attachments/
+outgoing/
+
 # NVidia Nsight GPU debugger configuration file
 *.nvuser
 

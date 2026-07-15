@@ -1,215 +1,283 @@
 using System;
 using direct_module.WiFiDirect.Models;
 
-namespace direct_module.Services
+namespace direct_module.Services;
+
+public static class PeerMergeService
 {
-    public static class PeerMergeService
+    private const int DiscoveryIdentityHexCharacters = 24;
+
+    public static string GetMatchReason(PeerInfo existing, PeerInfo incoming)
     {
-        public static string GetMatchReason(PeerInfo existing, PeerInfo incoming)
+        if (HasStableIdentityConflict(existing, incoming))
         {
-            if (HasSameValue(existing.ShortSessionId, incoming.ShortSessionId))
-            {
-                return $"ShortSessionId一致 ({incoming.ShortSessionId})";
-            }
-
-            if (HasSameValue(existing.DeviceId, incoming.DeviceId))
-            {
-                return "DeviceId一致";
-            }
-
-            if (HasSameValue(existing.RemoteIpAddress, incoming.RemoteIpAddress))
-            {
-                return $"RemoteIpAddress一致 ({incoming.RemoteIpAddress})";
-            }
-
-            if (HasSameValue(existing.MatchKey, incoming.MatchKey))
-            {
-                return $"MatchKey一致 ({incoming.MatchKey})";
-            }
-
-            if (HasSameValue(existing.DisplayName, incoming.DisplayName))
-            {
-                return $"DisplayName完全一致 ({incoming.DisplayName})";
-            }
-
-            if (IsBleNamePrefixMatch(existing, incoming))
-            {
-                string bleName = GetBleName(existing, incoming);
-                string wifiName = GetWifiDirectName(existing, incoming);
-                return $"BLE名前頭一致 ({bleName} -> {wifiName})";
-            }
-
-            if (IsBleWiFiDirectPartialNameMatch(existing, incoming))
-            {
-                return $"注意: BLE/Wi-Fi Direct名の部分一致 ({existing.DisplayName} / {incoming.DisplayName})";
-            }
-
             return "";
         }
 
-        public static bool IsPartialNameMatchCandidate(PeerInfo existing, PeerInfo incoming)
+        if (HasSameStablePeerId(existing.PeerId, incoming.PeerId))
         {
-            string existingName = existing.DisplayName ?? "";
-            string incomingName = incoming.DisplayName ?? "";
-
-            return existingName.Length >= 4 &&
-                   incomingName.Length >= 4 &&
-                   !string.Equals(existingName, incomingName, StringComparison.OrdinalIgnoreCase) &&
-                   (existingName.Contains(incomingName, StringComparison.OrdinalIgnoreCase) ||
-                    incomingName.Contains(existingName, StringComparison.OrdinalIgnoreCase));
+            return "PeerId一致";
         }
 
-        public static bool IsSingleCandidateFallback(PeerInfo existing, PeerInfo incoming)
+        if (HasSameValue(existing.DeviceId, incoming.DeviceId))
         {
-            return IsBleWiFiDirectPair(existing, incoming) &&
-                   !HasStableIdentityConflict(existing, incoming) &&
-                   HasAnyDiscoveryIdentity(existing) &&
-                   HasAnyDiscoveryIdentity(incoming);
+            return "DeviceId一致";
         }
 
-        public static void Merge(PeerInfo target, PeerInfo source)
+        if (HasCompatibleDiscoveryIdentity(existing, incoming, out string identity))
         {
-            if (!string.IsNullOrWhiteSpace(source.DisplayName) &&
-                (string.IsNullOrWhiteSpace(target.DisplayName) ||
-                 source.DisplayName.Length > target.DisplayName.Length))
-            {
-                target.DisplayName = source.DisplayName;
-            }
+            return $"強い探索Identity一致 ({identity})";
+        }
 
-            target.DiscoveredByBle |= source.DiscoveredByBle;
-            target.DiscoveredByWiFiDirect |= source.DiscoveredByWiFiDirect;
+        if (HasSameValue(existing.RemoteIpAddress, incoming.RemoteIpAddress) &&
+            HasSameStablePeerId(existing.PeerId, incoming.PeerId))
+        {
+            return $"RemoteIpAddress一致 ({incoming.RemoteIpAddress})";
+        }
 
-            CopyIfPresent(source.BleName, value => target.BleName = value);
-            CopyIfPresent(source.WiFiDirectName, value => target.WiFiDirectName = value);
+        // A 16-bit ShortSessionId and a display name are not identities.
+        return "";
+    }
+
+    public static bool IsPartialNameMatchCandidate(PeerInfo existing, PeerInfo incoming) => false;
+
+    public static bool IsSingleCandidateFallback(PeerInfo existing, PeerInfo incoming) => false;
+
+    public static void Merge(PeerInfo target, PeerInfo source)
+    {
+        if (HasInvalidStablePeerId(target.PeerId) || HasInvalidStablePeerId(source.PeerId) ||
+            HasDifferentStablePeerId(target.PeerId, source.PeerId))
+        {
+            return;
+        }
+
+        bool hasPeerIdMatch = HasSameStablePeerId(target.PeerId, source.PeerId);
+        bool hasStrongIdentityMatch = HasCompatibleDiscoveryIdentity(target, source, out _);
+
+        if (!string.IsNullOrWhiteSpace(source.DisplayName) &&
+            (string.IsNullOrWhiteSpace(target.DisplayName) || source.DisplayName.Length > target.DisplayName.Length))
+        {
+            target.DisplayName = source.DisplayName;
+        }
+
+        target.DiscoveredByBle |= source.DiscoveredByBle;
+        target.DiscoveredByWiFiDirect |= source.DiscoveredByWiFiDirect;
+
+        CopyIfPresent(source.BleName, value => target.BleName = value);
+        CopyIfPresent(source.WiFiDirectName, value => target.WiFiDirectName = value);
+        CopyStablePeerIdIfCompatible(target.PeerId, source.PeerId, value => target.PeerId = value);
+        if (hasPeerIdMatch)
+        {
             CopyIfPresent(source.MatchKey, value => target.MatchKey = value);
             CopyIfPresent(source.ShortSessionId, value => target.ShortSessionId = value);
             CopyIfPresent(source.RoleKey, value => target.RoleKey = value);
+        }
+        else
+        {
+            CopyDiscoveryIdentity(target.MatchKey, source.MatchKey, value => target.MatchKey = value);
+            CopyIdentityIfCompatible(target.ShortSessionId, source.ShortSessionId, value => target.ShortSessionId = value);
+            CopyIdentityIfCompatible(target.RoleKey, source.RoleKey, value => target.RoleKey = value);
+        }
+
+        if (hasPeerIdMatch || hasStrongIdentityMatch)
+        {
             CopyIfPresent(source.DeviceId, value => target.DeviceId = value);
-            CopyIfPresent(source.DeviceKind, value => target.DeviceKind = value);
-            CopyIfPresent(source.IpAddress, value => target.IpAddress = value);
+        }
+        else
+        {
+            CopyIdentityIfCompatible(target.DeviceId, source.DeviceId, value => target.DeviceId = value);
+        }
+        CopyIfPresent(source.DeviceKind, value => target.DeviceKind = value);
+        CopyIfPresent(source.IpAddress, value => target.IpAddress = value);
+        if (hasPeerIdMatch || hasStrongIdentityMatch)
+        {
             CopyIfPresent(source.RemoteIpAddress, value => target.RemoteIpAddress = value);
+        }
+        else
+        {
+            CopyIdentityIfCompatible(target.RemoteIpAddress, source.RemoteIpAddress, value => target.RemoteIpAddress = value);
+        }
 
-            if (source.TcpPort > 0)
+        if (source.TcpPort is > 0 and <= ushort.MaxValue)
+        {
+            target.TcpPort = source.TcpPort;
+        }
+
+        if (source.IsEnabled.HasValue)
+        {
+            target.IsEnabled = source.IsEnabled;
+        }
+
+        target.IsConnected |= source.IsConnected;
+        target.IsPreparingChatTcp |= source.IsPreparingChatTcp;
+        target.IsTcpConnected |= source.IsTcpConnected;
+        target.IsHelloVerified |= source.IsHelloVerified;
+        target.IsChatReady |= source.IsChatReady;
+        if (source.LastSeenAtUtc > target.LastSeenAtUtc)
+        {
+            target.LastSeenAtUtc = source.LastSeenAtUtc;
+        }
+        CopyIfPresent(source.StatusText, value => target.StatusText = value);
+    }
+
+    private static bool HasStableIdentityConflict(PeerInfo existing, PeerInfo incoming)
+    {
+        if (HasInvalidStablePeerId(existing.PeerId) || HasInvalidStablePeerId(incoming.PeerId) ||
+            HasDifferentStablePeerId(existing.PeerId, incoming.PeerId))
+        {
+            return true;
+        }
+
+        if (HasSameStablePeerId(existing.PeerId, incoming.PeerId))
+        {
+            return false;
+        }
+
+        if (HasDifferentValue(existing.DeviceId, incoming.DeviceId) &&
+            !HasCompatibleDiscoveryIdentity(existing, incoming, out _))
+        {
+            return true;
+        }
+
+        if (HasDifferentValue(existing.RemoteIpAddress, incoming.RemoteIpAddress) &&
+            !HasSameValue(existing.DeviceId, incoming.DeviceId) &&
+            !HasCompatibleDiscoveryIdentity(existing, incoming, out _) &&
+            !HasSameStablePeerId(existing.PeerId, incoming.PeerId))
+        {
+            return true;
+        }
+
+        string existingIdentity = NormalizeHex(existing.MatchKey);
+        string incomingIdentity = NormalizeHex(incoming.MatchKey);
+        if (IsStrongIdentity(existingIdentity) &&
+            IsStrongIdentity(incomingIdentity) &&
+            !AreCompatibleStrongIdentities(existingIdentity, incomingIdentity))
+        {
+            return true;
+        }
+
+        return HasDifferentValue(existing.RoleKey, incoming.RoleKey) &&
+               IsStrongIdentity(existingIdentity) &&
+               IsStrongIdentity(incomingIdentity);
+    }
+
+    private static bool HasCompatibleDiscoveryIdentity(
+        PeerInfo existing,
+        PeerInfo incoming,
+        out string commonIdentity)
+    {
+        string left = NormalizeHex(existing.MatchKey);
+        string right = NormalizeHex(incoming.MatchKey);
+        bool compatible = AreCompatibleStrongIdentities(left, right);
+        commonIdentity = compatible ? (left.Length <= right.Length ? left : right) : "";
+        return compatible;
+    }
+
+    private static bool AreCompatibleStrongIdentities(string left, string right)
+    {
+        return IsStrongIdentity(left) &&
+               IsStrongIdentity(right) &&
+               string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsStrongIdentity(string value) =>
+        NormalizeHex(value).Length == DiscoveryIdentityHexCharacters;
+
+    private static string NormalizeHex(string value)
+    {
+        string normalized = (value ?? "").Replace("-", "", StringComparison.Ordinal).Trim().ToLowerInvariant();
+        if (normalized.Length == 0 || normalized.Length % 2 != 0)
+        {
+            return "";
+        }
+
+        foreach (char character in normalized)
+        {
+            if (!Uri.IsHexDigit(character))
             {
-                target.TcpPort = source.TcpPort;
+                return "";
             }
-
-            if (source.IsEnabled.HasValue)
-            {
-                target.IsEnabled = source.IsEnabled;
-            }
-
-            target.IsConnected |= source.IsConnected;
-            target.IsPreparingChatTcp |= source.IsPreparingChatTcp;
-            target.IsTcpConnected |= source.IsTcpConnected;
-            target.IsHelloVerified |= source.IsHelloVerified;
-            target.IsChatReady |= source.IsChatReady;
-            CopyIfPresent(source.StatusText, value => target.StatusText = value);
         }
 
-        private static bool IsBleWiFiDirectPartialNameMatch(PeerInfo existing, PeerInfo incoming)
+        return normalized;
+    }
+
+    private static bool HasSameValue(string left, string right)
+    {
+        return !string.IsNullOrWhiteSpace(left) &&
+               !string.IsNullOrWhiteSpace(right) &&
+               string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool HasDifferentValue(string left, string right)
+    {
+        return !string.IsNullOrWhiteSpace(left) &&
+               !string.IsNullOrWhiteSpace(right) &&
+               !string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool HasInvalidStablePeerId(string? value) =>
+        !string.IsNullOrWhiteSpace(value) &&
+        !PeerIdentityService.TryNormalizeStablePeerId(value, out _);
+
+    private static bool HasSameStablePeerId(string? left, string? right) =>
+        PeerIdentityService.TryNormalizeStablePeerId(left, out string normalizedLeft) &&
+        PeerIdentityService.TryNormalizeStablePeerId(right, out string normalizedRight) &&
+        string.Equals(normalizedLeft, normalizedRight, StringComparison.Ordinal);
+
+    private static bool HasDifferentStablePeerId(string? left, string? right) =>
+        PeerIdentityService.TryNormalizeStablePeerId(left, out string normalizedLeft) &&
+        PeerIdentityService.TryNormalizeStablePeerId(right, out string normalizedRight) &&
+        !string.Equals(normalizedLeft, normalizedRight, StringComparison.Ordinal);
+
+    private static void CopyDiscoveryIdentity(string current, string incoming, Action<string> apply)
+    {
+        if (string.IsNullOrWhiteSpace(incoming))
         {
-            return IsSingleCandidateFallback(existing, incoming) &&
-                   IsPartialNameMatchCandidate(existing, incoming);
+            return;
         }
 
-        private static bool IsBleWiFiDirectPair(PeerInfo existing, PeerInfo incoming)
+        if (string.IsNullOrWhiteSpace(current) ||
+            string.Equals(current, incoming, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(NormalizeHex(incoming), NormalizeHex(current), StringComparison.OrdinalIgnoreCase))
         {
-            return (existing.DiscoveredByBle && incoming.DiscoveredByWiFiDirect) ||
-                   (existing.DiscoveredByWiFiDirect && incoming.DiscoveredByBle);
+            apply(incoming);
+        }
+    }
+
+    private static void CopyIdentityIfCompatible(string current, string incoming, Action<string> apply)
+    {
+        if (string.IsNullOrWhiteSpace(incoming))
+        {
+            return;
         }
 
-        private static bool HasStableIdentityConflict(PeerInfo existing, PeerInfo incoming)
+        if (string.IsNullOrWhiteSpace(current) || string.Equals(current, incoming, StringComparison.OrdinalIgnoreCase))
         {
-            return HasDifferentValue(existing.ShortSessionId, incoming.ShortSessionId) ||
-                   HasDifferentValue(existing.DeviceId, incoming.DeviceId) ||
-                   HasDifferentValue(existing.RemoteIpAddress, incoming.RemoteIpAddress) ||
-                   HasDifferentValue(existing.MatchKey, incoming.MatchKey) ||
-                   HasDifferentValue(existing.RoleKey, incoming.RoleKey);
+            apply(incoming);
+        }
+    }
+
+    private static void CopyStablePeerIdIfCompatible(string? current, string? incoming, Action<string> apply)
+    {
+        if (!PeerIdentityService.TryNormalizeStablePeerId(incoming, out string normalizedIncoming))
+        {
+            return;
         }
 
-        private static bool HasSameValue(string left, string right)
+        if (string.IsNullOrWhiteSpace(current) ||
+            (PeerIdentityService.TryNormalizeStablePeerId(current, out string normalizedCurrent) &&
+             string.Equals(normalizedCurrent, normalizedIncoming, StringComparison.Ordinal)))
         {
-            return !string.IsNullOrWhiteSpace(left) &&
-                   !string.IsNullOrWhiteSpace(right) &&
-                   string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
+            apply(normalizedIncoming);
         }
+    }
 
-        private static bool IsBleNamePrefixMatch(PeerInfo existing, PeerInfo incoming)
+    private static void CopyIfPresent(string value, Action<string> apply)
+    {
+        if (!string.IsNullOrWhiteSpace(value))
         {
-            return IsBleNamePrefixMatchCore(existing, incoming) ||
-                   IsBleNamePrefixMatchCore(incoming, existing);
-        }
-
-        private static bool IsBleNamePrefixMatchCore(PeerInfo blePeer, PeerInfo wifiPeer)
-        {
-            if (!blePeer.DiscoveredByBle ||
-                blePeer.DiscoveredByWiFiDirect ||
-                !wifiPeer.DiscoveredByWiFiDirect ||
-                wifiPeer.DiscoveredByBle)
-            {
-                return false;
-            }
-
-            string bleName = GetPeerBleName(blePeer);
-            string wifiName = GetPeerWiFiDirectName(wifiPeer);
-
-            return bleName.Length >= 3 &&
-                   wifiName.Length > bleName.Length &&
-                   wifiName.StartsWith(bleName, StringComparison.OrdinalIgnoreCase);
-        }
-
-        private static string GetBleName(PeerInfo existing, PeerInfo incoming)
-        {
-            return existing.DiscoveredByBle && !existing.DiscoveredByWiFiDirect
-                ? GetPeerBleName(existing)
-                : GetPeerBleName(incoming);
-        }
-
-        private static string GetWifiDirectName(PeerInfo existing, PeerInfo incoming)
-        {
-            return existing.DiscoveredByWiFiDirect && !existing.DiscoveredByBle
-                ? GetPeerWiFiDirectName(existing)
-                : GetPeerWiFiDirectName(incoming);
-        }
-
-        private static string GetPeerBleName(PeerInfo peer)
-        {
-            return !string.IsNullOrWhiteSpace(peer.BleName)
-                ? peer.BleName
-                : peer.DisplayName;
-        }
-
-        private static string GetPeerWiFiDirectName(PeerInfo peer)
-        {
-            return !string.IsNullOrWhiteSpace(peer.WiFiDirectName)
-                ? peer.WiFiDirectName
-                : peer.DisplayName;
-        }
-
-        private static bool HasDifferentValue(string left, string right)
-        {
-            return !string.IsNullOrWhiteSpace(left) &&
-                   !string.IsNullOrWhiteSpace(right) &&
-                   !string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
-        }
-
-        private static bool HasAnyDiscoveryIdentity(PeerInfo peer)
-        {
-            return !string.IsNullOrWhiteSpace(peer.ShortSessionId) ||
-                   !string.IsNullOrWhiteSpace(peer.DeviceId) ||
-                   !string.IsNullOrWhiteSpace(peer.RemoteIpAddress) ||
-                   !string.IsNullOrWhiteSpace(peer.MatchKey) ||
-                   !string.IsNullOrWhiteSpace(peer.RoleKey) ||
-                   !string.IsNullOrWhiteSpace(peer.DisplayName);
-        }
-
-        private static void CopyIfPresent(string value, Action<string> apply)
-        {
-            if (!string.IsNullOrWhiteSpace(value))
-            {
-                apply(value);
-            }
+            apply(value);
         }
     }
 }

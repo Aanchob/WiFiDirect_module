@@ -31,8 +31,10 @@ namespace direct_module.Crypto
             {
                 throw new ArgumentNullException(nameof(localKey));
             }
+            if (localKey.KeySize != 256)
+                throw new CryptographicException("The local ECDH key must use the P-256 curve.");
 
-            if (remotePublicKey == null || remotePublicKey.Length == 0)
+            if (remotePublicKey == null || remotePublicKey.Length == 0 || remotePublicKey.Length > 1024)
             {
                 throw new ArgumentException(
                     "相手の公開鍵が不正です。",
@@ -40,7 +42,13 @@ namespace direct_module.Crypto
             }
 
             using ECDiffieHellman remoteKey = ECDiffieHellman.Create();
-            remoteKey.ImportSubjectPublicKeyInfo(remotePublicKey, out _);
+            remoteKey.ImportSubjectPublicKeyInfo(remotePublicKey, out int bytesRead);
+            if (bytesRead != remotePublicKey.Length)
+            {
+                throw new CryptographicException("Trailing data followed the remote ECDH public key.");
+            }
+            if (remoteKey.KeySize != 256)
+                throw new CryptographicException("The remote ECDH key must use the P-256 curve.");
 
             return localKey.DeriveKeyFromHash(
                 remoteKey.PublicKey,
@@ -57,7 +65,34 @@ namespace direct_module.Crypto
             }
 
             byte[] hash = SHA256.HashData(publicKey);
-            return Convert.ToHexString(hash, 0, 8);
+            return Convert.ToHexString(hash);
         }
+
+        public static bool FingerprintsEqual(string first, string second)
+        {
+            string normalizedFirst = NormalizeFingerprint(first);
+            string normalizedSecond = NormalizeFingerprint(second);
+            if (normalizedFirst.Length == 0 || normalizedFirst.Length != normalizedSecond.Length)
+            {
+                return false;
+            }
+
+            byte[] firstBytes;
+            byte[] secondBytes;
+            try
+            {
+                firstBytes = Convert.FromHexString(normalizedFirst);
+                secondBytes = Convert.FromHexString(normalizedSecond);
+            }
+            catch (FormatException)
+            {
+                return false;
+            }
+
+            return CryptographicOperations.FixedTimeEquals(firstBytes, secondBytes);
+        }
+
+        private static string NormalizeFingerprint(string value) =>
+            (value ?? "").Replace(":", "", StringComparison.Ordinal).Replace("-", "", StringComparison.Ordinal).Trim();
     }
 }
