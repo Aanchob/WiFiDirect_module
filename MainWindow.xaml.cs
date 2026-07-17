@@ -932,7 +932,9 @@ namespace direct_module
 
             DispatcherQueue.TryEnqueue(() =>
             {
-                AddChatMessage($"{message.SenderName}: {message.Body}");
+                AddChatMessage(
+                    $"{message.SenderName}: {message.Body}",
+                    GetConversationIdForMessage(message, sourceConnection));
                 SaveChatMessageSafely(message, false, FindPeerForConnection(sourceConnection), sourceConnection);
                 AddLog($"TCP受信メッセージ: {message.Body}", LogLevel.Success);
                 AddConnectedPeerDisplay(sourceConnection);
@@ -997,7 +999,8 @@ namespace direct_module
                         AddFileChatMessage(
                             $"{message.SenderName}: {displayResult.Message}",
                             displayResult.FileName,
-                            displayResult.LocalFilePath);
+                            displayResult.LocalFilePath,
+                            GetConversationIdForMessage(message, sourceConnection));
 
                         if (string.Equals(message.Type, "file_end", StringComparison.OrdinalIgnoreCase))
                         {

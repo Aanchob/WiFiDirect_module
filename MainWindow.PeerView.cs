@@ -12,12 +12,32 @@ namespace direct_module
         private void PeerList_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
             UpdateSelectedPeerDetails(PeerList.SelectedItem as PeerInfo);
+            RefreshVisibleConversation();
             UpdateSendButtonState();
         }
 
         private void UpdatePeerCount()
         {
-            PeerCountText.Text = $"検出済み {PeerList.Items.Count}";
+            int peerCount = PeerList.Items.Cast<PeerInfo>().Count(peer => !peer.IsGroupChat);
+            int connectedCount = _chatConnectionManager.ConnectedCount;
+            PeerCountText.Text = $"相手 {peerCount} / 接続 {connectedCount}";
+        }
+
+        private void SwitchToGroupChat_Click(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
+        {
+            PeerInfo? groupPeer = PeerList.Items
+                .Cast<PeerInfo>()
+                .FirstOrDefault(peer => peer.IsGroupChat);
+            if (groupPeer == null)
+            {
+                AddLog("グループチャットを開けませんでした", LogLevel.Error);
+                return;
+            }
+
+            PeerList.SelectedItem = groupPeer;
+            PeerList.ScrollIntoView(groupPeer);
+            UpdateSelectedPeerDetails(groupPeer);
+            UpdateSendButtonState();
         }
 
         private void UpdateSelectedPeerDetails(PeerInfo? peer)
@@ -85,6 +105,8 @@ namespace direct_module
         private void UpdateSendButtonState()
         {
             bool canSend = false;
+            int readyConnectionCount = _chatConnectionManager.Connections
+                .Count(connection => connection.IsConnected && connection.IsReady);
 
             if (PeerList.SelectedItem is PeerInfo peer)
             {
@@ -101,6 +123,13 @@ namespace direct_module
             {
                 SendMessageButton.IsEnabled = canSend;
                 AttachFileButton.IsEnabled = canSend;
+                GroupChatButton.IsEnabled = readyConnectionCount > 0;
+                string groupButtonText = readyConnectionCount >= 2
+                    ? $"グループ ({readyConnectionCount + 1}人)"
+                    : "グループ";
+                GroupChatButton.Content = _unreadGroupMessageCount > 0
+                    ? $"{groupButtonText} • {_unreadGroupMessageCount}"
+                    : groupButtonText;
             });
 
             AddLog(

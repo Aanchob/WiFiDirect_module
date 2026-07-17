@@ -300,6 +300,13 @@
 
                             <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
                                 <Button
+                                    x:Name="GroupChatButton"
+                                    Click="SwitchToGroupChat_Click"
+                                    Content="グループ"
+                                    IsEnabled="False"
+                                    Style="{StaticResource GhostButtonStyle}"
+                                    ToolTipService.ToolTip="接続中の全員へ送信" />
+                                <Button
                                     Click="StartTcpServer_Click"
                                     Style="{StaticResource IconOnlyButtonStyle}"
                                     ToolTipService.ToolTip="TCP待ち受け">

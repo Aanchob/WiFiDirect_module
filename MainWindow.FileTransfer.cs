@@ -34,7 +34,11 @@ namespace direct_module
 
                 string sendFilePath = await PreparePickedFileForSendAsync(file);
                 AddLog($"ファイル送信準備完了: {file.Name} -> {sendFilePath}");
-                AddFileChatMessage($"自分: [ファイル] {file.Name}", file.Name, sendFilePath);
+                AddFileChatMessage(
+                    $"自分: [ファイル] {file.Name}",
+                    file.Name,
+                    sendFilePath,
+                    conversationId);
 
                 await _fileTransferService.SendFileAsync(
                     sendFilePath,

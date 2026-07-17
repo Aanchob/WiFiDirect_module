@@ -7,6 +7,8 @@ namespace direct_module
 {
     public sealed class ChatMessageItem
     {
+        public string ConversationId { get; init; } = "";
+
         public string Text { get; init; } = "";
 
         public string FileName { get; init; } = "";

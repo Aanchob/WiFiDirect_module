@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using direct_module.Network;
 using direct_module.Services;
@@ -11,6 +12,10 @@ namespace direct_module
 {
     public sealed partial class MainWindow
     {
+        private readonly Dictionary<string, List<ChatMessageItem>> _chatItemsByConversation =
+            new(StringComparer.OrdinalIgnoreCase);
+        private int _unreadGroupMessageCount;
+
         private async void SendMessage_Click(object sender, RoutedEventArgs e)
         {
             var totalWatch = Stopwatch.StartNew();
@@ -32,7 +37,7 @@ namespace direct_module
                 if (isGroup)
                 {
                     await SendNetworkMessageAsync(message, true, null);
-                    AddChatMessage($"自分: {body}");
+                    AddChatMessage($"自分: {body}", "group");
                     SaveChatMessageSafely(message, true, null, null);
                     MessageTextBox.Text = "";
                     return;
@@ -54,7 +59,7 @@ namespace direct_module
                 }
 
                 await connection.SendAsync(message);
-                AddChatMessage($"自分: {body}");
+                AddChatMessage($"自分: {body}", PeerIdentityService.GetConnectionId(peer));
                 SaveChatMessageSafely(message, true, peer, connection);
                 MessageTextBox.Text = "";
                 AddLog($"SendMessage_Click完了 合計: {totalWatch.ElapsedMilliseconds}ms", LogLevel.Debug);
@@ -96,15 +101,24 @@ namespace direct_module
             await _chatMessageRouter.SendAsync(message, isGroup, _chatRole == ChatRole.Host, peerConnection);
         }
 
-        private void AddChatMessage(string message)
-        {
-            AddChatMessageItem(new ChatMessageItem { Text = message });
-        }
-
-        private void AddFileChatMessage(string message, string fileName, string localFilePath)
+        private void AddChatMessage(string message, string conversationId)
         {
             AddChatMessageItem(new ChatMessageItem
             {
+                ConversationId = conversationId,
+                Text = message
+            });
+        }
+
+        private void AddFileChatMessage(
+            string message,
+            string fileName,
+            string localFilePath,
+            string conversationId)
+        {
+            AddChatMessageItem(new ChatMessageItem
+            {
+                ConversationId = conversationId,
                 Text = message,
                 FileName = fileName,
                 LocalFilePath = localFilePath
@@ -113,8 +127,93 @@ namespace direct_module
 
         private void AddChatMessageItem(ChatMessageItem item)
         {
+            string conversationId = string.IsNullOrWhiteSpace(item.ConversationId)
+                ? "unknown"
+                : item.ConversationId;
+            if (!_chatItemsByConversation.TryGetValue(conversationId, out List<ChatMessageItem>? items))
+            {
+                items = new List<ChatMessageItem>();
+                _chatItemsByConversation[conversationId] = items;
+            }
+
+            items.Add(item);
+            if (!string.Equals(GetSelectedConversationId(), conversationId, StringComparison.OrdinalIgnoreCase))
+            {
+                if (string.Equals(conversationId, "group", StringComparison.OrdinalIgnoreCase))
+                {
+                    _unreadGroupMessageCount++;
+                    UpdateSendButtonState();
+                }
+
+                return;
+            }
+
             MessageList.Items.Add(item);
             MessageList.ScrollIntoView(item);
+        }
+
+        private string GetSelectedConversationId()
+        {
+            if (PeerList.SelectedItem is not PeerInfo peer)
+            {
+                return "";
+            }
+
+            return peer.IsGroupChat ? "group" : PeerIdentityService.GetConnectionId(peer);
+        }
+
+        private string GetConversationIdForMessage(
+            ChatMessage message,
+            ChatConnection connection)
+        {
+            if (message.IsGroup)
+            {
+                return "group";
+            }
+
+            PeerInfo? peer = FindPeerForConnection(connection);
+            if (peer != null)
+            {
+                return PeerIdentityService.GetConnectionId(peer);
+            }
+
+            if (!string.IsNullOrWhiteSpace(connection.ShortSessionId))
+            {
+                return connection.ShortSessionId;
+            }
+
+            if (!string.IsNullOrWhiteSpace(connection.PeerId))
+            {
+                return connection.PeerId;
+            }
+
+            return connection.RemoteIpAddress;
+        }
+
+        private void RefreshVisibleConversation()
+        {
+            MessageList.Items.Clear();
+            string conversationId = GetSelectedConversationId();
+            if (string.Equals(conversationId, "group", StringComparison.OrdinalIgnoreCase))
+            {
+                _unreadGroupMessageCount = 0;
+            }
+
+            if (string.IsNullOrWhiteSpace(conversationId) ||
+                !_chatItemsByConversation.TryGetValue(conversationId, out List<ChatMessageItem>? items))
+            {
+                return;
+            }
+
+            foreach (ChatMessageItem item in items)
+            {
+                MessageList.Items.Add(item);
+            }
+
+            if (items.Count > 0)
+            {
+                MessageList.ScrollIntoView(items[^1]);
+            }
         }
     }
 }
