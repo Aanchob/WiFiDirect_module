@@ -30,8 +30,6 @@ namespace direct_module
     {
         private const int LocalTcpPort = 50001;
         private const int MaxLogLines = 500;
-        private static readonly TimeSpan WiFiDirectScanRestartDelay = TimeSpan.FromMilliseconds(500);
-        private static readonly TimeSpan WiFiDirectGoAdvertisementWait = TimeSpan.FromSeconds(3);
         private static readonly TimeSpan WiFiDirectCandidateRefreshTimeout = TimeSpan.FromSeconds(10);
         private static readonly TimeSpan WiFiDirectCandidatePollInterval = TimeSpan.FromMilliseconds(250);
         private static readonly TimeSpan HelloTimeout = TimeSpan.FromSeconds(15);

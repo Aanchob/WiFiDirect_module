@@ -13,6 +13,7 @@ namespace direct_module.WiFiDirect
         private readonly WiFiDirectConnector _connector;
         private readonly WiFiDirectScanner _scanner;
         private readonly List<WiFiDirectSession> _sessions = new();
+        private readonly object _sessionsGate = new();
 
         public event Action<string>? LogReceived;
         public event Action<PeerInfo>? ConnectionRequested;
@@ -29,48 +30,40 @@ namespace direct_module.WiFiDirect
             _listener.LogReceived += OnLogReceived;
             _listener.ConnectionRequested += OnListenerConnectionRequested;
             _listener.IncomingConnectionRequested += OnIncomingConnectionRequested;
-
             _advertiser.LogReceived += OnLogReceived;
-
             _connector.LogReceived += OnLogReceived;
             _connector.Connected += OnConnectorConnected;
-
             _scanner.LogReceived += OnLogReceived;
             _scanner.PeerFound += OnScannerPeerFound;
         }
 
-        public void Start()
-        {
-            Start("", "");
-        }
+        public Task StartAsync() => StartAsync("", "");
 
-        public void Start(string displayName, string shortSessionId)
-        {
-            Start(displayName, shortSessionId, autonomousGroupOwner: false);
-        }
+        public Task StartAsync(string displayName, string shortSessionId) =>
+            StartAsync(displayName, shortSessionId, autonomousGroupOwner: false);
 
-        public void Start(string displayName, string shortSessionId, bool autonomousGroupOwner)
+        public async Task StartAsync(string displayName, string shortSessionId, bool autonomousGroupOwner)
         {
-            LogReceived?.Invoke("Manager: Wi-Fi Direct Listener + Advertisement 起動開始");
+            LogReceived?.Invoke("Manager: Wi-Fi Direct Listener + Advertisement 開始");
             _listener.Start();
-            _advertiser.Start(
+            await _advertiser.StartAsync(
                 listenerRegistered: _listener.IsStarted,
                 displayName: displayName,
                 shortSessionId: shortSessionId,
                 autonomousGroupOwner: autonomousGroupOwner);
         }
 
-        public void RestartAdvertisement(string displayName, string shortSessionId)
-        {
-            RestartAdvertisement(displayName, shortSessionId, autonomousGroupOwner: false);
-        }
+        public Task RestartAdvertisementAsync(string displayName, string shortSessionId) =>
+            RestartAdvertisementAsync(displayName, shortSessionId, autonomousGroupOwner: false);
 
-        public void RestartAdvertisement(string displayName, string shortSessionId, bool autonomousGroupOwner)
+        public async Task RestartAdvertisementAsync(
+            string displayName,
+            string shortSessionId,
+            bool autonomousGroupOwner)
         {
-            LogReceived?.Invoke("Manager: Wi-Fi Direct Advertisement 再起動開始");
+            LogReceived?.Invoke("Manager: Wi-Fi Direct Advertisement 再開始");
             _listener.Start();
-            _advertiser.Stop();
-            _advertiser.Start(
+            await _advertiser.RestartAsync(
                 listenerRegistered: _listener.IsStarted,
                 displayName: displayName,
                 shortSessionId: shortSessionId,
@@ -79,49 +72,33 @@ namespace direct_module.WiFiDirect
 
         public void Stop()
         {
-            LogReceived?.Invoke("Manager: Wi-Fi Direct 停止開始");
             _scanner.Stop();
             _advertiser.Stop();
             _listener.Stop();
-            foreach (WiFiDirectSession session in _sessions)
+            List<WiFiDirectSession> sessions;
+            lock (_sessionsGate)
+            {
+                sessions = new List<WiFiDirectSession>(_sessions);
+                _sessions.Clear();
+            }
+
+            foreach (WiFiDirectSession session in sessions)
             {
                 session.Dispose();
             }
-
-            _sessions.Clear();
-            LogReceived?.Invoke("Manager: Wi-Fi Direct 停止完了");
         }
 
-        public void StopAdvertisement()
-        {
-            LogReceived?.Invoke("Manager: Wi-Fi Direct Advertisement stop requested");
-            _advertiser.Stop();
-        }
+        public Task StopAdvertisementAsync() => _advertiser.StopAsync();
 
-        public async Task StartScanAsync()
-        {
-            await _scanner.StartAssociationEndpointAsync();
-        }
+        public Task StartScanAsync() => _scanner.StartAssociationEndpointAsync();
 
-        public async Task StartDefaultScanAsync()
-        {
-            await _scanner.StartDefaultAsync();
-        }
+        public Task StartDefaultScanAsync() => _scanner.StartDefaultAsync();
 
-        public async Task StartAssociationEndpointScanAsync()
-        {
-            await _scanner.StartAssociationEndpointAsync();
-        }
+        public Task StartAssociationEndpointScanAsync() => _scanner.StartAssociationEndpointAsync();
 
-        public void StopScan()
-        {
-            _scanner.Stop();
-        }
+        public Task StopScanAsync() => _scanner.StopAsync();
 
-        public async Task ConnectAsync(PeerInfo peer)
-        {
-            await _connector.ConnectAsync(peer);
-        }
+        public Task ConnectAsync(PeerInfo peer) => _connector.ConnectAsync(peer);
 
         private void OnLogReceived(string message)
         {
@@ -131,33 +108,35 @@ namespace direct_module.WiFiDirect
         private void OnListenerConnectionRequested(PeerInfo peer)
         {
             ConnectionRequested?.Invoke(peer);
-
-            LogReceived?.Invoke($"Manager: 接続要求を受信しました {peer.DisplayName}");
+            LogReceived?.Invoke($"Manager: 接続要求を受信しました: {peer.DisplayName}");
             LogReceived?.Invoke($"PendingRequest DeviceId: {peer.DeviceId}");
-            LogReceived?.Invoke("これは接続要求Accept用なのでPeerListには追加しません");
         }
 
         private async void OnIncomingConnectionRequested(
             PeerInfo peer,
             WiFiDirectConnectionRequest request)
         {
-            LogReceived?.Invoke("受信側で接続要求をacceptします");
-
             try
             {
                 await _connector.AcceptIncomingConnectionAsync(peer, request);
             }
+            catch (Exception ex)
+            {
+                LogReceived?.Invoke($"接続要求のAccept失敗: {ex.GetType().Name}: {ex.Message}");
+            }
             finally
             {
                 request.Dispose();
-                LogReceived?.Invoke("Wi-Fi Direct接続要求Requestを破棄しました");
             }
         }
 
         private void OnConnectorConnected(WiFiDirectSession session)
         {
-            _sessions.Add(session);
-            LogReceived?.Invoke($"Manager: 接続完了 {session.Peer.DisplayName}");
+            lock (_sessionsGate)
+            {
+                _sessions.Add(session);
+            }
+            LogReceived?.Invoke($"Manager: Wi-Fi Direct接続完了: {session.Peer.DisplayName}");
             Connected?.Invoke(session.Peer);
         }
 

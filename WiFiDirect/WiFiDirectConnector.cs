@@ -1,5 +1,7 @@
 using direct_module.WiFiDirect.Models;
 using System;
+using System.Collections.Concurrent;
+using System.Threading;
 using System.Threading.Tasks;
 using Windows.Devices.WiFiDirect;
 
@@ -7,11 +9,12 @@ namespace direct_module.WiFiDirect
 {
     public class WiFiDirectConnector
     {
-        private const int ConnectRetryCount = 8;
-        private static readonly TimeSpan ConnectRetryDelay = TimeSpan.FromSeconds(3);
-
-        private bool _isConnecting;
-        private bool _isAcceptingIncomingConnection;
+        private const int ConnectRetryCount = 4;
+        private static readonly TimeSpan ConnectRetryDelay = TimeSpan.FromSeconds(2);
+        private static readonly TimeSpan FromIdTimeout = TimeSpan.FromSeconds(15);
+        private readonly SemaphoreSlim _outgoingConnectionGate = new(1, 1);
+        private readonly ConcurrentDictionary<string, SemaphoreSlim> _acceptGates =
+            new(StringComparer.OrdinalIgnoreCase);
 
         public event Action<string>? LogReceived;
         public event Action<WiFiDirectSession>? Connected;
@@ -19,62 +22,30 @@ namespace direct_module.WiFiDirect
         public async Task ConnectAsync(PeerInfo peer)
         {
             string connectionDeviceId = peer.WiFiDirectDeviceIdForConnection;
-            LogReceived?.Invoke("Wi-Fi Direct接続開始");
-            LogReceived?.Invoke($"Target Name: {peer.DisplayName}");
-            LogReceived?.Invoke($"Target DeviceId: {connectionDeviceId}");
-            LogReceived?.Invoke($"Target Kind: {peer.DeviceKind}");
-            LogReceived?.Invoke($"Target IsEnabled: {peer.IsEnabled}");
-
-            if (_isConnecting)
-            {
-                LogReceived?.Invoke("すでにWi-Fi Direct通常接続処理中です");
-                return;
-            }
-
             if (string.IsNullOrWhiteSpace(connectionDeviceId))
             {
-                LogReceived?.Invoke("Wi-Fi Direct接続失敗: DeviceId が空です");
+                LogReceived?.Invoke("Wi-Fi Direct接続失敗: DeviceIdが空です");
                 return;
             }
 
             if (IsPendingRequestDeviceId(connectionDeviceId))
             {
-                LogReceived?.Invoke("_PendingRequest付きDeviceIdのため通常接続を中止します");
-                LogReceived?.Invoke("このDeviceIdは受信要求Accept専用です");
+                LogReceived?.Invoke("Wi-Fi Direct接続失敗: PendingRequest用DeviceIdは通常接続に使用できません");
                 return;
             }
 
-            _isConnecting = true;
-
+            await _outgoingConnectionGate.WaitAsync();
             try
             {
-                if (await ConnectWithRetryAsync(peer, connectionDeviceId))
+                LogReceived?.Invoke($"Wi-Fi Direct接続開始: Name={peer.DisplayName}, DeviceId={connectionDeviceId}");
+                if (!await ConnectWithRetryAsync(peer, connectionDeviceId))
                 {
-                    return;
+                    LogReceived?.Invoke($"Wi-Fi Direct接続失敗: 再試行回数を超えました。Peer={peer.DisplayName}");
                 }
-
-                WiFiDirectDevice? device = await CreateDeviceFromIdAsync(
-                    connectionDeviceId,
-                    "FromIdAsync",
-                    "Target",
-                    preferClientRole: true,
-                    pairingProcedure: WiFiDirectPairingProcedure.Invitation);
-
-                if (device == null)
-                {
-                    LogReceived?.Invoke("Wi-Fi Direct接続失敗: WiFiDirectDevice を作成できませんでした");
-                    return;
-                }
-
-                CompleteConnection(peer, device, "Wi-Fi Direct接続成功");
-            }
-            catch (Exception ex)
-            {
-                LogFailure("Wi-Fi Direct接続失敗", ex, "Target", peer);
             }
             finally
             {
-                _isConnecting = false;
+                _outgoingConnectionGate.Release();
             }
         }
 
@@ -82,25 +53,20 @@ namespace direct_module.WiFiDirect
         {
             for (int attempt = 1; attempt <= ConnectRetryCount; attempt++)
             {
+                WiFiDirectPairingProcedure pairingProcedure = attempt <= ConnectRetryCount / 2
+                    ? WiFiDirectPairingProcedure.GroupOwnerNegotiation
+                    : WiFiDirectPairingProcedure.Invitation;
+
                 try
                 {
-                    LogReceived?.Invoke($"Wi-Fi Direct接続試行: Attempt={attempt}/{ConnectRetryCount}");
-                    WiFiDirectPairingProcedure pairingProcedure = attempt <= ConnectRetryCount / 2
-                        ? WiFiDirectPairingProcedure.GroupOwnerNegotiation
-                        : WiFiDirectPairingProcedure.Invitation;
-
+                    LogReceived?.Invoke(
+                        $"Wi-Fi Direct接続試行: Attempt={attempt}/{ConnectRetryCount}, Procedure={pairingProcedure}");
                     WiFiDirectDevice? device = await CreateDeviceFromIdAsync(
                         connectionDeviceId,
-                        "FromIdAsync",
-                        "Target",
                         preferClientRole: true,
                         pairingProcedure: pairingProcedure);
 
-                    if (device == null)
-                    {
-                        LogReceived?.Invoke($"Wi-Fi Direct接続試行失敗: device=null, Attempt={attempt}/{ConnectRetryCount}");
-                    }
-                    else
+                    if (device != null)
                     {
                         CompleteConnection(peer, device, "Wi-Fi Direct接続成功");
                         return true;
@@ -108,10 +74,9 @@ namespace direct_module.WiFiDirect
                 }
                 catch (Exception ex)
                 {
-                    LogReceived?.Invoke($"Wi-Fi Direct接続試行失敗: Attempt={attempt}/{ConnectRetryCount}");
-                    LogReceived?.Invoke($"例外名: {ex.GetType().Name}");
-                    LogReceived?.Invoke($"HResult: 0x{ex.HResult:X8}");
-                    LogReceived?.Invoke($"Message: {ex.Message}");
+                    LogReceived?.Invoke(
+                        $"Wi-Fi Direct接続試行失敗: Attempt={attempt}/{ConnectRetryCount}, " +
+                        $"{ex.GetType().Name}: {ex.Message}, HResult=0x{ex.HResult:X8}");
                 }
 
                 if (attempt < ConnectRetryCount)
@@ -127,159 +92,113 @@ namespace direct_module.WiFiDirect
             PeerInfo peer,
             WiFiDirectConnectionRequest request)
         {
-            LogReceived?.Invoke("Wi-Fi Direct接続要求Accept開始");
-            LogReceived?.Invoke($"Request Name: {peer.DisplayName}");
-            LogReceived?.Invoke($"Request DeviceId: {peer.DeviceId}");
-            LogReceived?.Invoke($"Request Kind: {peer.DeviceKind}");
-            LogReceived?.Invoke($"Request IsEnabled: {peer.IsEnabled}");
-
-            if (_isAcceptingIncomingConnection)
-            {
-                LogReceived?.Invoke("すでにWi-Fi Direct接続要求Accept処理中です");
-                return;
-            }
-
             if (string.IsNullOrWhiteSpace(peer.DeviceId))
             {
-                LogReceived?.Invoke("接続要求Accept失敗: DeviceId が空です");
+                LogReceived?.Invoke("Wi-Fi Direct Accept失敗: DeviceIdが空です");
                 return;
             }
 
             if (!peer.IsIncomingConnectionRequest && !IsPendingRequestDeviceId(peer.DeviceId))
             {
-                LogReceived?.Invoke("通常DeviceIdなのでAcceptIncomingConnectionAsyncでは処理しません");
+                LogReceived?.Invoke("Wi-Fi Direct Accept失敗: 接続要求ではないDeviceIdです");
                 return;
             }
 
-            _isAcceptingIncomingConnection = true;
-
+            string requestDeviceId = request.DeviceInformation.Id;
+            SemaphoreSlim acceptGate = _acceptGates.GetOrAdd(requestDeviceId, _ => new SemaphoreSlim(1, 1));
+            // 同じ端末から重複した要求だけを直列化し、別端末からの参加要求は並行してAcceptする。
+            await acceptGate.WaitAsync();
             try
             {
-                string requestDeviceId = request.DeviceInformation.Id;
-                LogReceived?.Invoke($"保持中Request DeviceId: {requestDeviceId}");
-
-                WiFiDirectDevice? device = await CreateDeviceFromIdAsync(
-                    requestDeviceId,
-                    "接続要求Accept FromIdAsync",
-                    "Request");
-
+                LogReceived?.Invoke($"Wi-Fi Direct Accept開始: DeviceId={requestDeviceId}");
+                WiFiDirectDevice? device = await CreateDeviceFromIdAsync(requestDeviceId);
                 if (device == null)
                 {
-                    LogReceived?.Invoke("接続要求Accept失敗: FromIdAsync が null を返しました");
+                    LogReceived?.Invoke("Wi-Fi Direct Accept失敗: FromIdAsyncがnullを返しました");
                     return;
                 }
 
-                CompleteConnection(peer, device, "接続要求Accept成功");
+                CompleteConnection(peer, device, "Wi-Fi Direct Accept成功");
             }
             catch (Exception ex)
             {
-                LogFailure("Wi-Fi Direct接続要求Accept失敗", ex, "Request", peer);
+                LogReceived?.Invoke(
+                    $"Wi-Fi Direct Accept失敗: {ex.GetType().Name}: {ex.Message}, HResult=0x{ex.HResult:X8}");
             }
             finally
             {
-                _isAcceptingIncomingConnection = false;
+                acceptGate.Release();
             }
         }
 
         private async Task<WiFiDirectDevice?> CreateDeviceFromIdAsync(
             string deviceId,
-            string operationName,
-            string logPrefix,
             bool preferClientRole = false,
             WiFiDirectPairingProcedure? pairingProcedure = null)
         {
-            bool completed = false;
-
-            LogReceived?.Invoke($"{operationName}開始");
-            _ = Task.Delay(10000).ContinueWith(_ =>
-            {
-                if (!completed)
-                {
-                    LogReceived?.Invoke($"10秒経過: {operationName}がまだ完了していません");
-                    LogReceived?.Invoke($"{logPrefix} DeviceId: {deviceId}");
-                }
-            });
-
+            using var timeout = new CancellationTokenSource(FromIdTimeout);
             try
             {
-                WiFiDirectDevice? device;
                 if (preferClientRole || pairingProcedure.HasValue)
                 {
                     var parameters = new WiFiDirectConnectionParameters
                     {
                         GroupOwnerIntent = preferClientRole ? (short)0 : (short)7
                     };
-
                     parameters.PreferenceOrderedConfigurationMethods.Add(WiFiDirectConfigurationMethod.PushButton);
-
                     if (pairingProcedure.HasValue)
                     {
                         parameters.PreferredPairingProcedure = pairingProcedure.Value;
                     }
 
-                    LogReceived?.Invoke($"Wi-Fi Direct connection parameters: GroupOwnerIntent={parameters.GroupOwnerIntent}, PairingProcedure={parameters.PreferredPairingProcedure}, Config=PushButton");
-                    device = await WiFiDirectDevice.FromIdAsync(deviceId, parameters);
-                }
-                else
-                {
-                    device = await WiFiDirectDevice.FromIdAsync(deviceId);
+                    return await WiFiDirectDevice
+                        .FromIdAsync(deviceId, parameters)
+                        .AsTask(timeout.Token);
                 }
 
-                completed = true;
-
-                LogReceived?.Invoke(device == null
-                    ? $"{operationName}結果: null"
-                    : $"{operationName}成功");
-
-                return device;
+                return await WiFiDirectDevice
+                    .FromIdAsync(deviceId)
+                    .AsTask(timeout.Token);
             }
-            finally
+            catch (OperationCanceledException) when (timeout.IsCancellationRequested)
             {
-                completed = true;
+                throw new TimeoutException($"WiFiDirectDevice.FromIdAsyncが{FromIdTimeout.TotalSeconds:0}秒でタイムアウトしました");
             }
         }
 
         private void CompleteConnection(PeerInfo peer, WiFiDirectDevice device, string successMessage)
         {
             var endpoints = device.GetConnectionEndpointPairs();
+            if (endpoints.Count == 0)
+            {
+                device.Dispose();
+                throw new InvalidOperationException("Wi-Fi Direct接続後のEndpointが取得できませんでした");
+            }
 
-            LogReceived?.Invoke(successMessage);
-            LogReceived?.Invoke($"Endpoint数: {endpoints.Count}");
-
+            string remoteIpAddress = "";
             foreach (var endpoint in endpoints)
             {
-                LogReceived?.Invoke("---- Wi-Fi Direct Endpoint ----");
-                LogReceived?.Invoke($"LocalHostName: {endpoint.LocalHostName.DisplayName}");
-                LogReceived?.Invoke($"LocalServiceName: {endpoint.LocalServiceName}");
-                LogReceived?.Invoke($"RemoteHostName: {endpoint.RemoteHostName.DisplayName}");
-                LogReceived?.Invoke($"RemoteServiceName: {endpoint.RemoteServiceName}");
-
-                if (!string.Equals(peer.RemoteIpAddress, endpoint.RemoteHostName.DisplayName, StringComparison.OrdinalIgnoreCase))
+                string candidate = endpoint.RemoteHostName?.DisplayName ?? "";
+                if (!string.IsNullOrWhiteSpace(candidate))
                 {
-                    peer.RemoteIpAddress = endpoint.RemoteHostName.DisplayName;
-                    LogReceived?.Invoke($"Wi-Fi Direct RemoteIpAddress保存: {peer.RemoteIpAddress}");
+                    remoteIpAddress = candidate;
+                    break;
                 }
             }
 
+            if (string.IsNullOrWhiteSpace(remoteIpAddress))
+            {
+                device.Dispose();
+                throw new InvalidOperationException("Wi-Fi Direct接続後のRemoteHostNameが取得できませんでした");
+            }
+
+            peer.RemoteIpAddress = remoteIpAddress;
             peer.IsConnected = true;
-
-            var session = new WiFiDirectSession(peer, device);
-            Connected?.Invoke(session);
+            LogReceived?.Invoke($"{successMessage}: RemoteIpAddress={remoteIpAddress}, EndpointCount={endpoints.Count}");
+            Connected?.Invoke(new WiFiDirectSession(peer, device));
         }
 
-        private void LogFailure(string title, Exception ex, string prefix, PeerInfo peer)
-        {
-            LogReceived?.Invoke(title);
-            LogReceived?.Invoke($"例外名: {ex.GetType().Name}");
-            LogReceived?.Invoke($"HResult: 0x{ex.HResult:X8}");
-            LogReceived?.Invoke($"Message: {ex.Message}");
-            LogReceived?.Invoke($"{prefix} Name: {peer.DisplayName}");
-            LogReceived?.Invoke($"{prefix} DeviceId: {peer.WiFiDirectDeviceIdForConnection}");
-        }
-
-        private static bool IsPendingRequestDeviceId(string deviceId)
-        {
-            return deviceId.Contains("_PendingRequest", StringComparison.OrdinalIgnoreCase);
-        }
+        private static bool IsPendingRequestDeviceId(string deviceId) =>
+            deviceId.Contains("_PendingRequest", StringComparison.OrdinalIgnoreCase);
     }
 }

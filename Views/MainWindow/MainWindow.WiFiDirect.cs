@@ -16,10 +16,18 @@ namespace direct_module
 {
     public sealed partial class MainWindow
     {
-        private void StartListener_Click(object sender, RoutedEventArgs e)
+        private async void StartListener_Click(object sender, RoutedEventArgs e)
         {
             _chatRole = ChatRole.Host;
-            _manager.Start(Environment.MachineName, GetLocalShortSessionId());
+            try
+            {
+                await _manager.StartAsync(Environment.MachineName, GetLocalShortSessionId());
+            }
+            catch (Exception ex)
+            {
+                AddLog($"Wi-Fi Direct広告開始失敗: {ex.GetType().Name}: {ex.Message}", LogLevel.Error);
+                return;
+            }
             AddLog("Wi-Fi Direct広告+待ち受け開始ボタンを押しました");
             AddLog("Chat Role: Host");
             RunSafelyInBackground(
@@ -110,9 +118,8 @@ namespace direct_module
                 RefreshPeerDisplay(peer);
 
                 AddLog($"Wi-Fi Direct接続開始: {peer.DisplayText}");
-                _manager.StopAdvertisement();
-                _manager.StopScan();
-                await System.Threading.Tasks.Task.Delay(WiFiDirectScanRestartDelay);
+                await _manager.StopAdvertisementAsync();
+                await _manager.StopScanAsync();
 
                 connectAttempted = true;
                 await _manager.ConnectAsync(peer);
@@ -147,21 +154,10 @@ namespace direct_module
         {
             AddLog($"接続前にWi-Fi Direct候補を再探索します: Peer={peer.DisplayName}");
 
-            if (HasUsableWiFiDirectCandidate(peer))
-            {
-                AddLog($"Wi-Fi Direct candidate is already available. Reusing DeviceId={peer.WiFiDirectDeviceIdForConnection}", LogLevel.Debug);
-                _manager.StopScan();
-                await System.Threading.Tasks.Task.Delay(WiFiDirectScanRestartDelay);
-                return true;
-            }
-
-            _manager.StopScan();
-            await System.Threading.Tasks.Task.Delay(WiFiDirectScanRestartDelay);
+            // DeviceIdは列挙ごとに変わることがあるため、接続直前に必ず再取得する。
+            await _manager.StopScanAsync();
 
             ClearWiFiDirectCandidateForPreConnect(peer);
-
-            AddLog($"GO再広告待機: {WiFiDirectGoAdvertisementWait.TotalSeconds:0.0}秒");
-            await System.Threading.Tasks.Task.Delay(WiFiDirectGoAdvertisementWait);
 
             AddLog("接続前Wi-Fi Direct再スキャン開始");
             await _manager.StartAssociationEndpointScanAsync();
@@ -169,11 +165,11 @@ namespace direct_module
             if (await WaitForWiFiDirectCandidateAsync(peer, WiFiDirectCandidateRefreshTimeout))
             {
                 AddLog($"Wi-Fi Direct候補再取得: Peer={peer.DisplayName}, DeviceId={peer.WiFiDirectDeviceIdForConnection}", LogLevel.Success);
-                _manager.StopScan();
-                await System.Threading.Tasks.Task.Delay(WiFiDirectScanRestartDelay);
+                await _manager.StopScanAsync();
                 return true;
             }
 
+            await _manager.StopScanAsync();
             return false;
         }
 
@@ -216,7 +212,12 @@ namespace direct_module
 
         private static bool HasUsableWiFiDirectCandidate(PeerInfo peer)
         {
+            bool? isEnabled = !string.IsNullOrWhiteSpace(peer.DeviceId)
+                ? peer.IsEnabled
+                : peer.PendingWiFiDirectIsEnabled;
+
             return peer.DiscoveredByWiFiDirect &&
+                   isEnabled != false &&
                    !string.IsNullOrWhiteSpace(peer.WiFiDirectDeviceIdForConnection) &&
                    !peer.WiFiDirectDeviceIdForConnection.Contains("_PendingRequest", StringComparison.OrdinalIgnoreCase);
         }
@@ -375,7 +376,7 @@ namespace direct_module
                     peer.IsTcpConnected = false;
                     peer.IsHelloVerified = false;
                     peer.IsChatReady = false;
-                    await _manager.ConnectAsync(peer);
+                    await ConnectPeerAsync(peer);
                     RefreshPeerDisplay(peer);
                     return;
                 }

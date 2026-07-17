@@ -15,7 +15,7 @@ namespace direct_module
 {
     public sealed partial class MainWindow
     {
-        private void SearchPeers_Click(object sender, RoutedEventArgs e)
+        private async void SearchPeers_Click(object sender, RoutedEventArgs e)
         {
             AddLog("相手探索開始");
             AddLog($"Local ShortSessionId: {GetLocalShortSessionId()}");
@@ -27,7 +27,15 @@ namespace direct_module
             Interlocked.Increment(ref _bleRoleGeneration);
             _pendingIncomingWiFiDirectPeers.Clear();
 
-            _manager.Start(Environment.MachineName, GetLocalShortSessionId());
+            try
+            {
+                await _manager.StartAsync(Environment.MachineName, GetLocalShortSessionId());
+            }
+            catch (Exception ex)
+            {
+                AddLog($"Wi-Fi Direct広告開始失敗: {ex.GetType().Name}: {ex.Message}", LogLevel.Error);
+                return;
+            }
             StartBleAdvertiseCore();
             _discoveryManager.StartScan();
 
@@ -127,7 +135,7 @@ namespace direct_module
 
                 if (!_isAutonomousGoAdvertisementEnabled)
                 {
-                    _manager.RestartAdvertisement(
+                    await _manager.RestartAdvertisementAsync(
                         Environment.MachineName,
                         GetLocalShortSessionId(),
                         autonomousGroupOwner: true);
@@ -149,18 +157,17 @@ namespace direct_module
 
             SetActiveBleRole(peerKey, localIsGo: false);
             _isClientWiFiDirectScanScheduled = true;
-            _manager.StopAdvertisement();
+            await _manager.StopAdvertisementAsync();
 
             if (_isAutonomousGoAdvertisementEnabled)
             {
-                _manager.RestartAdvertisement(
+                await _manager.RestartAdvertisementAsync(
                     Environment.MachineName,
                     GetLocalShortSessionId(),
                     autonomousGroupOwner: false);
                 _isAutonomousGoAdvertisementEnabled = false;
             }
 
-            await System.Threading.Tasks.Task.Delay(1500);
             if (generation != Volatile.Read(ref _bleRoleGeneration) ||
                 !IsSameActiveBleRole(peerKey, localIsGo: false))
             {
