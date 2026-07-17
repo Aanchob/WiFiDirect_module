@@ -47,7 +47,18 @@ namespace direct_module
                     GetLocalShortSessionId(),
                     isGroup,
                     conversationId,
-                    message => SendNetworkMessageAsync(message, isGroup, connection));
+                    message =>
+                    {
+                        if (!isGroup && peer != null)
+                        {
+                            message.ReceiverId = string.IsNullOrWhiteSpace(peer.PeerId)
+                                ? PeerIdentityService.GetConnectionId(peer)
+                                : peer.PeerId;
+                            message.ReceiverName = peer.DisplayName;
+                        }
+
+                        return SendNetworkMessageAsync(message, isGroup, connection);
+                    });
 
                 var historyMessage = new ChatMessage
                 {

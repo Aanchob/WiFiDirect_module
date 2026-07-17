@@ -40,6 +40,7 @@ namespace direct_module.Services
             target.IsTcpConnected |= source.IsTcpConnected;
             target.IsHelloVerified |= source.IsHelloVerified;
             target.IsChatReady |= source.IsChatReady;
+            target.IsRelayPeer |= source.IsRelayPeer;
             CopyIfPresent(source.StatusText, value => target.StatusText = value);
 
             ClearPending(target);

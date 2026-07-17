@@ -249,6 +249,21 @@ namespace direct_module.Services
             return changed;
         }
 
+        public IReadOnlyList<PeerInfo> RemoveRelayPeersExcept(ISet<string> activePeerIds)
+        {
+            List<PeerInfo> removed = _peers
+                .Where(peer =>
+                    peer.IsRelayPeer &&
+                    !activePeerIds.Contains(peer.PeerId))
+                .ToList();
+            foreach (PeerInfo peer in removed)
+            {
+                _peers.Remove(peer);
+            }
+
+            return removed;
+        }
+
         private bool IsRoleCompatible(PeerInfo existing, PeerInfo incoming)
         {
             if (!PeerMatchService.IsBleWiFiDirectPair(existing, incoming)) return false;

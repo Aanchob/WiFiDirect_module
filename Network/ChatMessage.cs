@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 
 namespace direct_module.Network
 {
@@ -13,6 +14,10 @@ namespace direct_module.Network
         public string SenderName { get; set; } = "";
 
         public string ShortSessionId { get; set; } = "";
+
+        public string ReceiverId { get; set; } = "";
+
+        public string ReceiverName { get; set; } = "";
 
         public string Body { get; set; } = "";
 
@@ -33,5 +38,16 @@ namespace direct_module.Network
         public int? ChunkCount { get; set; }
 
         public string? ChunkBase64 { get; set; }
+
+        public List<ChatParticipant>? Participants { get; set; }
+    }
+
+    public sealed class ChatParticipant
+    {
+        public string PeerId { get; set; } = "";
+
+        public string PeerName { get; set; } = "";
+
+        public string ShortSessionId { get; set; } = "";
     }
 }

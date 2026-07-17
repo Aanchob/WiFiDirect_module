@@ -77,6 +77,8 @@ public class PeerInfo
 
     public bool IsGroupChat { get; set; }
 
+    public bool IsRelayPeer { get; set; }
+
     public bool CanConnect { get; set; }
 
     public double ConnectButtonOpacity => CanConnect && !IsGroupChat ? 1.0 : 0.25;
@@ -88,6 +90,11 @@ public class PeerInfo
             if (IsGroupChat)
             {
                 return "Group";
+            }
+
+            if (IsRelayPeer)
+            {
+                return "Host relay";
             }
 
             if (DiscoveredByBle && DiscoveredByWiFiDirect)
@@ -111,6 +118,11 @@ public class PeerInfo
             if (IsGroupChat)
             {
                 return "接続中の相手全員に送信します";
+            }
+
+            if (IsRelayPeer)
+            {
+                return $"{DisplayName} / Host経由 / 個別チャット可能 / ShortSessionId:{ShortSessionId}";
             }
 
             string bleText = DiscoveredByBle ? "BLE:発見済み" : "BLE:未発見";

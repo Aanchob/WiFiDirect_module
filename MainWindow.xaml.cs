@@ -650,7 +650,7 @@ namespace direct_module
                 return null;
             }
 
-            if (string.IsNullOrWhiteSpace(peer.RemoteIpAddress))
+            if (!peer.IsRelayPeer && string.IsNullOrWhiteSpace(peer.RemoteIpAddress))
             {
                 AddLog("送信先RemoteIpAddressがありません。先にWi-Fi Direct接続してください。", LogLevel.Error);
                 return null;
@@ -894,6 +894,12 @@ namespace direct_module
                 case "chat":
                     break;
 
+                case "peer_list":
+                    EnqueueAsyncSafely(
+                        () => HandleParticipantListAsync(message),
+                        "参加者一覧更新");
+                    return;
+
                 case "ping":
                     EnqueueAsyncSafely(
                         () => HandlePingMessageAsync(message, sourceConnection),
@@ -930,12 +936,27 @@ namespace direct_module
                     return;
             }
 
+            if (_chatRole == ChatRole.Host &&
+                !message.IsGroup &&
+                !IsMessageForLocalPeer(message))
+            {
+                await RelayDirectMessageAsync(message, sourceConnection);
+                return;
+            }
+
             DispatcherQueue.TryEnqueue(() =>
             {
+                PeerInfo? messagePeer = !string.IsNullOrWhiteSpace(message.SenderId)
+                    ? FindPeerByPeerId(message.SenderId)
+                    : null;
                 AddChatMessage(
                     $"{message.SenderName}: {message.Body}",
                     GetConversationIdForMessage(message, sourceConnection));
-                SaveChatMessageSafely(message, false, FindPeerForConnection(sourceConnection), sourceConnection);
+                SaveChatMessageSafely(
+                    message,
+                    false,
+                    messagePeer ?? FindPeerForConnection(sourceConnection),
+                    sourceConnection);
                 AddLog($"TCP受信メッセージ: {message.Body}", LogLevel.Success);
                 AddConnectedPeerDisplay(sourceConnection);
             });
@@ -955,6 +976,110 @@ namespace direct_module
             }
         }
 
+        private bool IsMessageForLocalPeer(ChatMessage message)
+        {
+            return string.IsNullOrWhiteSpace(message.ReceiverId) ||
+                   string.Equals(message.ReceiverId, LocalPeerId, StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(message.ReceiverId, GetLocalShortSessionId(), StringComparison.OrdinalIgnoreCase);
+        }
+
+        private async System.Threading.Tasks.Task RelayDirectMessageAsync(
+            ChatMessage message,
+            ChatConnection sourceConnection)
+        {
+            ChatConnection? target = _chatConnectionManager.FindByIdentity(message.ReceiverId);
+            if (target == null || !target.IsConnected || !target.IsReady || ReferenceEquals(target, sourceConnection))
+            {
+                EnqueueLog(
+                    $"個別メッセージの中継先が見つかりません: Receiver={message.ReceiverName}/{message.ReceiverId}",
+                    LogLevel.Error);
+                return;
+            }
+
+            await target.SendAsync(message);
+            EnqueueLog(
+                $"個別メッセージをHost経由で中継しました: From={message.SenderName}, To={message.ReceiverName}",
+                LogLevel.Debug);
+        }
+
+        private System.Threading.Tasks.Task HandleParticipantListAsync(ChatMessage message)
+        {
+            if (_chatRole == ChatRole.Host || message.Participants == null)
+            {
+                return System.Threading.Tasks.Task.CompletedTask;
+            }
+
+            var activePeerIds = message.Participants
+                .Where(participant => !string.IsNullOrWhiteSpace(participant.PeerId))
+                .Select(participant => participant.PeerId)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            foreach (PeerInfo removedPeer in _peerRegistryService.RemoveRelayPeersExcept(activePeerIds))
+            {
+                bool wasSelected = ReferenceEquals(PeerList.SelectedItem, removedPeer);
+                PeerList.Items.Remove(removedPeer);
+                if (wasSelected)
+                {
+                    PeerList.SelectedItem = PeerList.Items
+                        .Cast<PeerInfo>()
+                        .FirstOrDefault(peer => peer.IsGroupChat);
+                }
+            }
+
+            foreach (ChatParticipant participant in message.Participants)
+            {
+                if (string.IsNullOrWhiteSpace(participant.PeerId) ||
+                    string.Equals(participant.PeerId, LocalPeerId, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                ChatConnection? directConnection = _chatConnectionManager.FindByIdentity(participant.PeerId);
+                PeerInfo? existing = FindPeerByPeerId(participant.PeerId);
+                if (directConnection != null)
+                {
+                    if (existing != null && !string.IsNullOrWhiteSpace(participant.PeerName))
+                    {
+                        existing.DisplayName = participant.PeerName;
+                        RefreshPeerDisplay(existing);
+                    }
+
+                    continue;
+                }
+
+                var relayPeer = new PeerInfo
+                {
+                    DisplayName = string.IsNullOrWhiteSpace(participant.PeerName)
+                        ? participant.PeerId
+                        : participant.PeerName,
+                    PeerId = participant.PeerId,
+                    ShortSessionId = participant.ShortSessionId,
+                    MatchKey = participant.ShortSessionId,
+                    IsRelayPeer = true,
+                    IsConnected = true,
+                    IsTcpConnected = true,
+                    IsHelloVerified = true,
+                    IsChatReady = true,
+                    MatchState = PeerMatchState.Confirmed,
+                    MatchScore = 100,
+                    MatchReason = "Host参加者一覧",
+                    StatusText = "Host経由で個別チャット可能"
+                };
+                PeerInfo registeredPeer = AddOrMergePeer(relayPeer);
+                registeredPeer.IsRelayPeer = true;
+                registeredPeer.IsConnected = true;
+                registeredPeer.IsTcpConnected = true;
+                registeredPeer.IsHelloVerified = true;
+                registeredPeer.IsChatReady = true;
+                registeredPeer.StatusText = "Host経由で個別チャット可能";
+                RefreshPeerDisplay(registeredPeer);
+            }
+
+            UpdatePeerCount();
+            UpdateSendButtonState();
+            AddLog("Hostから参加者一覧を受信しました", LogLevel.Success);
+            return System.Threading.Tasks.Task.CompletedTask;
+        }
+
         private async System.Threading.Tasks.Task ProcessFileTransferMessageAsync(ChatMessage message, ChatConnection sourceConnection)
         {
             await _fileTransferReceiveGate.WaitAsync();
@@ -972,6 +1097,14 @@ namespace direct_module
         {
             try
             {
+                if (_chatRole == ChatRole.Host &&
+                    !message.IsGroup &&
+                    !IsMessageForLocalPeer(message))
+                {
+                    await RelayDirectMessageAsync(message, sourceConnection);
+                    return;
+                }
+
                 if (_chatRole == ChatRole.Host && message.IsGroup)
                 {
                     await _chatConnectionManager.BroadcastExceptAsync(message, sourceConnection);
@@ -1015,7 +1148,14 @@ namespace direct_module
                                 ConversationId = message.ConversationId
                             };
 
-                            SaveChatMessageSafely(historyMessage, false, FindPeerForConnection(sourceConnection), sourceConnection);
+                            PeerInfo? historyPeer = !string.IsNullOrWhiteSpace(message.SenderId)
+                                ? FindPeerByPeerId(message.SenderId)
+                                : null;
+                            SaveChatMessageSafely(
+                                historyMessage,
+                                false,
+                                historyPeer ?? FindPeerForConnection(sourceConnection),
+                                sourceConnection);
                         }
                     });
                 }
@@ -1142,6 +1282,10 @@ namespace direct_module
             ApplyPendingIncomingWiFiDirectCandidate(matchedPeer, sourceConnection.RemoteIpAddress);
             ApplyHelloToPeer(matchedPeer, message, sourceConnection);
             SelectConnectedPeerIfNeeded(matchedPeer);
+            if (_chatRole == ChatRole.Host)
+            {
+                await PublishParticipantListAsync();
+            }
             AddLog($"HELLO確認後にPeerを正式統合: {matchedPeer.DisplayName}", LogLevel.Success);
             AddLog($"ChatConnectionとPeerInfoを紐付けました: {matchedPeer.DisplayName}");
             AddLog($"PeerごとのHELLO確認成功: {matchedPeer.DisplayName}", LogLevel.Success);
@@ -1164,6 +1308,47 @@ namespace direct_module
             UpdateSelectedPeerDetails(connectedPeer);
             UpdateSendButtonState();
             AddLog($"接続された相手を自動選択しました: {connectedPeer.DisplayName}", LogLevel.Success);
+        }
+
+        private async System.Threading.Tasks.Task PublishParticipantListAsync()
+        {
+            var participants = new List<ChatParticipant>
+            {
+                new()
+                {
+                    PeerId = LocalPeerId,
+                    PeerName = Environment.MachineName,
+                    ShortSessionId = GetLocalShortSessionId()
+                }
+            };
+
+            participants.AddRange(
+                _chatConnectionManager.Connections
+                    .Where(connection =>
+                        connection.IsConnected &&
+                        connection.IsReady &&
+                        !string.IsNullOrWhiteSpace(connection.PeerId))
+                    .Select(connection => new ChatParticipant
+                    {
+                        PeerId = connection.PeerId,
+                        PeerName = connection.PeerName,
+                        ShortSessionId = connection.ShortSessionId
+                    }));
+
+            var participantList = new ChatMessage
+            {
+                Type = "peer_list",
+                SenderId = LocalPeerId,
+                SenderName = Environment.MachineName,
+                ShortSessionId = GetLocalShortSessionId(),
+                Participants = participants
+                    .GroupBy(participant => participant.PeerId, StringComparer.OrdinalIgnoreCase)
+                    .Select(group => group.First())
+                    .ToList()
+            };
+
+            await _chatConnectionManager.BroadcastAsync(participantList);
+            AddLog($"参加者一覧を配信しました: {participantList.Participants.Count}人", LogLevel.Debug);
         }
 
         private PeerInfo? FindPeerByShortSessionId(string shortSessionId)
@@ -1300,6 +1485,10 @@ namespace direct_module
 
                 UpdateSendButtonState();
                 AddLog($"Peer切断: {GetConnectionPeerName(connection)}", LogLevel.Error);
+                if (_chatRole == ChatRole.Host)
+                {
+                    RunSafelyInBackground(PublishParticipantListAsync, "参加者一覧再配信");
+                }
             });
         }
 
@@ -1498,6 +1687,12 @@ namespace direct_module
 
         private ChatConnection? GetConnectionForPeer(PeerInfo peer)
         {
+            if (peer.IsRelayPeer)
+            {
+                return _chatConnectionManager.Connections
+                    .FirstOrDefault(connection => connection.IsConnected && connection.IsReady);
+            }
+
             return _chatConnectionManager.FindForPeer(peer);
         }
 

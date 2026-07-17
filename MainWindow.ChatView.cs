@@ -58,6 +58,10 @@ namespace direct_module
                     return;
                 }
 
+                message.ReceiverId = string.IsNullOrWhiteSpace(peer.PeerId)
+                    ? PeerIdentityService.GetConnectionId(peer)
+                    : peer.PeerId;
+                message.ReceiverName = peer.DisplayName;
                 await connection.SendAsync(message);
                 AddChatMessage($"自分: {body}", PeerIdentityService.GetConnectionId(peer));
                 SaveChatMessageSafely(message, true, peer, connection);
@@ -172,6 +176,10 @@ namespace direct_module
             }
 
             PeerInfo? peer = FindPeerForConnection(connection);
+            if (!string.IsNullOrWhiteSpace(message.SenderId))
+            {
+                peer = FindPeerByPeerId(message.SenderId) ?? peer;
+            }
             if (peer != null)
             {
                 return PeerIdentityService.GetConnectionId(peer);

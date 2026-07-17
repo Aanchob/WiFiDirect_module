@@ -112,6 +112,12 @@ namespace direct_module.Network
             return FindByPeerId(peerId);
         }
 
+        public ChatConnection? FindByIdentity(string peerIdOrShortSessionId)
+        {
+            return FindByPeerId(peerIdOrShortSessionId) ??
+                   FindByShortSessionId(peerIdOrShortSessionId);
+        }
+
         public ChatConnection? FindByShortSessionId(string shortSessionId)
         {
             if (string.IsNullOrWhiteSpace(shortSessionId))
@@ -364,8 +370,8 @@ namespace direct_module.Network
         private void OnConnectionDisconnected(ChatConnection connection)
         {
             LogReceived?.Invoke($"ChatConnectionManagerから切断Connectionを削除: Peer={connection.PeerName}");
-            ConnectionDisconnected?.Invoke(connection);
             RemoveConnection(connection);
+            ConnectionDisconnected?.Invoke(connection);
         }
 
         private static string GetConnectionPeerName(ChatConnection connection)
