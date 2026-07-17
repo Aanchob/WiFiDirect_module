@@ -47,6 +47,18 @@ public class WiFiDirectListener
         }
     }
 
+    public void Stop()
+    {
+        if (!_isStarted)
+        {
+            return;
+        }
+
+        _listener.ConnectionRequested -= OnConnectionRequested;
+        _isStarted = false;
+        LogReceived?.Invoke("Wi-Fi Direct Listener停止");
+    }
+
     private void OnConnectionRequested(
         WiFiDirectConnectionListener sender,
         WiFiDirectConnectionRequestedEventArgs args)

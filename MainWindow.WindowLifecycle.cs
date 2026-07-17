@@ -25,6 +25,10 @@ namespace direct_module
         private void MainWindow_Closed(object sender, WindowEventArgs args)
         {
             _chatConnectionManager.StopKeepAlive();
+            _chatConnectionManager.CloseAll();
+            _tcpServer.Stop();
+            _discoveryManager.StopScan();
+            _discoveryManager.StopAdvertise();
             _manager.Stop();
         }
 

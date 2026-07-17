@@ -111,7 +111,8 @@ namespace direct_module.Services
         public PeerRegistrationResult Register(PeerInfo incoming)
         {
             if (incoming.IsIncomingConnectionRequest ||
-                incoming.DeviceId.Contains("_PendingRequest", StringComparison.OrdinalIgnoreCase))
+                (!string.IsNullOrWhiteSpace(incoming.DeviceId) &&
+                 incoming.DeviceId.Contains("_PendingRequest", StringComparison.OrdinalIgnoreCase)))
             {
                 return Result(incoming, PeerRegistrationKind.IgnoredPendingRequest);
             }

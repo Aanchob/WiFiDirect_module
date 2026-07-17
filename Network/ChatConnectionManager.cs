@@ -12,9 +12,11 @@ namespace direct_module.Network
     {
         private static readonly TimeSpan PingInterval = TimeSpan.FromSeconds(10);
         private static readonly TimeSpan PongTimeout = TimeSpan.FromSeconds(30);
+        private const int MaxRememberedMessageIds = 10000;
 
         private readonly List<ChatConnection> _connections = new();
         private readonly HashSet<string> _receivedMessageIds = new(StringComparer.OrdinalIgnoreCase);
+        private readonly Queue<string> _receivedMessageIdOrder = new();
         private readonly object _lock = new();
         private CancellationTokenSource? _keepAliveCancellation;
         private Task? _keepAliveTask;
@@ -226,10 +228,7 @@ namespace direct_module.Network
             LogReceived?.Invoke($"Host Broadcast対象Connection数: {targets.Count}");
             LogReceived?.Invoke($"ChatConnectionManager: Broadcast開始 TargetCount={targets.Count}, MessageId={message.MessageId}");
 
-            foreach (ChatConnection connection in targets)
-            {
-                await connection.SendAsync(message);
-            }
+            await Task.WhenAll(targets.Select(connection => connection.SendAsync(message)));
 
             LogReceived?.Invoke("ChatConnectionManager: Broadcast完了");
         }
@@ -243,7 +242,26 @@ namespace direct_module.Network
 
             lock (_lock)
             {
-                return _receivedMessageIds.Add(messageId);
+                if (!_receivedMessageIds.Add(messageId))
+                {
+                    return false;
+                }
+
+                _receivedMessageIdOrder.Enqueue(messageId);
+                while (_receivedMessageIdOrder.Count > MaxRememberedMessageIds)
+                {
+                    _receivedMessageIds.Remove(_receivedMessageIdOrder.Dequeue());
+                }
+
+                return true;
+            }
+        }
+
+        public void CloseAll()
+        {
+            foreach (ChatConnection connection in Connections)
+            {
+                connection.Close();
             }
         }
 
@@ -298,7 +316,16 @@ namespace direct_module.Network
                 }
 
                 LogReceived?.Invoke($"定期PING送信: Peer={GetConnectionPeerName(connection)}");
-                await connection.SendPingAsync(senderId, senderName, shortSessionId);
+                try
+                {
+                    await connection.SendPingAsync(senderId, senderName, shortSessionId);
+                }
+                catch (Exception ex)
+                {
+                    LogReceived?.Invoke(
+                        $"定期PING送信失敗: Peer={GetConnectionPeerName(connection)}, {ex.GetType().Name}: {ex.Message}");
+                    connection.Close();
+                }
             }
         }
 

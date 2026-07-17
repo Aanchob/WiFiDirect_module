@@ -45,6 +45,7 @@ namespace direct_module
         private static readonly TimeSpan WiFiDirectGoAdvertisementWait = TimeSpan.FromSeconds(3);
         private static readonly TimeSpan WiFiDirectCandidateRefreshTimeout = TimeSpan.FromSeconds(10);
         private static readonly TimeSpan WiFiDirectCandidatePollInterval = TimeSpan.FromMilliseconds(250);
+        private static readonly TimeSpan HelloTimeout = TimeSpan.FromSeconds(15);
 
         private readonly DiscoveryManager _discoveryManager;
         private readonly WiFiDirectManager _manager;
@@ -61,12 +62,14 @@ namespace direct_module
         private readonly PeerRegistryService _peerRegistryService;
         private readonly FileTransferService _fileTransferService = new();
         private readonly SemaphoreSlim _fileTransferReceiveGate = new(1, 1);
+        private readonly SemaphoreSlim _tcpServerStartGate = new(1, 1);
         private readonly ConcurrentDictionary<string, PeerInfo> _pendingIncomingWiFiDirectPeers =
             new(StringComparer.OrdinalIgnoreCase);
         private bool _isAutonomousGoAdvertisementEnabled;
         private string _activeBleRolePeerKey = "";
         private bool? _activeBleRoleIsGo;
         private bool _isClientWiFiDirectScanScheduled;
+        private int _bleRoleGeneration;
 
         private ChatRole _chatRole = ChatRole.Client;
 
@@ -121,12 +124,12 @@ namespace direct_module
             Closed += MainWindow_Closed;
 
             AddGroupChatPeer();
-            SetChatReady(false);
+            UpdateSendButtonState();
             UpdatePeerCount();
             UpdateSelectedPeerDetails(null);
         }
 
-        private async void SearchPeers_Click(object sender, RoutedEventArgs e)
+        private void SearchPeers_Click(object sender, RoutedEventArgs e)
         {
             AddLog("相手探索開始");
             AddLog($"Local ShortSessionId: {GetLocalShortSessionId()}");
@@ -135,6 +138,8 @@ namespace direct_module
             _activeBleRolePeerKey = "";
             _activeBleRoleIsGo = null;
             _isClientWiFiDirectScanScheduled = false;
+            Interlocked.Increment(ref _bleRoleGeneration);
+            _pendingIncomingWiFiDirectPeers.Clear();
 
             _manager.Start(Environment.MachineName, GetLocalShortSessionId());
             StartBleAdvertiseCore();
@@ -146,27 +151,33 @@ namespace direct_module
             AddLog("相手探索処理を開始しました");
         }
 
-        private async void StartListener_Click(object sender, RoutedEventArgs e)
+        private void StartListener_Click(object sender, RoutedEventArgs e)
         {
             _chatRole = ChatRole.Host;
             _manager.Start(Environment.MachineName, GetLocalShortSessionId());
             AddLog("Wi-Fi Direct広告+待ち受け開始ボタンを押しました");
             AddLog("Chat Role: Host");
-            await EnsureTcpServerStartedAsync("Wi-Fi Direct広告+待ち受け開始");
+            RunSafelyInBackground(
+                () => EnsureTcpServerStartedAsync("Wi-Fi Direct広告+待ち受け開始"),
+                "Wi-Fi Direct広告+待ち受け開始");
         }
 
-        private async void SearchButton_Click(object sender, RoutedEventArgs e)
+        private void SearchButton_Click(object sender, RoutedEventArgs e)
         {
             AddLog("AssociationEndpoint探索ボタンを押しました");
             ClearStaleWiFiDirectPeers();
-            await _manager.StartAssociationEndpointScanAsync();
+            RunSafelyInBackground(
+                () => _manager.StartAssociationEndpointScanAsync(),
+                "AssociationEndpoint探索");
         }
 
-        private async void SearchDefaultButton_Click(object sender, RoutedEventArgs e)
+        private void SearchDefaultButton_Click(object sender, RoutedEventArgs e)
         {
             AddLog("通常Wi-Fi Direct探索ボタンを押しました");
             ClearStaleWiFiDirectPeers();
-            await _manager.StartDefaultScanAsync();
+            RunSafelyInBackground(
+                () => _manager.StartDefaultScanAsync(),
+                "通常Wi-Fi Direct探索");
         }
 
         private void StartBleAdvertise_Click(object sender, RoutedEventArgs e)
@@ -194,14 +205,16 @@ namespace direct_module
             _discoveryManager.StartScan();
         }
 
-        private async void StartTcpServer_Click(object sender, RoutedEventArgs e)
+        private void StartTcpServer_Click(object sender, RoutedEventArgs e)
         {
             _chatRole = ChatRole.Host;
             AddLog("Chat Role: Host");
-            await EnsureTcpServerStartedAsync("手動操作");
+            RunSafelyInBackground(
+                () => EnsureTcpServerStartedAsync("手動操作"),
+                "TCP待ち受け開始");
         }
 
-        private async void ConnectSelected_Click(object sender, RoutedEventArgs e)
+        private void ConnectSelected_Click(object sender, RoutedEventArgs e)
         {
             if (PeerList.SelectedItem is not PeerInfo peer)
             {
@@ -209,10 +222,10 @@ namespace direct_module
                 return;
             }
 
-            await ConnectPeerAsync(peer);
+            RunSafelyInBackground(() => ConnectPeerAsync(peer), "選択Peer接続");
         }
 
-        private async void ConnectPeerItem_Click(object sender, RoutedEventArgs e)
+        private void ConnectPeerItem_Click(object sender, RoutedEventArgs e)
         {
             if ((sender as FrameworkElement)?.DataContext is not PeerInfo peer)
             {
@@ -221,11 +234,17 @@ namespace direct_module
             }
 
             PeerList.SelectedItem = peer;
-            await ConnectPeerAsync(peer);
+            RunSafelyInBackground(() => ConnectPeerAsync(peer), "Peer接続");
         }
 
         private async System.Threading.Tasks.Task ConnectPeerAsync(PeerInfo peer)
         {
+            if (peer.IsConnectingWiFiDirect)
+            {
+                AddLog($"Wi-Fi Direct接続処理中のため重複要求を無視します: Peer={peer.DisplayName}", LogLevel.Debug);
+                return;
+            }
+
             _peerConnectionStateService.UpdateConnectAvailability(peer);
             if (!peer.CanConnect)
             {
@@ -235,16 +254,16 @@ namespace direct_module
                 return;
             }
 
-            string connectionDeviceId = peer.WiFiDirectDeviceIdForConnection;
-            if (connectionDeviceId.Contains("_PendingRequest", StringComparison.OrdinalIgnoreCase))
-            {
-                AddLog("_PendingRequest付きDeviceIdのため通常接続を中止します", LogLevel.Error);
-                return;
-            }
-
+            string? connectionDeviceId = peer.WiFiDirectDeviceIdForConnection;
             if (string.IsNullOrWhiteSpace(connectionDeviceId))
             {
                 AddLog("選択中PeerにWi-Fi Direct DeviceIdがありません", LogLevel.Error);
+                return;
+            }
+
+            if (connectionDeviceId.Contains("_PendingRequest", StringComparison.OrdinalIgnoreCase))
+            {
+                AddLog("_PendingRequest付きDeviceIdのため通常接続を中止します", LogLevel.Error);
                 return;
             }
 
@@ -284,6 +303,11 @@ namespace direct_module
 
                 connectAttempted = true;
                 await _manager.ConnectAsync(peer);
+            }
+            catch (Exception ex)
+            {
+                peer.StatusText = "Wi-Fi Direct接続失敗";
+                AddLog($"Wi-Fi Direct接続失敗: Peer={peer.DisplayName}, {ex.GetType().Name}: {ex.Message}", LogLevel.Error);
             }
             finally
             {
@@ -397,7 +421,7 @@ namespace direct_module
             LogTextBox.Text = string.Empty;
         }
 
-        private async void ReconnectButton_Click(object sender, RoutedEventArgs e)
+        private void ReconnectButton_Click(object sender, RoutedEventArgs e)
         {
             if (PeerList.SelectedItem is not PeerInfo peer)
             {
@@ -405,7 +429,7 @@ namespace direct_module
                 return;
             }
 
-            await ReconnectPeerAsync(peer);
+            RunSafelyInBackground(() => ReconnectPeerAsync(peer), "Peer再接続");
         }
 
         private void ScrollLogBottom_Click(object sender, RoutedEventArgs e)
@@ -415,7 +439,7 @@ namespace direct_module
 
         private void OnPeerFound(PeerInfo peer)
         {
-            DispatcherQueue.TryEnqueue(async () =>
+            EnqueueAsyncSafely(async () =>
             {
                 PeerInfo effectivePeer = AddOrMergePeer(peer);
 
@@ -423,7 +447,7 @@ namespace direct_module
                 {
                     await HandleBleRoleNegotiationAsync(effectivePeer);
                 }
-            });
+            }, "Peer検出処理");
         }
 
         private void OnLogReceived(string message)
@@ -436,6 +460,7 @@ namespace direct_module
 
         private async System.Threading.Tasks.Task HandleBleRoleNegotiationAsync(PeerInfo peer)
         {
+            int generation = Volatile.Read(ref _bleRoleGeneration);
             string peerKey = PeerIdentityService.GetConnectionId(peer);
             BleRoleNegotiationResult decision = _connectionRoleService.DecideBleRole(peer, peerKey);
 
@@ -501,6 +526,13 @@ namespace direct_module
             }
 
             await System.Threading.Tasks.Task.Delay(1500);
+            if (generation != Volatile.Read(ref _bleRoleGeneration) ||
+                !IsSameActiveBleRole(peerKey, localIsGo: false))
+            {
+                AddLog($"古いBLEロール判定によるWi-Fi Direct探索を中止します: PeerKey={peerKey}", LogLevel.Debug);
+                return;
+            }
+
             ClearStaleWiFiDirectPeers();
             await _manager.StartAssociationEndpointScanAsync();
             AddLog("BLE RoleKey判定後にClient側だけWi-Fi Direct探索を開始します");
@@ -525,25 +557,26 @@ namespace direct_module
 
         private void OnConnectionRequested(PeerInfo peer)
         {
-            DispatcherQueue.TryEnqueue(() =>
+            EnqueueAsyncSafely(async () =>
             {
                 _chatRole = ChatRole.Host;
                 AddLog($"接続要求: {peer.DisplayName}");
                 AddLog("Chat Role: Host");
-                _ = EnsureTcpServerStartedAsync("Wi-Fi Direct接続要求受信");
-            });
+                await EnsureTcpServerStartedAsync("Wi-Fi Direct接続要求受信");
+            }, "Wi-Fi Direct接続要求処理");
         }
 
         private void OnWiFiDirectConnected(PeerInfo peer)
         {
             bool isIncomingRequest = peer.IsIncomingConnectionRequest ||
-                peer.DeviceId.Contains("_PendingRequest", StringComparison.OrdinalIgnoreCase);
+                (!string.IsNullOrWhiteSpace(peer.DeviceId) &&
+                 peer.DeviceId.Contains("_PendingRequest", StringComparison.OrdinalIgnoreCase));
             if (isIncomingRequest && !string.IsNullOrWhiteSpace(peer.RemoteIpAddress))
             {
                 _pendingIncomingWiFiDirectPeers[peer.RemoteIpAddress] = peer;
             }
 
-            DispatcherQueue.TryEnqueue(async () =>
+            EnqueueAsyncSafely(async () =>
             {
                 peer.IsConnectingWiFiDirect = false;
                 if (IsTransientWiFiDirectStatus(peer.StatusText))
@@ -578,12 +611,12 @@ namespace direct_module
                     AddLog($"ShortSessionId判定によりTCP待ち受け側になります: Local={GetLocalShortSessionId()}, Remote={effectivePeer.ShortSessionId}");
                     AddLog("Hostモードのため、ClientからのTCP接続を待ち受けます");
                 }
-            });
+            }, "Wi-Fi Direct接続完了処理");
         }
 
         private void OnTcpConnectionAccepted(StreamSocket socket)
         {
-            DispatcherQueue.TryEnqueue(async () =>
+            EnqueueAsyncSafely(async () =>
             {
                 _chatRole = ChatRole.Host;
 
@@ -604,8 +637,9 @@ namespace direct_module
                 {
                     AddLog("TCP接続受信後、HELLO確認を開始します");
                     await SendHelloAsync(connection);
+                    StartHelloTimeout(connection);
                 }
-            });
+            }, "TCP接続受け入れ処理");
         }
 
         private ChatConnection? GetSelectedPeerPreparedConnection()
@@ -705,7 +739,7 @@ namespace direct_module
 
             try
             {
-                SetChatReady(false);
+                UpdateSendButtonState();
 
                 if (string.IsNullOrWhiteSpace(peer.RemoteIpAddress))
                 {
@@ -735,12 +769,13 @@ namespace direct_module
                     peer.IsChatReady = false;
                     peer.StatusText = "HELLO確認中";
                     RefreshPeerDisplay(peer);
-                    SetChatReady(false);
+                    UpdateSendButtonState();
                     AddLog($"PeerごとのTCP接続成功: {peer.DisplayName}", LogLevel.Success);
                     AddLog("Chat TCP事前接続成功", LogLevel.Success);
                     AddLog("Chat TCP接続済み", LogLevel.Success);
                     AddLog("Chat TCP ReceiveLoop開始済み", LogLevel.Success);
                     await SendHelloAsync(connection);
+                    StartHelloTimeout(connection);
                     AddLog("HELLO応答待ち");
                     AddLog($"Chat TCP事前接続合計: {totalWatch.ElapsedMilliseconds}ms", LogLevel.Debug);
                 }
@@ -750,7 +785,7 @@ namespace direct_module
                     peer.IsChatReady = false;
                     peer.StatusText = "エラー";
                     RefreshPeerDisplay(peer);
-                    SetChatReady(false);
+                    UpdateSendButtonState();
                     AddLog("チャット準備状態をErrorに変更", LogLevel.Error);
                     AddLog("Chat TCP事前接続失敗: TCP接続またはReceiveLoopが未完了です", LogLevel.Error);
                     AddLog($"PeerごとのTCP準備失敗: {peer.DisplayName}", LogLevel.Error);
@@ -758,7 +793,7 @@ namespace direct_module
             }
             catch (Exception ex)
             {
-                SetChatReady(false);
+                UpdateSendButtonState();
                 AddLog($"PeerごとのTCP準備失敗: {peer.DisplayName}", LogLevel.Error);
                 peer.IsTcpConnected = false;
                 peer.IsChatReady = false;
@@ -833,7 +868,16 @@ namespace direct_module
             return connection;
         }
 
-        private async void OnChatMessageReceived(ChatMessage message, ChatConnection sourceConnection)
+        private void OnChatMessageReceived(ChatMessage message, ChatConnection sourceConnection)
+        {
+            RunSafelyInBackground(
+                () => OnChatMessageReceivedAsync(message, sourceConnection),
+                "チャットメッセージ受信処理");
+        }
+
+        private async System.Threading.Tasks.Task OnChatMessageReceivedAsync(
+            ChatMessage message,
+            ChatConnection sourceConnection)
         {
             string messageType = string.IsNullOrWhiteSpace(message.Type)
                 ? "chat"
@@ -842,20 +886,18 @@ namespace direct_module
             switch (messageType.ToLowerInvariant())
             {
                 case "hello":
-                    DispatcherQueue.TryEnqueue(async () =>
-                    {
-                        await HandleHelloMessageAsync(message, sourceConnection);
-                    });
+                    EnqueueAsyncSafely(
+                        () => HandleHelloMessageAsync(message, sourceConnection),
+                        "HELLO受信処理");
                     return;
 
                 case "chat":
                     break;
 
                 case "ping":
-                    DispatcherQueue.TryEnqueue(async () =>
-                    {
-                        await HandlePingMessageAsync(message, sourceConnection);
-                    });
+                    EnqueueAsyncSafely(
+                        () => HandlePingMessageAsync(message, sourceConnection),
+                        "PING受信処理");
                     return;
 
                 case "pong":
@@ -875,7 +917,9 @@ namespace direct_module
                 case "file_start":
                 case "file_chunk":
                 case "file_end":
-                    _ = ProcessFileTransferMessageAsync(message, sourceConnection);
+                    RunSafelyInBackground(
+                        () => ProcessFileTransferMessageAsync(message, sourceConnection),
+                        "ファイル受信処理");
                     return;
 
                 default:
@@ -896,9 +940,16 @@ namespace direct_module
 
             if (_chatRole == ChatRole.Host && message.IsGroup)
             {
-                AddLog($"Host転送開始: From={message.SenderName}, MessageId={message.MessageId}");
-                await _chatConnectionManager.BroadcastExceptAsync(message, sourceConnection);
-                AddLog("Host転送完了");
+                try
+                {
+                    EnqueueLog($"Host転送開始: From={message.SenderName}, MessageId={message.MessageId}");
+                    await _chatConnectionManager.BroadcastExceptAsync(message, sourceConnection);
+                    EnqueueLog("Host転送完了");
+                }
+                catch (Exception ex)
+                {
+                    EnqueueLog($"Host転送失敗: MessageId={message.MessageId}, {ex.GetType().Name}: {ex.Message}", LogLevel.Error);
+                }
             }
         }
 
@@ -997,6 +1048,27 @@ namespace direct_module
             }
         }
 
+        private void StartHelloTimeout(ChatConnection connection)
+        {
+            RunSafelyInBackground(
+                () => EnforceHelloTimeoutAsync(connection),
+                "HELLOタイムアウト監視");
+        }
+
+        private async System.Threading.Tasks.Task EnforceHelloTimeoutAsync(ChatConnection connection)
+        {
+            await System.Threading.Tasks.Task.Delay(HelloTimeout);
+            if (!connection.IsConnected || connection.IsHelloVerified)
+            {
+                return;
+            }
+
+            EnqueueLog(
+                $"HELLOタイムアウトにより接続を切断します: Peer={GetConnectionPeerName(connection)}",
+                LogLevel.Error);
+            connection.Close();
+        }
+
         private async System.Threading.Tasks.Task HandleHelloMessageAsync(ChatMessage message, ChatConnection sourceConnection)
         {
             string shortSessionId = message.ShortSessionId ?? "";
@@ -1042,16 +1114,11 @@ namespace direct_module
             PeerInfo? matchedPeer = provisionalPeer ?? FindPeerForHello(message, sourceConnection);
             if (matchedPeer == null)
             {
-                AddLog("HELLOのShortSessionIdに一致するPeerInfoが見つかりません", LogLevel.Debug);
-                matchedPeer = new PeerInfo
-                {
-                    DisplayName = string.IsNullOrWhiteSpace(message.SenderName)
-                        ? sourceConnection.RemoteIpAddress
-                        : message.SenderName,
-                    RemoteIpAddress = sourceConnection.RemoteIpAddress
-                };
-                matchedPeer = AddOrMergePeer(matchedPeer);
-                AddLog("BLE情報なしのためHELLO情報でPeerInfoを更新");
+                AddLog("事前に発見・許可されていないPeerからのHELLOを拒否します", LogLevel.Error);
+                sourceConnection.IsHelloVerified = false;
+                sourceConnection.IsReady = false;
+                sourceConnection.Close();
+                return;
             }
 
             if (IsHelloMismatch(matchedPeer, message))
@@ -1359,19 +1426,54 @@ namespace direct_module
 
         private async System.Threading.Tasks.Task EnsureTcpServerStartedAsync(string reason)
         {
-            if (_tcpServer.IsStarted)
+            await _tcpServerStartGate.WaitAsync();
+            try
             {
-                AddLog($"TCP待ち受けは開始済みです: Reason={reason}", LogLevel.Debug);
-                return;
-            }
+                if (_tcpServer.IsStarted)
+                {
+                    AddLog($"TCP待ち受けは開始済みです: Reason={reason}", LogLevel.Debug);
+                    return;
+                }
 
-            AddLog($"TCP待ち受け開始: Port={LocalTcpPort}, Reason={reason}");
-            await _tcpServer.StartAsync(LocalTcpPort);
+                AddLog($"TCP待ち受け開始: Port={LocalTcpPort}, Reason={reason}");
+                await _tcpServer.StartAsync(LocalTcpPort);
+            }
+            finally
+            {
+                _tcpServerStartGate.Release();
+            }
         }
 
-        private void SetChatReady(bool isReady)
+        private void EnqueueAsyncSafely(Func<System.Threading.Tasks.Task> action, string context)
         {
-            UpdateSendButtonState();
+            if (!DispatcherQueue.TryEnqueue(async () =>
+                {
+                    try
+                    {
+                        await action();
+                    }
+                    catch (Exception ex)
+                    {
+                        AddLog($"{context}に失敗しました: {ex.GetType().Name}: {ex.Message}", LogLevel.Error);
+                    }
+                }))
+            {
+                EnqueueLog($"{context}をUIスレッドへ送れませんでした", LogLevel.Error);
+            }
+        }
+
+        private async void RunSafelyInBackground(
+            Func<System.Threading.Tasks.Task> action,
+            string context)
+        {
+            try
+            {
+                await action();
+            }
+            catch (Exception ex)
+            {
+                EnqueueLog($"{context}に失敗しました: {ex.GetType().Name}: {ex.Message}", LogLevel.Error);
+            }
         }
 
 
@@ -1468,17 +1570,14 @@ namespace direct_module
                 return;
             }
 
-            foreach (PeerInfo existing in PeerList.Items.Cast<PeerInfo>())
+            PeerInfo? existing = _peerRegistryService.FindForConnection(connection);
+            if (existing != null)
             {
-                if (string.Equals(existing.RemoteIpAddress, connection.RemoteIpAddress, StringComparison.OrdinalIgnoreCase) ||
-                    string.Equals(existing.DisplayName, displayName, StringComparison.OrdinalIgnoreCase))
-                {
-                    existing.IsTcpConnected = connection.IsConnected;
-                    existing.IsChatReady = existing.IsChatReady && connection.IsConnected && connection.IsReceiveLoopStarted;
-                    existing.StatusText = existing.IsChatReady ? "チャット準備完了" : connection.IsConnected ? "HELLO確認中" : "送信不可";
-                    RefreshPeerDisplay(existing);
-                    return;
-                }
+                existing.IsTcpConnected = connection.IsConnected;
+                existing.IsChatReady = existing.IsChatReady && connection.IsConnected && connection.IsReceiveLoopStarted;
+                existing.StatusText = existing.IsChatReady ? "チャット準備完了" : connection.IsConnected ? "HELLO確認中" : "送信不可";
+                RefreshPeerDisplay(existing);
+                return;
             }
 
             var peer = new PeerInfo
@@ -1490,10 +1589,7 @@ namespace direct_module
                 StatusText = connection.IsConnected ? "HELLO確認中" : "送信不可"
             };
 
-            _peerConnectionStateService.UpdateConnectAvailability(peer);
-            PeerList.Items.Add(peer);
-            UpdatePeerCount();
-            UpdateSelectedPeerDetails(PeerList.SelectedItem as PeerInfo);
+            AddOrMergePeer(peer);
         }
 
     }

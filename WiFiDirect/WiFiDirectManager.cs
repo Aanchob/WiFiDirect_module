@@ -82,6 +82,7 @@ namespace direct_module.WiFiDirect
             LogReceived?.Invoke("Manager: Wi-Fi Direct 停止開始");
             _scanner.Stop();
             _advertiser.Stop();
+            _listener.Stop();
             foreach (WiFiDirectSession session in _sessions)
             {
                 session.Dispose();

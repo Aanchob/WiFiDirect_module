@@ -170,28 +170,44 @@ namespace direct_module.Services
 
         public Task<FileTransferDisplayResult?> HandleFileStartAsync(ChatMessage message)
         {
-            if (string.IsNullOrWhiteSpace(message.FileId))
+            if (!TryNormalizeFileId(message.FileId, out string fileId))
             {
-                return Task.FromResult<FileTransferDisplayResult?>(null);
+                throw new InvalidDataException("FileId is invalid.");
+            }
+
+            long fileSize = message.FileSize ?? -1;
+            int chunkCount = message.ChunkCount ?? -1;
+            int expectedChunkCount = fileSize >= 0
+                ? Math.Max(1, (int)Math.Ceiling(fileSize / (double)ChunkSize))
+                : -1;
+            if (fileSize < 0 || fileSize > MaxFileSize || chunkCount != expectedChunkCount)
+            {
+                throw new InvalidDataException(
+                    $"File metadata is invalid. Size={fileSize}, Chunks={chunkCount}");
             }
 
             string fileName = SafeFileName(message.FileName);
             EnsureAttachmentsDirectory();
-            string partFilePath = Path.Combine(_attachmentsDirectory, $"{message.FileId}.part");
-
-            if (File.Exists(partFilePath))
-            {
-                File.Delete(partFilePath);
-            }
+            string partFilePath = Path.Combine(_attachmentsDirectory, $"{fileId}.part");
 
             lock (_incomingFiles)
             {
-                _incomingFiles[message.FileId] = new IncomingFileSession
+                if (_incomingFiles.ContainsKey(fileId))
                 {
-                    FileId = message.FileId,
+                    throw new InvalidDataException($"File session already exists: {fileId}");
+                }
+
+                if (File.Exists(partFilePath))
+                {
+                    File.Delete(partFilePath);
+                }
+
+                _incomingFiles[fileId] = new IncomingFileSession
+                {
+                    FileId = fileId,
                     FileName = fileName,
-                    FileSize = message.FileSize ?? 0,
-                    ExpectedChunkCount = message.ChunkCount ?? 0,
+                    FileSize = fileSize,
+                    ExpectedChunkCount = chunkCount,
                     PartFilePath = partFilePath
                 };
             }
@@ -206,13 +222,13 @@ namespace direct_module.Services
 
         public async Task<string?> HandleFileChunkAsync(ChatMessage message)
         {
-            if (string.IsNullOrWhiteSpace(message.FileId) ||
-                string.IsNullOrWhiteSpace(message.ChunkBase64))
+            if (!TryNormalizeFileId(message.FileId, out string fileId) ||
+                message.ChunkBase64 == null)
             {
                 return null;
             }
 
-            IncomingFileSession? session = GetSession(message.FileId);
+            IncomingFileSession? session = GetSession(fileId);
             if (session == null)
             {
                 LogReceived?.Invoke($"File chunk ignored because session was not found: {message.FileId}");
@@ -220,23 +236,35 @@ namespace direct_module.Services
             }
 
             int chunkIndex = message.ChunkIndex ?? -1;
-            if (chunkIndex < 0)
+            if (chunkIndex < 0 || chunkIndex >= session.ExpectedChunkCount)
             {
-                LogReceived?.Invoke($"File chunk ignored because chunk index was missing: {message.FileId}");
-                return null;
+                throw new InvalidDataException(
+                    $"File chunk index is invalid: {chunkIndex}/{session.ExpectedChunkCount}");
             }
 
             await session.Gate.WaitAsync();
             try
             {
                 byte[] chunk = Convert.FromBase64String(message.ChunkBase64);
-                await using var stream = new FileStream(session.PartFilePath, FileMode.OpenOrCreate, FileAccess.Write, FileShare.Read);
-                stream.Seek(chunkIndex * ChunkSize, SeekOrigin.Begin);
-                await stream.WriteAsync(chunk);
-                if (session.ReceivedChunkIndexes.Add(chunkIndex))
+                long chunkOffset = (long)chunkIndex * ChunkSize;
+                int expectedLength = (int)Math.Min(ChunkSize, session.FileSize - chunkOffset);
+                if (chunk.Length != expectedLength)
                 {
-                    session.ReceivedBytes += chunk.Length;
+                    throw new InvalidDataException(
+                        $"File chunk size is invalid: Index={chunkIndex}, Bytes={chunk.Length}, Expected={expectedLength}");
                 }
+
+                if (session.ReceivedChunkIndexes.Contains(chunkIndex))
+                {
+                    LogReceived?.Invoke($"Duplicate file chunk ignored: {fileId}/{chunkIndex}");
+                    return null;
+                }
+
+                await using var stream = new FileStream(session.PartFilePath, FileMode.OpenOrCreate, FileAccess.Write, FileShare.Read);
+                stream.Seek(chunkOffset, SeekOrigin.Begin);
+                await stream.WriteAsync(chunk);
+                session.ReceivedChunkIndexes.Add(chunkIndex);
+                session.ReceivedBytes += chunk.Length;
 
                 double percent = session.FileSize > 0
                     ? Math.Min(100, session.ReceivedBytes * 100.0 / session.FileSize)
@@ -259,7 +287,7 @@ namespace direct_module.Services
 
         public async Task<FileTransferDisplayResult?> HandleFileEndAsync(ChatMessage message)
         {
-            if (string.IsNullOrWhiteSpace(message.FileId))
+            if (!TryNormalizeFileId(message.FileId, out string fileId))
             {
                 return null;
             }
@@ -267,7 +295,7 @@ namespace direct_module.Services
             IncomingFileSession? session;
             lock (_incomingFiles)
             {
-                _incomingFiles.TryGetValue(message.FileId, out session);
+                _incomingFiles.TryGetValue(fileId, out session);
             }
 
             if (session == null)
@@ -459,6 +487,18 @@ namespace direct_module.Services
             }
 
             return value;
+        }
+
+        private static bool TryNormalizeFileId(string? fileId, out string normalized)
+        {
+            normalized = "";
+            if (!Guid.TryParseExact(fileId, "N", out Guid parsed))
+            {
+                return false;
+            }
+
+            normalized = parsed.ToString("N");
+            return true;
         }
 
         private static string GetUniqueFilePath(string directory, string fileName)

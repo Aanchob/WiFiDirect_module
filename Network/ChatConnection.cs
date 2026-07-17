@@ -222,7 +222,7 @@ namespace direct_module.Network
             {
                 LogReceived?.Invoke("Chat TCPエラー");
                 LogReceived?.Invoke("Chat TCP未接続のため送信できません。事前接続を確認してください。");
-                return;
+                throw new IOException("Chat TCP is not connected.");
             }
 
             var pendingSend = new PendingSend(message);

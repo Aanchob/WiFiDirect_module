@@ -13,6 +13,7 @@ namespace direct_module.Discovery
         private BluetoothLEAdvertisementWatcher? _watcher;
 
         private readonly HashSet<string> _foundPeerKeys = new();
+        private readonly object _foundPeerKeysLock = new();
 
         public event Action<string>? LogReceived;
         public event Action<PeerInfo>? PeerFound;
@@ -21,6 +22,11 @@ namespace direct_module.Discovery
 
         public void Start()
         {
+            lock (_foundPeerKeysLock)
+            {
+                _foundPeerKeys.Clear();
+            }
+
             if (_watcher != null)
             {
                 LogReceived?.Invoke($"BLEスキャンはすでに作成されています: Status={_watcher.Status}");
@@ -137,12 +143,14 @@ namespace direct_module.Discovery
 
                 string peerKey = $"{displayName}|{shortSessionId}|{tcpPort}";
 
-                if (_foundPeerKeys.Contains(peerKey))
+                lock (_foundPeerKeysLock)
                 {
-                    continue;
-                }
+                    if (!_foundPeerKeys.Add(peerKey))
+                    {
+                        continue;
+                    }
 
-                _foundPeerKeys.Add(peerKey);
+                }
 
                 PeerInfo peer = new PeerInfo
                 {
