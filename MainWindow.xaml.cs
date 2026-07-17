@@ -1138,6 +1138,7 @@ namespace direct_module
 
             ApplyPendingIncomingWiFiDirectCandidate(matchedPeer, sourceConnection.RemoteIpAddress);
             ApplyHelloToPeer(matchedPeer, message, sourceConnection);
+            SelectConnectedPeerIfNeeded(matchedPeer);
             AddLog($"HELLO確認後にPeerを正式統合: {matchedPeer.DisplayName}", LogLevel.Success);
             AddLog($"ChatConnectionとPeerInfoを紐付けました: {matchedPeer.DisplayName}");
             AddLog($"PeerごとのHELLO確認成功: {matchedPeer.DisplayName}", LogLevel.Success);
@@ -1145,6 +1146,21 @@ namespace direct_module
             AddLog("HELLO確認後、チャット準備完了", LogLevel.Success);
             UpdateSendButtonState();
             await SendPingAfterHelloAsync(sourceConnection);
+        }
+
+        private void SelectConnectedPeerIfNeeded(PeerInfo connectedPeer)
+        {
+            if (_chatRole != ChatRole.Host ||
+                PeerList.SelectedItem is PeerInfo selectedPeer && !selectedPeer.IsGroupChat)
+            {
+                return;
+            }
+
+            PeerList.SelectedItem = connectedPeer;
+            PeerList.ScrollIntoView(connectedPeer);
+            UpdateSelectedPeerDetails(connectedPeer);
+            UpdateSendButtonState();
+            AddLog($"接続された相手を自動選択しました: {connectedPeer.DisplayName}", LogLevel.Success);
         }
 
         private PeerInfo? FindPeerByShortSessionId(string shortSessionId)
