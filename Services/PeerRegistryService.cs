@@ -249,6 +249,33 @@ namespace direct_module.Services
             return changed;
         }
 
+        public bool ConfirmUserSelectedWiFiCandidate(PeerInfo blePeer, PeerInfo wifiCandidate)
+        {
+            if (ReferenceEquals(blePeer, wifiCandidate) ||
+                !_peers.Contains(blePeer) ||
+                !_peers.Contains(wifiCandidate) ||
+                !blePeer.DiscoveredByBle ||
+                !wifiCandidate.DiscoveredByWiFiDirect ||
+                wifiCandidate.DiscoveredByBle ||
+                (!string.IsNullOrWhiteSpace(wifiCandidate.ShortSessionId) &&
+                 !string.Equals(
+                     blePeer.ShortSessionId,
+                     wifiCandidate.ShortSessionId,
+                     StringComparison.OrdinalIgnoreCase)) ||
+                string.IsNullOrWhiteSpace(wifiCandidate.WiFiDirectDeviceIdForConnection))
+            {
+                return false;
+            }
+
+            PeerMergeService.MergeConfirmed(
+                blePeer,
+                wifiCandidate,
+                "ユーザーがWi-Fi Direct候補を選択",
+                100);
+            _peers.Remove(wifiCandidate);
+            return true;
+        }
+
         public IReadOnlyList<PeerInfo> RemoveRelayPeersExcept(ISet<string> activePeerIds)
         {
             List<PeerInfo> removed = _peers

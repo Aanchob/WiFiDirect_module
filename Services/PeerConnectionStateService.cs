@@ -14,7 +14,14 @@ namespace direct_module.Services
 
         public void UpdateConnectAvailability(PeerInfo peer)
         {
-            peer.CanConnect =
+            bool isIdle =
+                !peer.IsConnectingWiFiDirect &&
+                !peer.IsConnected &&
+                !peer.IsTcpConnected &&
+                !peer.IsChatReady &&
+                !peer.IsPreparingChatTcp;
+
+            bool canJoinAsClient =
                 peer.DiscoveredByBle &&
                 peer.DiscoveredByWiFiDirect &&
                 !string.IsNullOrWhiteSpace(peer.WiFiDirectDeviceIdForConnection) &&
@@ -22,12 +29,15 @@ namespace direct_module.Services
                 !string.IsNullOrWhiteSpace(peer.ShortSessionId) &&
                 !string.IsNullOrWhiteSpace(peer.RoleKey) &&
                 (peer.MatchState == PeerMatchState.Provisional || peer.MatchState == PeerMatchState.Confirmed) &&
-                _connectionRoleService.IsLocalClientForWifiDirect(peer) &&
-                !peer.IsConnectingWiFiDirect &&
-                !peer.IsConnected &&
-                !peer.IsTcpConnected &&
-                !peer.IsChatReady &&
-                !peer.IsPreparingChatTcp;
+                _connectionRoleService.IsLocalClientForWifiDirect(peer);
+
+            bool canRequestFromGo =
+                peer.DiscoveredByBle &&
+                !string.IsNullOrWhiteSpace(peer.ShortSessionId) &&
+                !string.IsNullOrWhiteSpace(peer.RoleKey) &&
+                !_connectionRoleService.IsLocalClientForWifiDirect(peer);
+
+            peer.CanConnect = isIdle && (canJoinAsClient || canRequestFromGo);
         }
 
         public bool CanReconnect(PeerInfo peer)

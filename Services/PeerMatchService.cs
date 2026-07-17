@@ -76,6 +76,17 @@ namespace direct_module.Services
                 };
             }
 
+            if (partialName)
+            {
+                return new PeerMatchEvaluation
+                {
+                    State = PeerMatchState.Provisional,
+                    Score = 45,
+                    Reason = "Role整合 + 名前の一意な部分一致",
+                    IsPartialNameCandidate = true
+                };
+            }
+
             int score = 25;
             if (exactName)
             {

@@ -50,6 +50,7 @@ namespace direct_module
         private readonly FileTransferService _fileTransferService = new();
         private readonly SemaphoreSlim _fileTransferReceiveGate = new(1, 1);
         private readonly SemaphoreSlim _tcpServerStartGate = new(1, 1);
+        private readonly SemaphoreSlim _connectionRequestDialogGate = new(1, 1);
         private readonly ConcurrentDictionary<string, PeerInfo> _pendingIncomingWiFiDirectPeers =
             new(StringComparer.OrdinalIgnoreCase);
         private bool _isAutonomousGoAdvertisementEnabled;
@@ -94,6 +95,7 @@ namespace direct_module
 
             _discoveryManager.LogReceived += OnLogReceived;
             _discoveryManager.PeerFound += OnPeerFound;
+            _discoveryManager.ConnectionRequestReceived += OnBleConnectionRequestReceived;
 
             _tcpServer.LogReceived += OnLogReceived;
             _tcpServer.ConnectionAccepted += OnTcpConnectionAccepted;

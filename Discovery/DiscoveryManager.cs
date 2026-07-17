@@ -1,5 +1,6 @@
-﻿using System;
 using direct_module.WiFiDirect.Models;
+using System;
+using System.Threading.Tasks;
 
 namespace direct_module.Discovery
 {
@@ -10,44 +11,31 @@ namespace direct_module.Discovery
 
         public event Action<string>? LogReceived;
         public event Action<PeerInfo>? PeerFound;
+        public event Action<BleConnectionRequest>? ConnectionRequestReceived;
 
         public DiscoveryManager()
         {
             _advertiser = new BleAdvertiser();
             _scanner = new BleScanner();
-
-            _advertiser.LogReceived += OnAdvertiserLogReceived;
-
-            _scanner.LogReceived += OnScannerLogReceived;
+            _advertiser.LogReceived += OnLogReceived;
+            _scanner.LogReceived += OnLogReceived;
             _scanner.PeerFound += OnScannerPeerFound;
+            _scanner.ConnectionRequestReceived += OnConnectionRequestReceived;
         }
 
-        public void StartAdvertise(string displayName, Guid sessionId, int tcpPort)
-        {
-            _advertiser.Start(displayName, sessionId, tcpPort);
-        }
+        public Task StartAdvertiseAsync(string displayName, Guid sessionId, int tcpPort) =>
+            _advertiser.StartAsync(displayName, sessionId, tcpPort);
 
-        public void StopAdvertise()
-        {
-            _advertiser.Stop();
-        }
+        public Task SendConnectionRequestAsync(string targetShortSessionId) =>
+            _advertiser.PublishConnectionRequestAsync(targetShortSessionId);
 
-        public void StartScan()
-        {
-            _scanner.Start();
-        }
+        public void StopAdvertise() => _advertiser.Stop();
 
-        public void StopScan()
-        {
-            _scanner.Stop();
-        }
+        public void StartScan() => _scanner.Start();
 
-        private void OnAdvertiserLogReceived(string message)
-        {
-            LogReceived?.Invoke(message);
-        }
+        public void StopScan() => _scanner.Stop();
 
-        private void OnScannerLogReceived(string message)
+        private void OnLogReceived(string message)
         {
             LogReceived?.Invoke(message);
         }
@@ -55,6 +43,11 @@ namespace direct_module.Discovery
         private void OnScannerPeerFound(PeerInfo peer)
         {
             PeerFound?.Invoke(peer);
+        }
+
+        private void OnConnectionRequestReceived(BleConnectionRequest request)
+        {
+            ConnectionRequestReceived?.Invoke(request);
         }
     }
 }

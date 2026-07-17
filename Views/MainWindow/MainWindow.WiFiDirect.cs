@@ -58,11 +58,18 @@ namespace direct_module
             RunSafelyInBackground(() => ConnectPeerAsync(peer), "Peer接続");
         }
 
-        private async System.Threading.Tasks.Task ConnectPeerAsync(PeerInfo peer)
+        private async System.Threading.Tasks.Task ConnectPeerAsync(PeerInfo peer, bool refreshCandidate = true)
         {
             if (peer.IsConnectingWiFiDirect)
             {
                 AddLog($"Wi-Fi Direct接続処理中のため重複要求を無視します: Peer={peer.DisplayName}", LogLevel.Debug);
+                return;
+            }
+
+            if (ConnectionRoleService.HasRoleKey(peer) &&
+                !_connectionRoleService.IsLocalClientForWifiDirect(peer))
+            {
+                await SendBleConnectionRequestAsync(peer);
                 return;
             }
 
@@ -88,14 +95,6 @@ namespace direct_module
                 return;
             }
 
-            if (ConnectionRoleService.HasRoleKey(peer) &&
-                !_connectionRoleService.IsLocalClientForWifiDirect(peer))
-            {
-                AddLog($"BLE RoleKey判定では自分がGOのため、手動Wi-Fi Direct接続を開始しません: Peer={peer.DisplayName}");
-                AddLog("相手ClientからのJoinを待ち受けます");
-                return;
-            }
-
             bool connectAttempted = false;
 
             try
@@ -107,10 +106,17 @@ namespace direct_module
 
                 AddLog("Chat Role: Client");
 
-                if (!await RefreshWiFiDirectCandidateBeforeConnectAsync(peer))
+                if (refreshCandidate && !await RefreshWiFiDirectCandidateBeforeConnectAsync(peer))
                 {
                     peer.StatusText = "Wi-Fi Direct再探索失敗";
                     AddLog($"Wi-Fi Direct候補を再取得できなかったため接続を中止します: Peer={peer.DisplayName}", LogLevel.Error);
+                    return;
+                }
+
+                if (!HasUsableWiFiDirectCandidate(peer))
+                {
+                    peer.StatusText = "Wi-Fi Direct候補なし";
+                    AddLog($"接続可能なWi-Fi Direct候補がありません: Peer={peer.DisplayName}", LogLevel.Error);
                     return;
                 }
 

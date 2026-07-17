@@ -13,10 +13,12 @@ namespace direct_module.Discovery
         private BluetoothLEAdvertisementWatcher? _watcher;
 
         private readonly HashSet<string> _foundPeerKeys = new();
+        private readonly HashSet<string> _foundRequestKeys = new();
         private readonly object _foundPeerKeysLock = new();
 
         public event Action<string>? LogReceived;
         public event Action<PeerInfo>? PeerFound;
+        public event Action<BleConnectionRequest>? ConnectionRequestReceived;
 
         private const ushort ManufacturerId = 0x1234;
 
@@ -25,6 +27,7 @@ namespace direct_module.Discovery
             lock (_foundPeerKeysLock)
             {
                 _foundPeerKeys.Clear();
+                _foundRequestKeys.Clear();
             }
 
             if (_watcher != null)
@@ -116,7 +119,14 @@ namespace direct_module.Discovery
 
                 string payloadText = ReadBufferAsString(data.Data);
 
-                if (!payloadText.StartsWith("DC|"))
+                if (payloadText.StartsWith("DR|", StringComparison.Ordinal))
+                {
+                    HandleConnectionRequest(payloadText);
+                    continue;
+                }
+
+                bool isVersion2 = payloadText.StartsWith("D2|", StringComparison.Ordinal);
+                if (!isVersion2 && !payloadText.StartsWith("DC|", StringComparison.Ordinal))
                 {
                     continue;
                 }
@@ -130,12 +140,21 @@ namespace direct_module.Discovery
                 }
 
                 string displayName = parts[1];
-                string shortSessionId = parts[2];
-                string roleKey = parts.Length >= 5 ? parts[4] : "";
-
-                if (!int.TryParse(parts[3], out int tcpPort))
+                string roleKey = isVersion2 ? parts[2] : parts.Length >= 5 ? parts[4] : "";
+                if (isVersion2 && roleKey.Length < 4)
                 {
-                    LogReceived?.Invoke($"TcpPortの解析に失敗: {parts[3]}");
+                    LogReceived?.Invoke($"BLE D2広告のRoleKeyが不正です: {payloadText}");
+                    continue;
+                }
+
+                string shortSessionId = isVersion2 && roleKey.Length >= 4
+                    ? roleKey[..4]
+                    : parts[2];
+                string portText = parts[3];
+
+                if (!int.TryParse(portText, out int tcpPort))
+                {
+                    LogReceived?.Invoke($"TcpPortの解析に失敗: {portText}");
                     continue;
                 }
 
@@ -172,6 +191,39 @@ namespace direct_module.Discovery
 
                 PeerFound?.Invoke(peer);
             }
+        }
+
+        private void HandleConnectionRequest(string payloadText)
+        {
+            string[] parts = payloadText.Split('|');
+            if (parts.Length < 4 ||
+                string.IsNullOrWhiteSpace(parts[1]) ||
+                string.IsNullOrWhiteSpace(parts[2]))
+            {
+                LogReceived?.Invoke($"BLE接続依頼形式が不正です: {payloadText}");
+                return;
+            }
+
+            string requestId = parts.Length >= 5 ? parts[4] : "legacy";
+            string requestKey = $"{parts[1]}|{parts[2]}|{parts[3]}|{requestId}";
+            lock (_foundPeerKeysLock)
+            {
+                if (!_foundRequestKeys.Add(requestKey))
+                {
+                    return;
+                }
+            }
+
+            var request = new BleConnectionRequest
+            {
+                SourceShortSessionId = parts[1],
+                TargetShortSessionId = parts[2],
+                SourceRoleKey = parts[3],
+                RequestId = requestId
+            };
+            LogReceived?.Invoke(
+                $"BLE接続依頼受信: Source={request.SourceShortSessionId}, Target={request.TargetShortSessionId}");
+            ConnectionRequestReceived?.Invoke(request);
         }
 
         private static string ReadBufferAsString(IBuffer buffer)

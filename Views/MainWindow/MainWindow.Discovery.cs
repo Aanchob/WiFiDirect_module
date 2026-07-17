@@ -36,7 +36,7 @@ namespace direct_module
                 AddLog($"Wi-Fi Direct広告開始失敗: {ex.GetType().Name}: {ex.Message}", LogLevel.Error);
                 return;
             }
-            StartBleAdvertiseCore();
+            await StartBleAdvertiseCoreAsync();
             _discoveryManager.StartScan();
 
             ClearStaleWiFiDirectPeers();
@@ -65,14 +65,14 @@ namespace direct_module
 
         private void StartBleAdvertise_Click(object sender, RoutedEventArgs e)
         {
-            StartBleAdvertiseCore();
+            RunSafelyInBackground(StartBleAdvertiseCoreAsync, "BLE広告開始");
         }
 
-        private void StartBleAdvertiseCore()
+        private async System.Threading.Tasks.Task StartBleAdvertiseCoreAsync()
         {
             string localIp = LocalNetworkInfo.GetLocalIpv4Address();
 
-            _discoveryManager.StartAdvertise(
+            await _discoveryManager.StartAdvertiseAsync(
                 Environment.MachineName,
                 _localSessionId,
                 LocalTcpPort);

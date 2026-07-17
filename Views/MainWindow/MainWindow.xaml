@@ -209,7 +209,7 @@
                                             IsEnabled="{Binding CanConnect}"
                                             Opacity="{Binding ConnectButtonOpacity}"
                                             Style="{StaticResource IconOnlyButtonStyle}"
-                                            ToolTipService.ToolTip="接続">
+                                            ToolTipService.ToolTip="接続（GO側では相手へ接続依頼を送信）">
                                             <FontIcon FontSize="14" Glyph="&#xE8A7;" />
                                         </Button>
                                     </Grid>
